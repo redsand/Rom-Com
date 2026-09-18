@@ -1,9 +1,11 @@
-import argparse
+import argparse, json
 from datetime import datetime
 from .db import connect
 from .seed import seed
-from .planner import bulk_plan
+from .planner import bulk_plan, next_individuals
 from .scanner import scan
+from .catalog import import_dat, import_scummvm
+from .report import render_text, summary
 from . import indexer, sab
 
 def fmt(n):
@@ -13,61 +15,93 @@ def fmt(n):
         x/=1024
     return f"{x:.1f} PB"
 
-def cmd_status(_):
-    db=connect(); total=db.execute("SELECT COUNT(*) c FROM items").fetchone()["c"]
-    print(f"Cataloged: {total}")
-    for r in db.execute("SELECT status,COUNT(*) c FROM items GROUP BY status ORDER BY c DESC"):
-        print(f"{r['status']:14} {r['c']}")
+def entity(db,ident):
+    i=db.execute("SELECT 'item' kind,id,title,authorized,status FROM items WHERE id=?",(ident,)).fetchone()
+    if i: return "item",i
+    v=db.execute("SELECT 'volume' kind,id,title,authorized,status FROM volumes WHERE id=?",(ident,)).fetchone()
+    if v: return "volume",v
+    raise SystemExit("unknown item/volume")
+
+def cmd_status(_): print(render_text())
 
 def cmd_missing(a):
-    db=connect(); q="SELECT * FROM items WHERE wanted=1 AND status NOT IN ('COMPLETE','VERIFIED','INSTALLED')"; p=[]
+    db=connect(); q="SELECT * FROM items WHERE wanted=1 AND status NOT IN ('VERIFIED','NORMALIZED','INSTALLED','TESTED','EXCLUDED')"; p=[]
     if a.system: q+=" AND system=?"; p.append(a.system)
-    for r in db.execute(q+" ORDER BY series,series_number,title",p): print(f"{r['id']:12} {r['system'] or '-':10} {r['title']}")
+    for r in db.execute(q+" ORDER BY series,series_number,title",p): print(f"{r['id']:34} {r['status']:12} {r['system'] or '-':12} {r['title']}")
 
 def cmd_series(a):
     db=connect()
-    for r in db.execute("SELECT * FROM items WHERE lower(series)=lower(?) ORDER BY series_number",(a.name,)):
-        print(f"{r['series_number']:02d}  {r['status']:10}  {r['title']} ({r['year']})")
+    rows=db.execute("SELECT * FROM items WHERE lower(series)=lower(?) ORDER BY series_number",(a.name,)).fetchall()
+    if not rows: raise SystemExit("series not found")
+    for r in rows: print(f"{r['series_number']:02d}  {r['status']:12}  {r['title']} ({r['year']})")
+
+def search_results(ident):
+    db=connect(); kind,_=entity(db,ident)
+    try: results,e=indexer.search_entity(db,kind,ident)
+    except PermissionError as ex: raise SystemExit(str(ex))
+    return kind,e,results
 
 def cmd_search(a):
-    db=connect(); r=db.execute("SELECT * FROM items WHERE id=?",(a.item_id,)).fetchone()
-    if not r: raise SystemExit("unknown item")
-    if not r["authorized"]: raise SystemExit("item is not marked authorized; search/acquire blocked")
-    for i,x in enumerate(indexer.search(r["title"]),1): print(f"{i:2}. {fmt(x['size']):>10}  {x['title']}")
+    _,_,results=search_results(a.ident)
+    for i,x in enumerate(results,1): print(f"{i:2}. {x['score']:6.1f} {fmt(x['size']):>10}  {x['title']}")
 
 def cmd_acquire(a):
-    db=connect(); r=db.execute("SELECT * FROM items WHERE id=?",(a.item_id,)).fetchone()
-    if not r or not r["authorized"]: raise SystemExit("unknown or unauthorized item")
-    results=indexer.search(r["title"])
+    db=connect(); kind,e,results=search_results(a.ident)
     if a.result<1 or a.result>len(results): raise SystemExit("invalid result number")
-    x=results[a.result-1]; resp=sab.add_url(x["url"],f"ROMCOM__{r['id']}"); ids=resp.get("nzo_ids",[]); nzo=ids[0] if ids else None
+    x=results[a.result-1]; resp=sab.add_url(x["url"],f"ROMCOM__{e['id']}",priority=1 if kind=="volume" else 0)
+    ids=resp.get("nzo_ids",[]); nzo=ids[0] if ids else None
+    table="items" if kind=="item" else "volumes"
     with db:
-        db.execute("UPDATE items SET status='QUEUED' WHERE id=?",(r["id"],))
-        db.execute("INSERT INTO jobs(entity_type,entity_id,nzo_id,result_title,bytes,status,queued_at) VALUES('item',?,?,?,?,?,?)",(r["id"],nzo,x["title"],x["size"],"QUEUED",datetime.now().isoformat(timespec="seconds")))
-    print(f"Queued {r['title']} as {nzo}")
+        db.execute(f"UPDATE {table} SET status='QUEUED' WHERE id=?",(e["id"],))
+        db.execute("""INSERT INTO jobs(entity_type,entity_id,nzo_id,result_title,result_url,bytes,status,queued_at)
+          VALUES(?,?,?,?,?,?,'QUEUED',?)""",(kind,e["id"],nzo,x["title"],x["url"],x["size"],datetime.now().isoformat(timespec="seconds")))
+    print(f"Queued {e['title']} as {nzo}")
 
 def cmd_sync(_):
     db=connect(); hist={x.get("nzo_id"):x for x in sab.history() if x.get("nzo_id")}; que={x.get("nzo_id"):x for x in sab.queue() if x.get("nzo_id")}
     with db:
-        for j in db.execute("SELECT * FROM jobs WHERE status NOT IN ('COMPLETE','FAILED')").fetchall():
-            n=j["nzo_id"]
+        jobs=db.execute("SELECT * FROM jobs WHERE status NOT IN ('DOWNLOADED','FAILED')").fetchall()
+        for j in jobs:
+            n=j["nzo_id"]; table="items" if j["entity_type"]=="item" else "volumes"
             if n in que:
-                st=(que[n].get("status") or "QUEUED").upper(); db.execute("UPDATE jobs SET status=? WHERE id=?",(st,j["id"])); db.execute("UPDATE items SET status=? WHERE id=?",(st,j["entity_id"]))
+                st=(que[n].get("status") or "QUEUED").upper()
+                mapped="DOWNLOADING" if st not in ("QUEUED","PAUSED") else "QUEUED"
+                db.execute("UPDATE jobs SET status=? WHERE id=?",(mapped,j["id"])); db.execute(f"UPDATE {table} SET status=? WHERE id=?",(mapped,j["entity_id"]))
             elif n in hist:
-                st=(hist[n].get("status") or "UNKNOWN").upper(); mapped="COMPLETE" if st=="COMPLETED" else ("FAILED" if st=="FAILED" else st)
-                db.execute("UPDATE jobs SET status=?,completed_at=? WHERE id=?",(mapped,datetime.now().isoformat(timespec="seconds"),j["id"])); db.execute("UPDATE items SET status=? WHERE id=?",(mapped,j["entity_id"]))
-    print("SABnzbd state synchronized")
+                st=(hist[n].get("status") or "UNKNOWN").upper()
+                mapped="DOWNLOADED" if st=="COMPLETED" else ("FAILED" if st=="FAILED" else st)
+                db.execute("UPDATE jobs SET status=?,completed_at=? WHERE id=?",(mapped,datetime.now().isoformat(timespec="seconds"),j["id"]))
+                db.execute(f"UPDATE {table} SET status=? WHERE id=?",(mapped,j["entity_id"]))
+                if j["entity_type"]=="volume" and mapped=="DOWNLOADED":
+                    for c in db.execute("SELECT item_id FROM volume_covers WHERE volume_id=?",(j["entity_id"],)):
+                        db.execute("""UPDATE items SET status='FOUND' WHERE id=? AND status IN ('CATALOGED','MISSING','FAILED')""",(c["item_id"],))
+    print("SABnzbd state synchronized; downloaded content still requires scan/verification")
+
+def cmd_import_dat(a):
+    print(json.dumps(import_dat(a.path,a.system,a.source,not a.catalog_only),indent=2))
+
+def cmd_import_scummvm(a):
+    print(f"Imported {import_scummvm(a.url,not a.catalog_only)} ScummVM compatibility entries")
+
+def cmd_scan(a):
+    print(json.dumps(scan(a.path,not a.no_name_match),indent=2))
 
 def main():
     p=argparse.ArgumentParser(prog="romcom"); s=p.add_subparsers(dest="cmd",required=True)
-    s.add_parser("init").set_defaults(fn=lambda a: (connect(),print("Database initialized")))
-    s.add_parser("seed").set_defaults(fn=lambda a: print(f"Seeded catalog; {seed()} items total"))
+    s.add_parser("init").set_defaults(fn=lambda a:(connect(),print("Database initialized")))
+    s.add_parser("seed").set_defaults(fn=lambda a:print(f"Seeded configuration; {seed()} items total"))
     s.add_parser("status").set_defaults(fn=cmd_status)
     m=s.add_parser("missing"); m.add_argument("--system"); m.set_defaults(fn=cmd_missing)
     se=s.add_parser("series"); se.add_argument("name"); se.set_defaults(fn=cmd_series)
-    bp=s.add_parser("bulk-plan"); bp.set_defaults(fn=lambda a:[print(f"{x['coverage_score']:8.2f}  {x['id']}  {x['title']}") for x in bulk_plan()] or None)
-    q=s.add_parser("search"); q.add_argument("item_id"); q.set_defaults(fn=cmd_search)
-    ac=s.add_parser("acquire"); ac.add_argument("item_id"); ac.add_argument("--result",type=int,required=True); ac.set_defaults(fn=cmd_acquire)
+    bp=s.add_parser("bulk-plan"); bp.set_defaults(fn=lambda a:[print(f"{x['coverage_score']:8.2f} {x['missing']:5} missing  {x['id']}  {x['title']}") for x in bulk_plan()])
+    ni=s.add_parser("next"); ni.add_argument("--limit",type=int,default=25); ni.set_defaults(fn=lambda a:[print(f"{x['id']:34} {x['title']}") for x in next_individuals(a.limit)])
+    q=s.add_parser("search"); q.add_argument("ident"); q.set_defaults(fn=cmd_search)
+    ac=s.add_parser("acquire"); ac.add_argument("ident"); ac.add_argument("--result",type=int,required=True); ac.set_defaults(fn=cmd_acquire)
     s.add_parser("sync").set_defaults(fn=cmd_sync)
-    sc=s.add_parser("scan"); sc.add_argument("path"); sc.set_defaults(fn=lambda a: print(f"Scanned {scan(a.path)} files"))
+    sc=s.add_parser("scan"); sc.add_argument("path"); sc.add_argument("--no-name-match",action="store_true"); sc.set_defaults(fn=cmd_scan)
+    d=s.add_parser("import-dat"); d.add_argument("path"); d.add_argument("--system",required=True); d.add_argument("--source",default="dat"); d.add_argument("--catalog-only",action="store_true"); d.set_defaults(fn=cmd_import_dat)
+    sv=s.add_parser("import-scummvm"); sv.add_argument("--url",default="https://www.scummvm.org/compatibility"); sv.add_argument("--catalog-only",action="store_true"); sv.set_defaults(fn=cmd_import_scummvm)
+    r=s.add_parser("report"); r.add_argument("--json",action="store_true"); r.set_defaults(fn=lambda a:print(json.dumps(summary(),indent=2) if a.json else render_text()))
     a=p.parse_args(); a.fn(a)
+
+if __name__=="__main__": main()

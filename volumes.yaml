@@ -1,0 +1,14 @@
+# Bulk archive definitions for material you are authorized to obtain.
+# Keep commercial/third-party collections disabled unless you have explicit rights.
+#
+# Example:
+# volumes:
+#   - id: my-authorized-freeware-bundle
+#     title: My Authorized Freeware Bundle
+#     authorized: true
+#     search:
+#       - "exact release name"
+#     estimated_bytes: 10737418240
+#     covers:
+#       - some-item-id
+volumes: []
