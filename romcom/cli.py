@@ -7,6 +7,7 @@ from .scanner import scan
 from .catalog import import_dat, import_scummvm
 from .report import render_text, summary
 from .doctor import run as doctor_run
+from .manage import set_series, export_csv, import_csv
 from . import indexer, sab
 
 def fmt(n):
@@ -97,6 +98,17 @@ def cmd_doctor(a):
         bad=bad or not ok
     if bad: raise SystemExit(1)
 
+def cmd_set_series(a):
+    try: count=set_series(a.name,a.field,a.value)
+    except ValueError as e: raise SystemExit(str(e))
+    print(f"Updated {count} items in series {a.name}")
+
+def cmd_export_csv(a):
+    print(f"Exported {export_csv(a.path)} items to {a.path}")
+
+def cmd_import_csv(a):
+    print(json.dumps(import_csv(a.path),indent=2))
+
 def cmd_import_dat(a): print(json.dumps(import_dat(a.path,a.system,a.source,not a.catalog_only),indent=2))
 def cmd_import_scummvm(a): print(f"Imported {import_scummvm(a.url,not a.catalog_only)} ScummVM compatibility entries")
 def cmd_scan(a): print(json.dumps(scan(a.path,not a.no_name_match),indent=2))
@@ -118,6 +130,9 @@ def main():
     sv=s.add_parser("import-scummvm"); sv.add_argument("--url",default="https://www.scummvm.org/compatibility"); sv.add_argument("--catalog-only",action="store_true"); sv.set_defaults(fn=cmd_import_scummvm)
     r=s.add_parser("report"); r.add_argument("--json",action="store_true"); r.set_defaults(fn=lambda a:print(json.dumps(summary(),indent=2) if a.json else render_text()))
     st=s.add_parser("set"); st.add_argument("ident"); st.add_argument("field"); st.add_argument("value"); st.set_defaults(fn=cmd_set)
+    ss=s.add_parser("set-series"); ss.add_argument("name"); ss.add_argument("field"); ss.add_argument("value"); ss.set_defaults(fn=cmd_set_series)
+    ec=s.add_parser("export-csv"); ec.add_argument("path"); ec.set_defaults(fn=cmd_export_csv)
+    ic=s.add_parser("import-csv"); ic.add_argument("path"); ic.set_defaults(fn=cmd_import_csv)
     dr=s.add_parser("doctor"); dr.add_argument("--no-sab",action="store_true"); dr.set_defaults(fn=cmd_doctor)
     a=p.parse_args(); a.fn(a)
 

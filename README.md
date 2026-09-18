@@ -110,6 +110,21 @@ romcom set nancy-01 authorized true
 romcom set nancy-01 wanted true
 ```
 
+For an entire series:
+
+```bash
+romcom set-series "Nancy Drew" authorized true
+romcom set-series "Nancy Drew" wanted true
+```
+
+For spreadsheet-style review/editing:
+
+```bash
+romcom export-csv library.csv
+# edit authorized/wanted/status/runtime/notes/etc.
+romcom import-csv library.csv
+```
+
 For durable settings, edit `overrides.yaml` and rerun:
 
 ```bash
