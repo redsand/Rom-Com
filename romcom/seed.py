@@ -1,4 +1,3 @@
-import json
 from .config import load_yaml
 from .db import connect
 
@@ -29,8 +28,26 @@ def seed_volumes(db):
             if db.execute("SELECT 1 FROM items WHERE id=?",(item_id,)).fetchone():
                 db.execute("INSERT OR IGNORE INTO volume_covers(volume_id,item_id) VALUES(?,?)",(v["id"],item_id))
 
+def apply_overrides(db):
+    data=load_yaml("overrides.yaml").get("items",{})
+    for item_id,ov in data.items():
+        if not db.execute("SELECT 1 FROM items WHERE id=?",(item_id,)).fetchone():
+            continue
+        fields=[]; vals=[]
+        for key in ("authorized","wanted","status","preferred_runtime","notes","system","region","language"):
+            if key in ov:
+                fields.append(f"{key}=?")
+                v=ov[key]
+                if key in ("authorized","wanted"): v=int(bool(v))
+                vals.append(v)
+        if fields:
+            vals.append(item_id)
+            db.execute(f"UPDATE items SET {','.join(fields)},updated_at=CURRENT_TIMESTAMP WHERE id=?",vals)
+        for alias in ov.get("aliases",[]):
+            db.execute("INSERT OR IGNORE INTO aliases(item_id,alias) VALUES(?,?)",(item_id,alias))
+
 def seed():
     db=connect()
     with db:
-        seed_series(db); seed_volumes(db)
+        seed_series(db); seed_volumes(db); apply_overrides(db)
     return db.execute("SELECT COUNT(*) c FROM items").fetchone()["c"]

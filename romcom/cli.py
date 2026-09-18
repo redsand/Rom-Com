@@ -6,6 +6,7 @@ from .planner import bulk_plan, next_individuals
 from .scanner import scan
 from .catalog import import_dat, import_scummvm
 from .report import render_text, summary
+from .doctor import run as doctor_run
 from . import indexer, sab
 
 def fmt(n):
@@ -33,7 +34,7 @@ def cmd_series(a):
     db=connect()
     rows=db.execute("SELECT * FROM items WHERE lower(series)=lower(?) ORDER BY series_number",(a.name,)).fetchall()
     if not rows: raise SystemExit("series not found")
-    for r in rows: print(f"{r['series_number']:02d}  {r['status']:12}  {r['title']} ({r['year']})")
+    for r in rows: print(f"{r['series_number']:02d}  {r['status']:12}  {'AUTH' if r['authorized'] else '----'}  {r['title']} ({r['year']})")
 
 def search_results(ident):
     db=connect(); kind,_=entity(db,ident)
@@ -77,18 +78,32 @@ def cmd_sync(_):
                         db.execute("""UPDATE items SET status='FOUND' WHERE id=? AND status IN ('CATALOGED','MISSING','FAILED')""",(c["item_id"],))
     print("SABnzbd state synchronized; downloaded content still requires scan/verification")
 
-def cmd_import_dat(a):
-    print(json.dumps(import_dat(a.path,a.system,a.source,not a.catalog_only),indent=2))
+def cmd_set(a):
+    db=connect(); kind,_=entity(db,a.ident); table="items" if kind=="item" else "volumes"
+    allowed={"authorized","status"}
+    if kind=="item": allowed|={"wanted","preferred_runtime","notes","play_status","system","region","language"}
+    if a.field not in allowed: raise SystemExit(f"field must be one of: {', '.join(sorted(allowed))}")
+    value=a.value
+    if a.field in ("authorized","wanted"):
+        value=1 if a.value.lower() in ("1","true","yes","on") else 0
+    with db:
+        db.execute(f"UPDATE {table} SET {a.field}=? WHERE id=?",(value,a.ident))
+    print(f"{a.ident}: {a.field}={value}")
 
-def cmd_import_scummvm(a):
-    print(f"Imported {import_scummvm(a.url,not a.catalog_only)} ScummVM compatibility entries")
+def cmd_doctor(a):
+    bad=False
+    for name,ok,detail in doctor_run(not a.no_sab):
+        print(f"{'OK' if ok else 'FAIL':4} {name:12} {detail}")
+        bad=bad or not ok
+    if bad: raise SystemExit(1)
 
-def cmd_scan(a):
-    print(json.dumps(scan(a.path,not a.no_name_match),indent=2))
+def cmd_import_dat(a): print(json.dumps(import_dat(a.path,a.system,a.source,not a.catalog_only),indent=2))
+def cmd_import_scummvm(a): print(f"Imported {import_scummvm(a.url,not a.catalog_only)} ScummVM compatibility entries")
+def cmd_scan(a): print(json.dumps(scan(a.path,not a.no_name_match),indent=2))
 
 def main():
     p=argparse.ArgumentParser(prog="romcom"); s=p.add_subparsers(dest="cmd",required=True)
-    s.add_parser("init").set_defaults(fn=lambda a:(connect(),print("Database initialized")))
+    s.add_parser("init").set_defaults(fn=lambda a:(connect(),print("Database initialized/migrated")))
     s.add_parser("seed").set_defaults(fn=lambda a:print(f"Seeded configuration; {seed()} items total"))
     s.add_parser("status").set_defaults(fn=cmd_status)
     m=s.add_parser("missing"); m.add_argument("--system"); m.set_defaults(fn=cmd_missing)
@@ -102,6 +117,8 @@ def main():
     d=s.add_parser("import-dat"); d.add_argument("path"); d.add_argument("--system",required=True); d.add_argument("--source",default="dat"); d.add_argument("--catalog-only",action="store_true"); d.set_defaults(fn=cmd_import_dat)
     sv=s.add_parser("import-scummvm"); sv.add_argument("--url",default="https://www.scummvm.org/compatibility"); sv.add_argument("--catalog-only",action="store_true"); sv.set_defaults(fn=cmd_import_scummvm)
     r=s.add_parser("report"); r.add_argument("--json",action="store_true"); r.set_defaults(fn=lambda a:print(json.dumps(summary(),indent=2) if a.json else render_text()))
+    st=s.add_parser("set"); st.add_argument("ident"); st.add_argument("field"); st.add_argument("value"); st.set_defaults(fn=cmd_set)
+    dr=s.add_parser("doctor"); dr.add_argument("--no-sab",action="store_true"); dr.set_defaults(fn=cmd_doctor)
     a=p.parse_args(); a.fn(a)
 
 if __name__=="__main__": main()

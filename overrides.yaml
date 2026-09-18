@@ -1,1 +1,12 @@
+# Local ownership/authorization and metadata corrections.
+# These values are re-applied every time you run "romcom seed".
+#
+# items:
+#   nancy-01:
+#     authorized: true
+#     wanted: true
+#     preferred_runtime: scummvm
+#     aliases:
+#       - Nancy Drew Secrets Can Kill
+#     notes: Owned on original media
 items: {}

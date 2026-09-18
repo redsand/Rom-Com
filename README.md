@@ -1,28 +1,37 @@
 # Rom-Com
 
-A catalog-driven ROM/game-library manager for an Odin 2 Portal or similar emulation handheld.
+Rom-Com is a catalog-driven retro game library manager aimed at an Odin 2 Portal or similar emulation handheld.
 
-Rom-Com keeps four concerns separate:
+It separates four concerns:
 
 1. **Catalog** — what titles/releases exist.
-2. **Collection state** — what you own, have acquired, verified, installed, tested, or completed.
+2. **Collection state** — what you own, want, downloaded, verified, installed, tested, or excluded.
 3. **Acquisition planning** — bulk-first planning with explicit coverage and authorization gates.
-4. **Library verification** — local scanning, hashing, reconciliation, and reporting.
+4. **Verification** — local scanning and hash reconciliation.
 
-> Rom-Com is designed for material you are authorized to obtain and use. It does not ship game content, ROMs, BIOS files, API keys, or credentials.
+> Rom-Com is for content you are authorized to obtain and use. It does not ship ROMs, BIOS files, game data, credentials, or API keys.
 
-## Goals
+## Current capabilities
 
-- Maintain an exhaustive catalog without forcing every release onto the handheld.
-- Import or reconcile catalog data from preservation-oriented sources.
-- Track series such as **Nancy Drew** independently of runtime/emulator support.
-- Prefer high-coverage bulk acquisitions before individual gap-filling.
-- Use NZBPlanet/Newznab-compatible search and SABnzbd as optional acquisition backends for authorized material.
-- Keep state in SQLite rather than a giant mutable YAML file.
-- Verify local files using hashes instead of filenames whenever possible.
-- Generate a clear completeness report by platform and series.
+- SQLite state database with automatic schema migration.
+- Generic Logiqx-style DAT/XML importer (plain, gzip, or zip).
+- ScummVM compatibility importer.
+- Nancy Drew 1–34 series seed.
+- Stable source/external IDs and aliases.
+- CRC32/MD5/SHA1 catalog matching.
+- Exact normalized filename fallback matching.
+- Bulk archive definitions and coverage scoring.
+- Newznab-compatible index search with ranking and size filters.
+- SABnzbd queue/history integration.
+- Bulk and individual acquisition support.
+- Downloaded vs verified state separation.
+- Per-item authorization and wanted flags.
+- YAML overrides for durable local preferences.
+- Health/doctor command.
+- Text and JSON reports.
+- Pytest coverage and GitHub Actions CI.
 
-## Quick start
+## Install
 
 ```bash
 git clone https://github.com/redsand/Rom-Com.git
@@ -37,104 +46,172 @@ cp .env.example .env
 
 python -m romcom init
 python -m romcom seed
-python -m romcom status
+python -m romcom doctor
 ```
 
-## Example commands
+You can also install the CLI:
 
 ```bash
-# Initialize the SQLite database
-python -m romcom init
-
-# Seed catalog/series records from YAML
-python -m romcom seed
-
-# Show overall status
-python -m romcom status
-
-# Show missing entries
-python -m romcom missing
-
-# Limit to a system or series
-python -m romcom missing --system scummvm
-python -m romcom series "Nancy Drew"
-
-# Build a bulk-first plan
-python -m romcom bulk-plan
-
-# Search the configured indexer for one authorized entry
-python -m romcom search <item-id>
-
-# Queue a selected authorized result in SABnzbd
-python -m romcom acquire <item-id> --result 1
-
-# Reconcile SABnzbd queue/history
-python -m romcom sync
-
-# Scan an existing library and hash files
-python -m romcom scan /path/to/library
+pip install -e .
+romcom status
 ```
 
-## Data model
+## Secrets
 
-Rom-Com intentionally distinguishes:
+`.env` is gitignored.
+
+```env
+NZB_API_URL=https://api.nzbplanet.net/api
+NZB_API_KEY=
+SAB_URL=http://127.0.0.1:8080/api
+SAB_API_KEY=
+ROMCOM_DB=romcom.db
+ROMCOM_SAB_CATEGORY=odin
+```
+
+## Catalogs
+
+### DAT/XML
+
+Import a No-Intro/Redump-style DAT you have obtained from the catalog provider:
+
+```bash
+romcom import-dat Nintendo-SNES.dat --system snes --source nointro
+romcom import-dat Sony-PlayStation.dat.zip --system ps1 --source redump
+```
+
+Use `--catalog-only` if you want entries recorded without automatically marking them wanted.
+
+### ScummVM
+
+```bash
+romcom import-scummvm
+```
+
+This records ScummVM ID, title and support level in the local catalog.
+
+## Nancy Drew
+
+```bash
+romcom seed
+romcom series "Nancy Drew"
+```
+
+The seed tracks all 34 mainline titles independently from their current runtime/emulator support.
+
+## Ownership and authorization
+
+Acquisition commands are blocked unless the entry is explicitly authorized.
+
+For a one-off change:
+
+```bash
+romcom set nancy-01 authorized true
+romcom set nancy-01 wanted true
+```
+
+For durable settings, edit `overrides.yaml` and rerun:
+
+```bash
+romcom seed
+```
+
+Example:
+
+```yaml
+items:
+  nancy-01:
+    authorized: true
+    wanted: true
+    preferred_runtime: scummvm
+    notes: Owned on original media
+```
+
+## Bulk-first workflow
+
+Define authorized bundles in `volumes.yaml`.
+
+```yaml
+volumes:
+  - id: freeware-adventure-volume
+    title: Authorized Adventure Freeware Archive
+    authorized: true
+    estimated_bytes: 21474836480
+    search:
+      - "exact authorized archive release"
+    covers:
+      - some-game-id
+      - another-game-id
+```
+
+Then:
+
+```bash
+romcom seed
+romcom bulk-plan
+romcom search freeware-adventure-volume
+romcom acquire freeware-adventure-volume --result 1
+romcom sync
+```
+
+Bulk downloads only move covered titles to **FOUND**. They are not considered verified until the completed files are scanned and hash-matched.
+
+## Individual gap filling
+
+After useful bulk opportunities are exhausted:
+
+```bash
+romcom next --limit 25
+romcom search <item-id>
+romcom acquire <item-id> --result 1
+romcom sync
+```
+
+## Verification
+
+```bash
+romcom scan /path/to/completed/library
+```
+
+A hash match promotes an item to **VERIFIED**. A normalized exact filename match promotes it only to **FOUND**.
+
+## Reports
+
+```bash
+romcom status
+romcom report
+romcom report --json
+romcom missing
+romcom missing --system scummvm
+```
+
+## State model
 
 ```text
-CATALOGED
-WANTED
-OWNED
-MISSING
-FOUND
-QUEUED
-DOWNLOADING
-DOWNLOADED
-EXTRACTED
-VERIFIED
-NORMALIZED
-INSTALLED
-TESTED
-COMPLETE
-FAILED
-MANUAL
-EXCLUDED
+CATALOGED -> FOUND -> QUEUED -> DOWNLOADING -> DOWNLOADED
+                                          \-> FAILED
+
+FOUND/DOWNLOADED -> VERIFIED -> NORMALIZED -> INSTALLED -> TESTED
+EXCLUDED and MANUAL are explicit side states.
 ```
 
-A title can therefore be cataloged without being owned, owned without being installed, and installed without being verified.
+A completed SAB job is deliberately **not** equivalent to a verified game.
 
-## Configuration
+## Files
 
-- `catalogs.yaml` — catalog sources and platform scope.
+- `catalogs.yaml` — intended catalog-source scope.
 - `policy.yaml` — region/language/revision preferences.
-- `series.yaml` — manually curated series definitions and aliases.
-- `overrides.yaml` — local corrections and exclusions.
-- `.env` — secrets and service endpoints; never commit this file.
+- `series.yaml` — curated series definitions.
+- `volumes.yaml` — authorized bulk archive definitions.
+- `overrides.yaml` — persistent local ownership/preferences.
+- `romcom.db` — generated state database, gitignored.
+- `.env` — local secrets, gitignored.
 
-## Bulk-first acquisition
+## Testing
 
-Bulk entries explicitly state what they cover. Rom-Com scores them by useful coverage of currently-missing wanted items, then falls back to individual searches only after bulk opportunities are exhausted.
-
-The planner does **not** assume a large archive is good merely because it is large.
-
-Conceptually:
-
-```text
-coverage score = newly covered wanted items / download size
+```bash
+pip install -r requirements-dev.txt
+pytest -q
 ```
 
-After a completed SABnzbd job, Rom-Com can reconcile the job and later verify actual extracted content with the scanner.
-
-## Project status
-
-This repository starts with the first working foundation:
-
-- SQLite schema and migrations-on-init
-- YAML seed/config loader
-- Newznab-compatible search client
-- SABnzbd queue/history client
-- bulk-first planner
-- local hash scanner
-- CLI
-- Nancy Drew series seed
-- safe credential handling
-
-Next planned work: catalog importers (No-Intro/Redump/ScummVM), archive-content matching, CHD-oriented post-processing hooks, ES-DE export, and richer reports.
+GitHub Actions runs the same test suite on pushes and pull requests.
