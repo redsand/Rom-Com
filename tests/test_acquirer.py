@@ -220,3 +220,40 @@ def test_scan_skipped_when_nothing_downloaded(monkeypatch, tmp_path):
     monkeypatch.setattr("romcom.acquirer.scan", fail_scan)
     r = auto_acquire(poll_interval=0)
     assert r["scan"] is None and r["scan_note"] == "no downloads completed this run"
+
+def test_direct_fallback_when_indexer_has_nothing(monkeypatch, tmp_path):
+    """Indexer below the score floor → romsgames fallback downloads the file
+    directly, the item lands DOWNLOADED, and the scan phase still runs."""
+    from pathlib import Path
+    from romcom.config import invalidate
+    db = client_db(monkeypatch, tmp_path)
+    ddir = tmp_path / "games"; ddir.mkdir()
+    monkeypatch.setenv("ROMCOM_DOWNLOAD_DIR", str(ddir))
+    invalidate()
+    seed(db, [{"id": "i1", "title": "Super Mario Land"}])
+    search, _ = fake_search([{"title": "unrelated junk", "url": "nzb://x", "size": 1, "score": 5}])
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.acquirer.webdl.search",
+                        lambda q, sys: [{"title": "super mario land", "console": "gameboy",
+                                         "url": "https://r.example/gameboy-rom-super-mario-land/", "score": 100}])
+    monkeypatch.setattr("romcom.acquirer.webdl.fetch", lambda pick, dest: Path(dest) / "Super Mario Land (World).zip")
+    monkeypatch.setattr("romcom.actions.sync", lambda db: None)
+    monkeypatch.setattr("romcom.acquirer.scan", lambda *a, **k: {"files": 1})
+
+    r = auto_acquire(poll_interval=0)
+    assert r["queued"] == 0 and r["direct"] == 1 and r["skipped"] == 0
+    assert db.execute("SELECT status FROM items WHERE id='i1'").fetchone()["status"] == "DOWNLOADED"
+    assert r["scan"] == {"files": 1}  # runs even though SAB downloaded nothing
+
+
+def test_direct_fallback_skipped_when_no_download_dir(monkeypatch, tmp_path):
+    db = client_db(monkeypatch, tmp_path)  # client_db unsets ROMCOM_DOWNLOAD_DIR
+    seed(db, [{"id": "i1", "title": "Game One"}])
+    search, _ = fake_search([])  # indexer has literally nothing
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    called = []
+    monkeypatch.setattr("romcom.acquirer.webdl.search", lambda *a: called.append(a) or [])
+
+    r = auto_acquire(poll_interval=0)
+    assert r["direct"] == 0 and r["skipped"] == 1
+    assert not called  # never hits the direct site without somewhere to put files

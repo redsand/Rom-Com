@@ -27,6 +27,10 @@ ENV_VARS = {
     "acquire_poll": "ROMCOM_ACQUIRE_POLL",
     "acquire_max_wait_min": "ROMCOM_ACQUIRE_MAX_WAIT_MIN",
     "acquire_batch_max": "ROMCOM_ACQUIRE_BATCH_MAX",
+    "webdl_base": "ROMCOM_WEBDL_BASE",
+    "webdl_delay": "ROMCOM_WEBDL_DELAY",
+    "webdl_jitter": "ROMCOM_WEBDL_JITTER",
+    "webdl_timeout": "ROMCOM_WEBDL_TIMEOUT",
 }
 
 def _env_settings():
@@ -42,6 +46,10 @@ def _env_settings():
         "acquire_poll": os.getenv("ROMCOM_ACQUIRE_POLL", "30"),
         "acquire_max_wait_min": os.getenv("ROMCOM_ACQUIRE_MAX_WAIT_MIN", "240"),
         "acquire_batch_max": os.getenv("ROMCOM_ACQUIRE_BATCH_MAX", "0"),
+        "webdl_base": (os.getenv("ROMCOM_WEBDL_BASE") or "https://www.romsgames.net").rstrip("/"),
+        "webdl_delay": os.getenv("ROMCOM_WEBDL_DELAY", "30"),
+        "webdl_jitter": os.getenv("ROMCOM_WEBDL_JITTER", "15"),
+        "webdl_timeout": os.getenv("ROMCOM_WEBDL_TIMEOUT", "60"),
     }
 
 def _overrides(db_path):
@@ -71,6 +79,9 @@ def settings():
     except (TypeError, ValueError): s["acquire_max_wait_min"] = 240.0
     try: s["acquire_batch_max"] = int(s["acquire_batch_max"])
     except (TypeError, ValueError): s["acquire_batch_max"] = 0
+    for k, dflt in (("webdl_delay", 30.0), ("webdl_jitter", 15.0), ("webdl_timeout", 60.0)):
+        try: s[k] = float(s[k])
+        except (TypeError, ValueError): s[k] = dflt
     s["sab_verify_ssl"] = str(s["sab_verify_ssl"]).strip().lower() not in ("0", "false", "no", "off")
     return s
 

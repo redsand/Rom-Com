@@ -248,6 +248,26 @@
         <span class="sub">max items attempted per run (0 = unlimited)</span>
       </div>
     </div>
+    <div class="card">
+      <h2>Direct downloads <span class="hint">romsgames.net — fallback when the indexer has nothing</span></h2>
+      <div class="filters">
+        <span class="count" style="width:150px">Site</span>
+        <input id="set-webdl_base" type="search" placeholder="https://www.romsgames.net" spellcheck="false" style="flex:1">
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Request spacing</span>
+        <input id="set-webdl_delay" type="search" placeholder="30" spellcheck="false" style="width:90px">
+        <span class="sub">seconds between requests</span>
+        <span class="count" style="width:150px;margin-left:24px">Jitter</span>
+        <input id="set-webdl_jitter" type="search" placeholder="15" spellcheck="false" style="width:90px">
+        <span class="sub">+ random 0&ndash;N seconds (ban insurance)</span>
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Timeout</span>
+        <input id="set-webdl_timeout" type="search" placeholder="60" spellcheck="false" style="width:90px">
+        <span class="sub">seconds per HTTP request</span>
+      </div>
+    </div>
     <div class="filters">
       <button id="set-save" class="primary">Save settings</button>
       <span id="set-status" class="count"></span>

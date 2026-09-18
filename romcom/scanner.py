@@ -66,7 +66,7 @@ def _zip_member_matches(db,p):
 
 def scan(root,name_match=True,progress=None,rehash=False,adopt=True):
     db=connect(); root=Path(root); count=matched=verified=reused=0
-    paths=[p for p in root.rglob("*") if p.is_file()]
+    paths=[root] if root.is_file() else [p for p in root.rglob("*") if p.is_file()]
     idx=_name_index(db) if name_match else {}
     recent=[]
     def _stats():

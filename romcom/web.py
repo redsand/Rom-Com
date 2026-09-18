@@ -54,7 +54,8 @@ def create_app():
         return jsonify([{"name": n, "ok": ok, "detail": d} for n, ok, d in doctor_run()])
 
     SETTABLE = {"nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "sab_verify_ssl",
-                "download_dir", "acquire_poll", "acquire_max_wait_min", "acquire_batch_max"}
+                "download_dir", "acquire_poll", "acquire_max_wait_min", "acquire_batch_max",
+                "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout"}
 
     def _settings_payload(db):
         s = settings()

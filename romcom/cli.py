@@ -9,6 +9,7 @@ from .doctor import run as doctor_run
 from .manage import set_series, export_csv, import_csv
 from .catalog_status import render as render_catalog_status
 from . import indexer, actions
+from .config import settings
 
 def fmt(n):
     x=float(n or 0)
@@ -63,6 +64,28 @@ def cmd_auto_acquire(a):
         extra=" ".join(f"{k}={v}" for k,v in (stats or {}).items() if isinstance(v,(int,float)))
         print(f"[{i}/{total}] {name}  {extra}",flush=True)
     print(json.dumps(auto_acquire(progress=prog,poll_interval=a.poll,max_wait_minutes=a.max_wait,batch_max=a.max_batch),indent=2))
+
+def cmd_webdl(a):
+    from . import webdl
+    db=connect(); e=db.execute("SELECT * FROM items WHERE id=?",(a.ident,)).fetchone()
+    if not e: raise SystemExit(f"unknown item: {a.ident}")
+    if not e["authorized"]: raise SystemExit("item is not marked authorized")
+    dest=a.out or settings()["download_dir"]
+    if not dest: raise SystemExit("no destination: set ROMCOM_DOWNLOAD_DIR or pass --out")
+    results=webdl.search(e["title"],e["system"])
+    for i,x in enumerate(results[:10],1): print(f"{i:2}. {x['score']:6.1f}  {x['title']}  [{x.get('console','?')}]")
+    pick=None
+    if a.result:
+        pick=results[a.result-1] if 0<a.result<=len(results) else None
+        if not pick: raise SystemExit("invalid result number")
+    else:
+        pick=next((x for x in results if x["score"]>=20 and x.get("url")),None)
+        if not pick: raise SystemExit("no direct match scoring >= 20; rerun with --result N to override")
+    print(f"downloading: {pick['title']} …")
+    path=webdl.fetch(pick,dest)
+    print(f"saved {path}")
+    with db: db.execute("UPDATE items SET status='DOWNLOADED' WHERE id=?",(e["id"],))
+    print(f"{e['id']}: status=DOWNLOADED — run `romcom scan \"{dest}\"` to match it into the library")
 
 def cmd_web(a):
     from .web import serve
@@ -143,6 +166,7 @@ def main():
     ac=s.add_parser("acquire"); ac.add_argument("ident"); ac.add_argument("--result",type=int,required=True); ac.set_defaults(fn=cmd_acquire)
     s.add_parser("sync").set_defaults(fn=cmd_sync)
     aa=s.add_parser("auto-acquire"); aa.add_argument("--poll",type=float,default=None); aa.add_argument("--max-wait",type=float,dest="max_wait",default=None); aa.add_argument("--max-batch",type=int,dest="max_batch",default=None); aa.set_defaults(fn=cmd_auto_acquire)
+    wd=s.add_parser("webdl"); wd.add_argument("ident"); wd.add_argument("--result",type=int); wd.add_argument("--out"); wd.set_defaults(fn=cmd_webdl)
     sc=s.add_parser("scan"); sc.add_argument("path"); sc.add_argument("--no-name-match",action="store_true"); sc.add_argument("--no-adopt",action="store_true"); sc.set_defaults(fn=cmd_scan)
     og=s.add_parser("organize"); og.add_argument("dest"); og.add_argument("--system",action="append"); og.set_defaults(fn=cmd_organize)
     ad=s.add_parser("adopt"); ad.add_argument("--root"); ad.set_defaults(fn=cmd_adopt)

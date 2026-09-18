@@ -23,6 +23,7 @@ It separates four concerns:
 - Bulk archive definitions and coverage scoring.
 - Newznab-compatible index search with ranking and size filters.
 - SABnzbd queue/history integration.
+- romsgames.net direct-download fallback with paced, jittered requests.
 - Bulk and individual acquisition support.
 - Automatic acquire-download-import pipeline for approved & wanted items.
 - Downloaded vs verified state separation.
@@ -133,6 +134,10 @@ ROMCOM_DOWNLOAD_DIR=H:\downloads\complete
 ROMCOM_ACQUIRE_POLL=30
 ROMCOM_ACQUIRE_MAX_WAIT_MIN=240
 ROMCOM_ACQUIRE_BATCH_MAX=0
+ROMCOM_WEBDL_BASE=https://www.romsgames.net
+ROMCOM_WEBDL_DELAY=30
+ROMCOM_WEBDL_JITTER=15
+ROMCOM_WEBDL_TIMEOUT=60
 ```
 
 `ROMCOM_SAB_CATEGORY` is the SABnzbd category every queued download is tagged with —
@@ -286,6 +291,14 @@ queues the best result in SABnzbd, waits for the downloads to finish, and then s
   indexer's API; the result reports how many armed items were left for the next run.
 - With `ROMCOM_DOWNLOAD_DIR` unset the run still queues and tracks downloads; it just
   reports that the import scan was skipped.
+- When the indexer has no usable result, the item falls back to **romsgames.net**:
+  the pipeline searches the site, picks the best-matching page for the item's
+  console, and downloads the file straight into `ROMCOM_DOWNLOAD_DIR` (item goes
+  DOWNLOADED; the scan phase matches it like any other file). Every request to the
+  site is spaced `ROMCOM_WEBDL_DELAY` seconds plus up to `ROMCOM_WEBDL_JITTER` of
+  random offset — a deliberately human pace so their rate limiting never trips.
+  Single-item equivalent: `romcom webdl <item-id>` (add `--result N` to override
+  the automatic pick).
 
 ## Verification
 

@@ -10,7 +10,7 @@ from pathlib import Path
 from .config import settings
 from .db import connect
 from .planner import next_individuals
-from . import indexer, actions
+from . import indexer, actions, webdl
 from .scanner import scan
 
 MIN_SCORE = 20.0                # rank() floor: % of query tokens that must appear in the release title
@@ -61,7 +61,7 @@ def auto_acquire(progress=None, poll_interval=None, max_wait_minutes=None, batch
     attempted = set()
     processed = [0]  # items searched this run (queued, skipped, or failed) — capped per run
     stats = {"queued": 0, "skipped": 0, "failed": 0, "waiting": 0,
-             "downloaded": 0, "download_failed": 0}
+             "downloaded": 0, "download_failed": 0, "direct": 0}
     skipped_by_reason = {}
     failed_items = []
     base_dl = db.execute("SELECT COUNT(*) c FROM jobs WHERE status='DOWNLOADED'").fetchone()["c"]
@@ -100,7 +100,25 @@ def auto_acquire(progress=None, poll_interval=None, max_wait_minutes=None, batch
                 _skip(c, f"search failed: {ex}"); continue
             top = _pick(results)
             if top is None:
-                _skip(c, "no usable result (low score or no url)"); continue
+                # The NZB indexer had nothing usable — fall back to the direct-download
+                # source (romsgames.net) before giving up on this item.
+                if not s["download_dir"]:
+                    _skip(c, "no usable result (low score or no url)"); continue
+                try:
+                    direct = _pick(webdl.search(c["title"], c["system"]))
+                except Exception as ex:
+                    _skip(c, f"direct search failed: {ex}"); continue
+                if direct is None:
+                    _skip(c, "no usable result anywhere (indexer or direct)"); continue
+                try:
+                    webdl.fetch(direct, s["download_dir"])
+                except Exception as ex:
+                    _fail(c, f"direct download failed: {ex}"); continue
+                with db:
+                    db.execute("UPDATE items SET status='DOWNLOADED' WHERE id=?", (c["id"],))
+                stats["direct"] += 1
+                if progress: progress(i + 1, len(todo), c["title"], dict(stats))
+                continue
             try:
                 nzo = actions.queue_result(db, "item", e, top)
             except Exception as ex:
@@ -149,6 +167,7 @@ def auto_acquire(progress=None, poll_interval=None, max_wait_minutes=None, batch
               "download_failed": stats["download_failed"], "failed": len(failed_items),
               "skipped": stats["skipped"], "skipped_by_reason": skipped_by_reason,
               "failed_items": failed_items, "still_pending": stats["waiting"],
+              "direct": stats["direct"],
               "wait_note": note, "elapsed_min": round((time.monotonic() - start) / 60, 1),
               "batch_note": None, "scan": None, "scan_note": None}
     if batch and processed[0] >= batch:
@@ -161,7 +180,7 @@ def auto_acquire(progress=None, poll_interval=None, max_wait_minutes=None, batch
         result["scan_note"] = "ROMCOM_DOWNLOAD_DIR is not set — files not imported"
     elif not Path(ddir).exists():
         result["scan_note"] = f"ROMCOM_DOWNLOAD_DIR does not exist: {ddir}"
-    elif stats["downloaded"] == 0:
+    elif stats["downloaded"] == 0 and stats["direct"] == 0:
         result["scan_note"] = "no downloads completed this run"
     else:
         def prog(i, total, name, scan_stats=None):

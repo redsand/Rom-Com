@@ -469,6 +469,7 @@ function renderScanLive(st, s) {
 function renderAcquireLive(st, s) {
   const tiles = `<div class="tile"><div class="v">${(st.queued || 0).toLocaleString()}</div><div class="l">Queued</div></div>
     <div class="tile"><div class="v">${(st.downloaded || 0).toLocaleString()}</div><div class="l">Downloaded</div></div>
+    <div class="tile"><div class="v">${(st.direct || 0).toLocaleString()}</div><div class="l">Direct (romsgames)</div></div>
     <div class="tile"><div class="v">${(st.download_failed || 0).toLocaleString()}</div><div class="l">Failed downloads</div></div>
     <div class="tile"><div class="v">${(st.failed || 0).toLocaleString()}</div><div class="l">Queue errors</div></div>
     <div class="tile"><div class="v">${(st.skipped || 0).toLocaleString()}</div><div class="l">Skipped</div></div>
@@ -495,6 +496,7 @@ function renderAcquireResult(r) {
   $("#acq-result").innerHTML = `<div class="tiles" style="margin-top:12px">
       <div class="tile"><div class="v">${r.queued.toLocaleString()}</div><div class="l">Queued</div></div>
       <div class="tile"><div class="v">${r.downloaded.toLocaleString()}</div><div class="l">Downloaded</div></div>
+      <div class="tile"><div class="v">${(r.direct || 0).toLocaleString()}</div><div class="l">Direct (romsgames)</div></div>
       <div class="tile"><div class="v">${r.download_failed.toLocaleString()}</div><div class="l">Failed downloads</div></div>
       <div class="tile"><div class="v">${r.failed.toLocaleString()}</div><div class="l">Queue errors</div></div>
       <div class="tile"><div class="v">${r.skipped.toLocaleString()}</div><div class="l">Skipped</div></div>
@@ -575,7 +577,8 @@ function renderImportResult(r) {
 
 /* ---------- Settings ---------- */
 const SET_KEYS = ["nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "sab_verify_ssl",
-                  "download_dir", "acquire_poll", "acquire_max_wait_min", "acquire_batch_max"];
+                  "download_dir", "acquire_poll", "acquire_max_wait_min", "acquire_batch_max",
+                  "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout"];
 
 const SRC_LABEL = { ui: "saved in UI", env: "from .env", default: "default" };
 
