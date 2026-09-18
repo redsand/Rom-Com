@@ -196,6 +196,7 @@ _SYSTEM_RULES=[
  (r"msx ?2","msx2"),(r"\bmsx\b","msx"),
  (r"x68000","x68000"),(r"fm towns","fmtowns"),
  (r"scummvm","scummvm"),
+ (r"\bmame\b|\barcade\b|finalburn","arcade"),
  (r"\bdos\b","dos"),(r"\bwindows\b","windows"),
  (r"translation","translations"),(r"rom ?hack|\bhacks?\b","romhacks"),
 ]

@@ -34,11 +34,13 @@ def _zip_member_matches(db,p):
     """Match a zip by its members. Zip central directories store each member's CRC32 of the
     UNCOMPRESSED data, so candidates are found without decompressing; only candidate members
     are decompressed to confirm via md5/sha1 when the catalog has them."""
-    items=[]
+    strong_items=[]; weak=[]
+    members=0
     try:
         with zipfile.ZipFile(p) as z:
-            for info in z.infolist():
-                if info.is_dir() or not info.file_size: continue
+            infos=[x for x in z.infolist() if not x.is_dir() and x.file_size]
+            members=len(infos)
+            for info in infos:
                 crc=f"{info.CRC & 0xffffffff:08x}"
                 cand=db.execute("SELECT item_id FROM file_hashes WHERE algorithm='crc' AND digest=? LIMIT 1",(crc,)).fetchone()
                 if not cand: continue
@@ -51,9 +53,15 @@ def _zip_member_matches(db,p):
                 strong=db.execute("""SELECT item_id FROM file_hashes
                   WHERE (algorithm='sha1' AND digest=?) OR (algorithm='md5' AND digest=?) LIMIT 1""",
                   (sha1.hexdigest(),md5.hexdigest())).fetchone()
-                items.append((strong or cand)["item_id"])
+                if strong: strong_items.append(strong["item_id"])
+                else: weak.append(cand["item_id"])
     except (zipfile.BadZipFile,OSError):
         pass
+    # A CRC32 hit alone can be a collision (MAME chunk zips vs a million catalog hashes).
+    # Accept it only for small No-Intro-style zips, or when two members agree on the same item.
+    items=strong_items[:]
+    for it,n in {w:weak.count(w) for w in weak}.items():
+        if n>=2 or members<=4: items.append(it)
     return items
 
 def scan(root,name_match=True,progress=None,rehash=False,adopt=True):

@@ -22,6 +22,24 @@ def test_zip_member_match(tmp_path, monkeypatch):
     row = db.execute("SELECT match_method FROM files").fetchone()
     assert row["match_method"] == "hash-zip"
 
+def test_zip_crc_collision_rejected(tmp_path, monkeypatch):
+    """A lone CRC-only hit inside a many-member zip (MAME-style) must not count as a match."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
+    payload = b"colliding chunk"
+    db = connect()
+    with db:
+        db.execute("INSERT INTO items(id,title,system) VALUES('c1','Some DOS Game','dos')")
+        db.execute("INSERT INTO file_hashes(item_id,algorithm,digest) VALUES('c1','crc',?)",
+                   (f"{__import__('zlib').crc32(payload) & 0xffffffff:08x}",))
+    roms = tmp_path / "roms"; roms.mkdir()
+    with zipfile.ZipFile(roms / "mamegame.zip", "w") as z:
+        z.writestr("chunk1.bin", payload)          # CRC collides, no md5/sha1 in catalog
+        for i in range(2, 9):
+            z.writestr(f"chunk{i}.bin", bytes([i]) * 64)
+    r = scan(roms, name_match=False, adopt=False)
+    assert r["matched"] == 0
+    assert db.execute("SELECT status FROM items WHERE id='c1'").fetchone()["status"] == "CATALOGED"
+
 def test_adopt_unmatched(tmp_path, monkeypatch):
     monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
     roms = tmp_path / "roms"

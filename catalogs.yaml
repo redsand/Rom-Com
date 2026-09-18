@@ -55,6 +55,7 @@ catalogs:
 
 custom:
   systems:
+    - arcade
     - dos
     - windows
     - amiga
