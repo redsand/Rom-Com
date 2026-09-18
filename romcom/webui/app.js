@@ -325,6 +325,23 @@ function loadImport() {
   for (const kind of Object.keys(JOBS)) pollJob(kind, false);
 }
 
+/* Header chip: running jobs are visible from every tab, and survive page refreshes */
+async function pollJobChip() {
+  let active = {};
+  try { active = await api("/api/jobs/active"); } catch { return; }
+  const kinds = Object.keys(active);
+  const chip = $("#job-chip");
+  chip.hidden = !kinds.length;
+  if (kinds.length) {
+    chip.textContent = "⏳ " + kinds.map(k => {
+      const j = active[k];
+      return j.total ? `${k} ${(100 * j.done / j.total).toFixed(0)}%` : k;
+    }).join(" · ");
+  }
+}
+$("#job-chip").addEventListener("click", () => { location.hash = "import"; });
+setInterval(pollJobChip, 4000);
+
 async function startJob(kind, url, body) {
   try {
     await post(url, body);
@@ -522,3 +539,5 @@ for (const k of Object.keys(loaders)) {
 
 initFacets();
 showTab(location.hash.slice(1) || "dashboard");
+loadImport();     // reattach to any running background jobs regardless of the open tab
+pollJobChip();

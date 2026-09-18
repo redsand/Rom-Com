@@ -1,5 +1,5 @@
 """Local web UI: `romcom web` serves this Flask app on 127.0.0.1."""
-import string, threading
+import json, string, threading
 from flask import Flask, jsonify, request, send_from_directory
 from pathlib import Path
 from .config import load_yaml
@@ -175,24 +175,66 @@ def create_app():
             for k in ("import", "scan", "organize", "adopt")}
     job_lock = threading.Lock()
 
-    def start_job(kind, fn):
+    def _job_fn(kind, params):
+        if kind == "import":
+            return lambda prog: import_dats(params["path"], system=params.get("system") or None,
+                                            source=params.get("source") or None,
+                                            wanted=bool(params.get("wanted")), progress=prog)
+        if kind == "scan":
+            return lambda prog: scan(params["path"], name_match=params.get("name_match", True),
+                                     adopt=params.get("adopt", True), progress=prog)
+        if kind == "organize":
+            return lambda prog: organize(params["path"], systems=params.get("systems") or None, progress=prog)
+        return lambda prog: adopt_unmatched(root=params.get("path") or None, progress=prog)
+
+    def _launch(kind, params):
+        """Start a job thread; the request is journaled so an interrupted job resumes on server start."""
         j = jobs[kind]
         with job_lock:
             if j["running"]:
-                return jsonify({"error": f"a {kind} job is already running"}), 409
+                return False
             j.update(running=True, done=0, total=0, current="starting…", stats=None, result=None, error=None)
+        db = connect()
+        with db:
+            cur = db.execute("INSERT INTO web_jobs(kind,params,status) VALUES(?,?,'running')",
+                             (kind, json.dumps(params)))
+        jid = cur.lastrowid
+        fn = _job_fn(kind, params)
 
         def run():
+            status = "done"
             try:
                 j["result"] = fn(lambda i, total, name, stats=None:
                                  j.update(done=i, total=total, current=name, stats=stats))
             except Exception as e:
-                j["error"] = f"{type(e).__name__}: {e}"
+                j["error"] = f"{type(e).__name__}: {e}"; status = "error"
             finally:
                 j["running"] = False
+                jdb = connect()
+                with jdb:
+                    jdb.execute("UPDATE web_jobs SET status=?,finished_at=CURRENT_TIMESTAMP WHERE id=?", (status, jid))
 
         threading.Thread(target=run, daemon=True).start()
+        return True
+
+    def start_job(kind, params):
+        if not _launch(kind, params):
+            return jsonify({"error": f"a {kind} job is already running"}), 409
         return jsonify({"started": True})
+
+    def recover_interrupted():
+        """Re-launch jobs that were mid-flight when the server last stopped."""
+        db = connect()
+        stale = db.execute("SELECT * FROM web_jobs WHERE status='running' ORDER BY id").fetchall()
+        with db:
+            db.execute("UPDATE web_jobs SET status='interrupted',finished_at=CURRENT_TIMESTAMP WHERE status='running'")
+        latest = {}
+        for r in stale:
+            latest[r["kind"]] = json.loads(r["params"])
+        for kind, params in latest.items():
+            if kind not in jobs: continue
+            if kind != "organize" and params.get("path") and not Path(params["path"]).exists(): continue
+            _launch(kind, params)
 
     def _checked_path(body, must_exist=True):
         path = (body.get("path") or "").strip().strip('"')
@@ -206,9 +248,8 @@ def create_app():
         path = _checked_path(body)
         if not path:
             return jsonify({"error": f"path not found: {body.get('path') or '(empty)'}"}), 400
-        return start_job("import", lambda prog: import_dats(
-            path, system=body.get("system") or None, source=body.get("source") or None,
-            wanted=bool(body.get("wanted")), progress=prog))
+        return start_job("import", {"path": path, "system": body.get("system") or None,
+                                    "source": body.get("source") or None, "wanted": bool(body.get("wanted"))})
 
     @app.post("/api/scan")
     def api_scan():
@@ -216,9 +257,9 @@ def create_app():
         path = _checked_path(body)
         if not path:
             return jsonify({"error": f"path not found: {body.get('path') or '(empty)'}"}), 400
-        return start_job("scan", lambda prog: scan(
-            path, name_match=body.get("name_match", True) not in (False, "false", 0),
-            adopt=body.get("adopt", True) not in (False, "false", 0), progress=prog))
+        return start_job("scan", {"path": path,
+                                  "name_match": body.get("name_match", True) not in (False, "false", 0),
+                                  "adopt": body.get("adopt", True) not in (False, "false", 0)})
 
     @app.post("/api/organize")
     def api_organize():
@@ -227,19 +268,25 @@ def create_app():
         if not path:
             return jsonify({"error": "destination path is required"}), 400
         systems = [s for s in (body.get("systems") or []) if s]
-        return start_job("organize", lambda prog: organize(path, systems=systems or None, progress=prog))
+        return start_job("organize", {"path": path, "systems": systems})
 
     @app.post("/api/adopt")
     def api_adopt():
         body = request.get_json(force=True, silent=True) or {}
-        root = (body.get("path") or "").strip() or None
-        return start_job("adopt", lambda prog: adopt_unmatched(root=root, progress=prog))
+        return start_job("adopt", {"path": (body.get("path") or "").strip()})
 
     @app.get("/api/job/<kind>/status")
     def api_job_status(kind):
         if kind not in jobs:
             return jsonify({"error": "unknown job"}), 404
         return jsonify(jobs[kind])
+
+    @app.get("/api/jobs/active")
+    def api_jobs_active():
+        return jsonify({k: {"done": j["done"], "total": j["total"], "current": j["current"]}
+                        for k, j in jobs.items() if j["running"]})
+
+    app.recover_interrupted = recover_interrupted
 
     # Back-compat alias used by earlier UI builds.
     @app.get("/api/import-dats/status")
@@ -286,6 +333,8 @@ def create_app():
 
 def serve(host="127.0.0.1", port=8927, open_browser=True, debug=False):
     if open_browser:
-        import threading, webbrowser
+        import webbrowser
         threading.Timer(1.0, lambda: webbrowser.open(f"http://{host}:{port}/")).start()
-    create_app().run(host=host, port=port, debug=debug)
+    app = create_app()
+    app.recover_interrupted()
+    app.run(host=host, port=port, debug=debug)

@@ -55,6 +55,8 @@ nav { display: flex; gap: 4px; }
 .tab:hover { background: var(--hairline); }
 .tab.active { background: var(--accent); color: #fff; }
 .chip { margin-left: auto; font-size: 12px; color: var(--muted); }
+.chip.job { margin-left: auto; color: var(--accent); cursor: pointer; font-variant-numeric: tabular-nums; }
+.chip.job + .chip { margin-left: 16px; }
 .chip.ok   { color: var(--good-text); }
 .chip.bad  { color: var(--critical); }
 
