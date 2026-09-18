@@ -60,8 +60,11 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True):
     db=connect(); root=Path(root); count=matched=verified=reused=0
     paths=[p for p in root.rglob("*") if p.is_file()]
     idx=_name_index(db) if name_match else {}
+    recent=[]
+    def _stats():
+        return {"matched":matched,"verified":verified,"reused":reused,"recent":list(recent)}
     for i,p in enumerate(paths):
-        if progress: progress(i,len(paths),p.name)
+        if progress: progress(i,len(paths),p.name,_stats())
         st=p.stat()
         prev=db.execute("SELECT bytes,mtime,crc32,md5,sha1 FROM files WHERE path=?",(str(p),)).fetchone()
         if prev and not rehash and prev["bytes"]==st.st_size and prev["mtime"]==st.st_mtime and prev["sha1"]:
@@ -82,6 +85,10 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True):
             item_id=idx.get(_norm(p.name)); method="filename-exact" if item_id else None
         if item_id:
             matched+=1
+            hit=db.execute("SELECT title,system FROM items WHERE id=?",(item_id,)).fetchone()
+            if hit:
+                recent.append(f"{hit['title']} — {hit['system'] or '?'} [{method}]")
+                if len(recent)>10: recent.pop(0)
             if method.startswith("hash"):
                 for it in [item_id]+extra: promote(db,it,"VERIFIED")
                 verified+=1
@@ -99,7 +106,8 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True):
     db.commit()
     out={"files":count,"matched":matched,"verified":verified,"reused":reused}
     if adopt:
-        prog=(lambda i,t,n: progress(i,t,f"cataloging unmatched: {n}")) if progress else None
+        base=_stats()
+        prog=(lambda i,t,n,s=None: progress(i,t,f"cataloging unmatched: {n}",(base|s) if s else base)) if progress else None
         a=adopt_unmatched(root=root,progress=prog)
         out|={"adopted":a["adopted"],"adopt_skipped":a["skipped"],
               "adopted_by_system":a["by_system"],"skipped_exts":a["skipped_exts"]}
@@ -143,7 +151,7 @@ def adopt_unmatched(root=None,progress=None):
     adopted=skipped=0; by_system={}; skipped_exts={}
     for i,r in enumerate(rows):
         p=Path(r["path"])
-        if progress and i%100==0: progress(i,len(rows),p.name)
+        if progress and i%100==0: progress(i,len(rows),p.name,{"adopted":adopted,"adopt_skipped":skipped})
         system=_detect_file_system(p,known,detect_system)
         if not system:
             skipped+=1

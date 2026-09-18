@@ -108,7 +108,12 @@ def cmd_import_dats(a):
     for x in r["skipped"]: print(f"  SKIP {x['file']}: {x.get('header') or x.get('dat') or ''} ({x['reason']})")
     for x in r["errors"]: print(f"  ERR  {x['file']}: {x['error']}")
 def cmd_import_scummvm(a): print(f"Imported {import_scummvm(a.url,not a.catalog_only)} ScummVM compatibility entries")
-def cmd_scan(a): print(json.dumps(scan(a.path,not a.no_name_match,adopt=not a.no_adopt),indent=2))
+def cmd_scan(a):
+    def prog(i,total,name,stats=None):
+        if i%100==0 and total:
+            extra=f"  matched={stats.get('matched',0)} verified={stats.get('verified',0)} adopted={stats.get('adopted',0)}" if stats else ""
+            print(f"[{i}/{total}]{extra}  {name}",flush=True)
+    print(json.dumps(scan(a.path,not a.no_name_match,adopt=not a.no_adopt,progress=prog),indent=2))
 
 def cmd_adopt(a):
     from .scanner import adopt_unmatched

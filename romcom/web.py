@@ -171,7 +171,7 @@ def create_app():
         return jsonify(actions.sync())
 
     # One background job per kind at a time; state polled by the UI.
-    jobs = {k: {"running": False, "done": 0, "total": 0, "current": "", "result": None, "error": None}
+    jobs = {k: {"running": False, "done": 0, "total": 0, "current": "", "stats": None, "result": None, "error": None}
             for k in ("import", "scan", "organize", "adopt")}
     job_lock = threading.Lock()
 
@@ -180,11 +180,12 @@ def create_app():
         with job_lock:
             if j["running"]:
                 return jsonify({"error": f"a {kind} job is already running"}), 409
-            j.update(running=True, done=0, total=0, current="starting…", result=None, error=None)
+            j.update(running=True, done=0, total=0, current="starting…", stats=None, result=None, error=None)
 
         def run():
             try:
-                j["result"] = fn(lambda i, total, name: j.update(done=i, total=total, current=name))
+                j["result"] = fn(lambda i, total, name, stats=None:
+                                 j.update(done=i, total=total, current=name, stats=stats))
             except Exception as e:
                 j["error"] = f"{type(e).__name__}: {e}"
             finally:

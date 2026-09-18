@@ -313,7 +313,7 @@ setInterval(() => {
 /* ---------- Background jobs: import / scan / organize ---------- */
 const JOBS = {
   import:   {wrap: "#imp-progress",  bar: "#imp-bar",  cur: "#imp-current",  btn: "#imp-start",  out: "#imp-results",  render: renderImportResult,   doneMsg: "Import finished"},
-  scan:     {wrap: "#scan-progress", bar: "#scan-bar", cur: "#scan-current", btn: "#scan-start", out: "#scan-result",  render: renderScanResult,     doneMsg: "Scan finished"},
+  scan:     {wrap: "#scan-progress", bar: "#scan-bar", cur: "#scan-current", btn: "#scan-start", out: "#scan-result",  render: renderScanResult,     liveRender: renderScanLive, doneMsg: "Scan finished"},
   organize: {wrap: "#org-progress",  bar: "#org-bar",  cur: "#org-current",  btn: "#org-start",  out: "#org-result",   render: renderOrganizeResult, doneMsg: "Export finished"},
 };
 const jobTimers = {};
@@ -345,7 +345,8 @@ async function pollJob(kind, loop) {
     $(j.btn).disabled = true;
     const pct = s.total ? (100 * s.done / s.total) : 0;
     $(j.bar).style.width = pct.toFixed(1) + "%";
-    $(j.cur).textContent = s.total ? `${s.done}/${s.total} — ${s.current}` : s.current;
+    $(j.cur).textContent = s.total ? `${s.done.toLocaleString()}/${s.total.toLocaleString()} — ${s.current}` : s.current;
+    if (s.stats && j.liveRender) j.liveRender(s.stats, s);
     jobTimers[kind] = setTimeout(() => pollJob(kind, true), 800);
     return;
   }
@@ -383,6 +384,20 @@ $("#org-start").addEventListener("click", () => {
   const systems = $("#org-systems").value.split(",").map(s => s.trim()).filter(Boolean);
   startJob("organize", "/api/organize", {path, systems});
 });
+
+function renderScanLive(st, s) {
+  const pct = s.done ? (100 * (st.matched || 0) / s.done) : 0;
+  const recent = (st.recent || []).slice().reverse()
+    .map(t => `<div class="check ok"><span class="mark">✓</span><span class="d">${esc(t)}</span></div>`).join("");
+  $("#scan-result").innerHTML = `<div class="tiles" style="margin-top:12px">
+    <div class="tile"><div class="v">${s.done.toLocaleString()}</div><div class="l">Files processed</div><div class="d">of ${s.total.toLocaleString()}</div></div>
+    <div class="tile"><div class="v">${(st.matched || 0).toLocaleString()}</div><div class="l">Matched so far</div><div class="d">${pct.toFixed(1)}% hit rate</div></div>
+    <div class="tile"><div class="v">${(st.verified || 0).toLocaleString()}</div><div class="l">Hash-verified</div></div>
+    <div class="tile"><div class="v">${(st.adopted || 0).toLocaleString()}</div><div class="l">Cataloged as local</div></div>
+    <div class="tile"><div class="v">${(st.reused || 0).toLocaleString()}</div><div class="l">Resumed</div><div class="d">hashes reused</div></div></div>`
+    + (recent ? `<div style="margin-top:10px"><div class="sub" style="margin-bottom:6px">Recently detected</div>
+        <div class="checklist">${recent}</div></div>` : "");
+}
 
 function renderScanResult(r) {
   const adopted = r.adopted || 0;
