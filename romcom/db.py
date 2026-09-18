@@ -51,17 +51,16 @@ CREATE TABLE IF NOT EXISTS events (
 );
 """
 
+# ALTER TABLE has stricter default-expression rules than CREATE TABLE.
 MIGRATIONS = {
  "items": {
    "catalog_source":"TEXT","external_id":"TEXT","support_level":"TEXT",
    "region":"TEXT","language":"TEXT","play_status":"TEXT NOT NULL DEFAULT 'UNPLAYED'",
-   "updated_at":"TEXT DEFAULT CURRENT_TIMESTAMP"
+   "updated_at":"TEXT"
  },
- "volumes": {
-   "min_bytes":"INTEGER","max_bytes":"INTEGER","updated_at":"TEXT DEFAULT CURRENT_TIMESTAMP"
- },
+ "volumes": {"min_bytes":"INTEGER","max_bytes":"INTEGER","updated_at":"TEXT"},
  "jobs": {"result_url":"TEXT"},
- "files": {"match_method":"TEXT","scanned_at":"TEXT DEFAULT CURRENT_TIMESTAMP"}
+ "files": {"match_method":"TEXT","scanned_at":"TEXT"}
 }
 
 INDEXES = [
@@ -77,13 +76,12 @@ def _columns(db,table):
     return {r["name"] for r in db.execute(f"PRAGMA table_info({table})")}
 
 def migrate(db):
-    for table, cols in MIGRATIONS.items():
+    for table,cols in MIGRATIONS.items():
         existing=_columns(db,table)
         for name,decl in cols.items():
             if name not in existing:
                 db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
-    for sql in INDEXES:
-        db.execute(sql)
+    for sql in INDEXES: db.execute(sql)
     db.commit()
 
 def connect():
