@@ -133,3 +133,27 @@ def test_restart_recovery_relaunches_acquire(monkeypatch, tmp_path):
         assert "interrupted" in statuses  # the stale row was marked, not left dangling
     finally:
         release.set()  # let both blocked stub threads finish their cleanup
+
+def test_next_picks_filter_and_paging(monkeypatch, tmp_path):
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
+    db = connect()
+    with db:
+        db.executemany(
+            "INSERT INTO items(id,title,system,authorized,wanted,status) VALUES(?,?,?,?,?,?)",
+            [(f"i{n}", f"Game {n}", "nes" if n % 2 else "snes", 1, 1, "CATALOGED") for n in range(12)])
+    c = create_app().test_client()
+
+    d = c.get("/api/next").get_json()  # default page returns everything eligible
+    assert d["total"] == 12 and len(d["items"]) == 12
+
+    d = c.get("/api/next?limit=5").get_json()  # paging
+    assert len(d["items"]) == 5 and d["total"] == 12
+    d2 = c.get("/api/next?limit=5&offset=5").get_json()
+    assert len(d2["items"]) == 5
+    assert {i["id"] for i in d["items"]} & {i["id"] for i in d2["items"]} == set()
+
+    d = c.get("/api/next?q=game+3").get_json()  # title/id filter, case-insensitive
+    assert d["total"] == 1 and d["items"][0]["title"] == "Game 3"
+
+    d = c.get("/api/next?system=nes").get_json()
+    assert d["total"] == 6 and all(i["system"] == "nes" for i in d["items"])

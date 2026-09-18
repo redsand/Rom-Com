@@ -1,6 +1,7 @@
 import json
+from datetime import datetime, timedelta
 from romcom.db import connect
-from romcom import acquirer
+from romcom import actions, acquirer
 from romcom.acquirer import eligible, _pick, auto_acquire
 
 
@@ -45,6 +46,28 @@ def test_pick_requires_score_and_url():
     assert _pick([{"title": "x", "url": "u", "score": 5}]) is None        # below floor
     top = {"title": "good", "url": "u2", "score": 80}
     assert _pick([{"title": "x", "url": "u1", "score": 5}, top]) == top
+
+
+def test_sync_reaps_vanished_jobs(monkeypatch, tmp_path):
+    """A download deleted from SABnzbd (absent from queue and history) is marked
+    FAILED after the grace window instead of staying QUEUED forever."""
+    db = client_db(monkeypatch, tmp_path)
+    seed(db, [{"id": "old"}, {"id": "new"}, {"id": "nonzo"}])
+    past = (datetime.now() - timedelta(hours=1)).isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
+    with db:
+        db.execute("INSERT INTO jobs(entity_type,entity_id,nzo_id,status,queued_at) VALUES('item','old','n_gone','QUEUED',?)", (past,))
+        db.execute("INSERT INTO jobs(entity_type,entity_id,nzo_id,status,queued_at) VALUES('item','new','n_fresh','QUEUED',?)", (now,))
+        db.execute("INSERT INTO jobs(entity_type,entity_id,nzo_id,status,queued_at) VALUES('item','nonzo',NULL,'QUEUED',?)", (past,))
+        db.execute("UPDATE items SET status='QUEUED' WHERE id IN ('old','new','nonzo')")
+    monkeypatch.setattr("romcom.sab.queue", lambda: [])
+    monkeypatch.setattr("romcom.sab.history", lambda: [])
+    actions.sync(db)
+    assert db.execute("SELECT status FROM jobs WHERE nzo_id='n_gone'").fetchone()["status"] == "FAILED"
+    assert db.execute("SELECT status FROM items WHERE id='old'").fetchone()["status"] == "FAILED"
+    assert db.execute("SELECT status FROM jobs WHERE nzo_id IS NULL").fetchone()["status"] == "FAILED"
+    # a job inside the grace window is left alone — it may just race the queue snapshot
+    assert db.execute("SELECT status FROM jobs WHERE nzo_id='n_fresh'").fetchone()["status"] == "QUEUED"
 
 
 def test_pipeline_queues_top_result(monkeypatch, tmp_path):

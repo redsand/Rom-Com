@@ -126,6 +126,7 @@ async function initFacets() {
     LIFECYCLE = f.statuses || LIFECYCLE_FALLBACK;
     $("#f-system").innerHTML = `<option value="">All systems</option>` +
       f.systems.map(s => `<option>${esc(s)}</option>`).join("");
+    $("#next-system").innerHTML = $("#f-system").innerHTML;
     $("#f-status").innerHTML = `<option value="">All statuses</option>` +
       LIFECYCLE.map(s => `<option>${esc(s)}</option>`).join("");
     $("#imp-system").innerHTML = `<option value="">Auto-detect system</option>` +
@@ -262,6 +263,36 @@ $("#drawer").addEventListener("click", e => { if (e.target.id === "drawer") $("#
 document.addEventListener("keydown", e => { if (e.key === "Escape") $("#drawer").hidden = true; });
 
 /* ---------- Acquire ---------- */
+const picks = { offset: 0, limit: 50, total: 0 };
+
+function pickRow(i) {
+  return `<tr>
+      <td><div>${esc(i.title)}</div><div class="sub">${esc(i.id)}</div></td>
+      <td>${esc(i.system || "—")}</td>
+      <td>${badge(i.status)}</td>
+      <td><button class="small primary act-search" data-id="${esc(i.id)}" data-title="${esc(i.title)}">Search</button></td>
+    </tr>`;
+}
+
+async function loadPicks(append = false) {
+  if (!append) picks.offset = 0;
+  try {
+    const p = new URLSearchParams({limit: picks.limit, offset: picks.offset});
+    if ($("#next-q").value.trim()) p.set("q", $("#next-q").value.trim());
+    if ($("#next-system").value) p.set("system", $("#next-system").value);
+    const d = await api("/api/next?" + p);
+    picks.total = d.total;
+    const body = $("#next-table tbody");
+    const html = d.items.map(pickRow).join("");
+    if (append) body.insertAdjacentHTML("beforeend", html); else body.innerHTML = html;
+    if (!body.children.length)
+      body.innerHTML = `<tr><td colspan="4" class="sub">Nothing to pick up — authorize wanted items in the Library to see them here.</td></tr>`;
+    const shown = body.children.length;
+    $("#next-count").textContent = `${shown.toLocaleString()} of ${d.total.toLocaleString()} picks`;
+    $("#next-more").hidden = shown >= d.total;
+  } catch (e) { toast("Picks failed: " + e.message, true); }
+}
+
 async function loadAcquire() {
   try {
     const d = await api("/api/plan");
@@ -275,14 +306,14 @@ async function loadAcquire() {
       <td class="r">${v.coverage_score.toFixed(2)}</td>
       <td><button class="small primary act-search" data-id="${esc(v.id)}" data-title="${esc(v.title)}">Search</button></td>
     </tr>`).join("") : `<tr><td colspan="6" class="sub">No authorized volumes awaiting download.</td></tr>`;
-    $("#next-table tbody").innerHTML = d.items.length ? d.items.map(i => `<tr>
-      <td><div>${esc(i.title)}</div><div class="sub">${esc(i.id)}</div></td>
-      <td>${esc(i.system || "—")}</td>
-      <td>${badge(i.status)}</td>
-      <td><button class="small primary act-search" data-id="${esc(i.id)}" data-title="${esc(i.title)}">Search</button></td>
-    </tr>`).join("") : `<tr><td colspan="4" class="sub">Nothing to pick up — authorize wanted items in the Library to see them here.</td></tr>`;
+    loadPicks();
   } catch (e) { toast("Plan failed: " + e.message, true); }
 }
+
+let picksDebounce;
+$("#next-q").addEventListener("input", () => { clearTimeout(picksDebounce); picksDebounce = setTimeout(() => loadPicks(), 300); });
+$("#next-system").addEventListener("change", () => loadPicks());
+$("#next-more").addEventListener("click", () => { picks.offset += picks.limit; loadPicks(true); });
 
 $("#acq-start").addEventListener("click", () => {
   const n = Number($("#acq-eligible").dataset.n || 0);

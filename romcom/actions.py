@@ -1,7 +1,12 @@
 """Actions shared by the CLI and the web UI: queueing downloads and syncing SABnzbd state."""
-from datetime import datetime
+from datetime import datetime, timedelta
 from .db import connect
 from . import sab
+
+# A job whose nzo is missing from both the SABnzbd queue and its history was deleted
+# there and can never resolve; sync gives up on it after this grace period (fresh
+# queue inserts race the queue snapshot taken at the top of sync).
+VANISHED_AFTER = timedelta(minutes=10)
 
 def queue_result(db, kind, e, result):
     """Send a search result to SABnzbd and record the job. Returns the nzo id (or None)."""
@@ -23,12 +28,22 @@ def sync(db=None):
         db = connect()
     hist = {x.get("nzo_id"): x for x in sab.history() if x.get("nzo_id")}
     que = {x.get("nzo_id"): x for x in sab.queue() if x.get("nzo_id")}
+    cutoff = (datetime.now() - VANISHED_AFTER).isoformat(timespec="seconds")
     updated = 0
     with db:
         jobs = db.execute("SELECT * FROM jobs WHERE status NOT IN ('DOWNLOADED','FAILED')").fetchall()
         for j in jobs:
             n = j["nzo_id"]; table = "items" if j["entity_type"] == "item" else "volumes"
-            if n in que:
+            if j["status"] in ("QUEUED", "DOWNLOADING") and n not in que and n not in hist \
+                    and (j["queued_at"] or "") < cutoff:
+                # Gone from SABnzbd entirely (deleted/purged there, or the nzo was NULL):
+                # it will never reach a terminal state on its own.
+                db.execute("UPDATE jobs SET status='FAILED',completed_at=? WHERE id=?",
+                           (datetime.now().isoformat(timespec="seconds"), j["id"]))
+                db.execute(f"UPDATE {table} SET status='FAILED' WHERE id=? AND status IN ('QUEUED','DOWNLOADING')",
+                           (j["entity_id"],))
+                updated += 1
+            elif n in que:
                 st = (que[n].get("status") or "QUEUED").upper()
                 mapped = "DOWNLOADING" if st not in ("QUEUED", "PAUSED") else "QUEUED"
                 if mapped != j["status"]: updated += 1

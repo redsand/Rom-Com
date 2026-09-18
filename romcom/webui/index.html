@@ -108,12 +108,18 @@
     </div>
     <div class="card">
       <h2>Next individual picks <span class="hint">authorized &amp; wanted, not covered by a pending volume</span></h2>
+      <div class="filters">
+        <input id="next-q" type="search" placeholder="Filter picks by title or id&hellip;">
+        <select id="next-system"><option value="">All systems</option></select>
+        <span id="next-count" class="count"></span>
+      </div>
       <div class="tablewrap">
         <table id="next-table">
           <thead><tr><th>Title</th><th>System</th><th>Status</th><th></th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
+      <button id="next-more" class="ghost" hidden>Load more</button>
     </div>
   </section>
 

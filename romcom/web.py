@@ -8,7 +8,7 @@ from .catalog import import_dats
 from .scanner import scan, adopt_unmatched
 from .organizer import organize
 from .report import summary
-from .planner import bulk_plan, next_individuals
+from .planner import bulk_plan, next_individuals, next_picks
 from .doctor import run as doctor_run
 from .catalog_status import catalog_status
 from .manage import set_series
@@ -184,6 +184,16 @@ def create_app():
     def api_plan():
         return jsonify({"volumes": bulk_plan(), "items": next_individuals(50),
                         "eligible": acquirer.eligible_count()})
+
+    @app.get("/api/next")
+    def api_next():
+        """Paged/filterable next individual picks for the Acquire tab."""
+        items, total = next_picks(
+            search=request.args.get("q", "").strip() or None,
+            system=request.args.get("system", "").strip() or None,
+            limit=request.args.get("limit", 50, type=int) or 50,
+            offset=max(request.args.get("offset", 0, type=int) or 0, 0))
+        return jsonify({"items": items, "total": total})
 
     @app.get("/api/search/<ident>")
     def api_search(ident):
