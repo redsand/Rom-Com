@@ -87,10 +87,12 @@
   <section id="tab-acquire" class="tabpane">
     <div class="filters">
       <button id="acq-start" class="primary">Download approved &amp; wanted</button>
+      <label class="autolabel"><input type="checkbox" id="acq-watch"> keep downloading continuously</label>
       <span id="acq-eligible" class="count"></span>
-      <span class="sub">marks made in the Library start this automatically — this button sweeps
-        everything armed in one run: queue the top indexer hit for each, wait for SABnzbd,
-        then scan the download folder</span>
+      <span class="sub">marks made in the Library start this automatically — the button sweeps
+        everything armed in one run; the toggle keeps a watcher running forever:
+        it fills every free download slot, imports files as they land, and re-sweeps
+        for newly armed items</span>
     </div>
     <div id="acq-progress" hidden>
       <div class="meter big"><i id="acq-bar" style="width:0%"></i></div>
@@ -246,6 +248,15 @@
         <span class="count" style="width:150px">Batch cap</span>
         <input id="set-acquire_batch_max" type="search" placeholder="0" spellcheck="false" style="width:90px">
         <span class="sub">max items attempted per run (0 = unlimited)</span>
+        <span class="count" style="width:150px;margin-left:24px">In flight</span>
+        <input id="set-acquire_parallel" type="search" placeholder="3" spellcheck="false" style="width:90px">
+        <span class="sub">downloads kept active at once (0 = unlimited)</span>
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Idle sweep</span>
+        <input id="set-acquire_interval" type="search" placeholder="300" spellcheck="false" style="width:90px">
+        <span class="sub">seconds the continuous watcher rests between sweeps
+          (toggle it on the Acquire tab)</span>
       </div>
     </div>
     <div class="card">
@@ -270,8 +281,13 @@
     </div>
     <div class="filters">
       <button id="set-save" class="primary">Save settings</button>
+      <button id="set-test" class="ghost">Test connections</button>
       <span id="set-status" class="count"></span>
       <span id="set-overrides" class="sub"></span>
+    </div>
+    <div class="card" id="set-test-card" hidden>
+      <h2>Connection test</h2>
+      <div id="set-test-result" class="checklist"></div>
     </div>
     <div class="card">
       <h2>Connection health</h2>

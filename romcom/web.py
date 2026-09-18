@@ -13,7 +13,7 @@ from .doctor import run as doctor_run
 from .catalog_status import catalog_status
 from .manage import set_series
 from .status import LIFECYCLE
-from . import indexer, actions, acquirer
+from . import indexer, actions, acquirer, sab, webdl
 
 STATIC = Path(__file__).resolve().parent / "webui"
 
@@ -55,6 +55,7 @@ def create_app():
 
     SETTABLE = {"nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "sab_verify_ssl",
                 "download_dir", "acquire_poll", "acquire_max_wait_min", "acquire_batch_max",
+                "acquire_parallel", "acquire_watch", "acquire_interval",
                 "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout"}
 
     def _settings_payload(db):
@@ -91,6 +92,27 @@ def create_app():
                            (k, "" if v is None else str(v).strip()))
         invalidate_settings()
         return jsonify(_settings_payload(db))
+
+    @app.post("/api/settings/test")
+    def api_settings_test():
+        """Live connectivity check for the Settings tab. API keys never appear in
+        error details — request errors echo the URL they hit, key included."""
+        def _safe(e):
+            msg = str(e)
+            for k in (settings()["nzb_key"], settings()["sab_key"]):
+                if k:
+                    msg = msg.replace(k, "***")
+            return msg
+        out = {}
+        for name, fn in (("indexer", lambda: indexer.ping()),
+                         ("sabnzbd", lambda: sab.queue()),
+                         ("romsgames", lambda: webdl.test())):
+            try:
+                fn()
+                out[name] = {"ok": True, "detail": ""}
+            except Exception as e:
+                out[name] = {"ok": False, "detail": _safe(e)}
+        return jsonify(out)
 
     @app.get("/api/catalog-status")
     def api_catalog_status():
@@ -231,6 +253,30 @@ def create_app():
     def api_auto_acquire():
         return start_job("acquire", {})
 
+    @app.post("/api/acquire/watch")
+    def api_watch_toggle():
+        """The always-on watcher toggle (Sonarr-style). Persisting the flag is what
+        matters: a run in flight keeps going and picks the flag up at cycle end."""
+        body = request.get_json(force=True) or {}
+        on = str(body.get("on", "")).strip().lower() in ("1", "true", "yes", "on")
+        db = connect()
+        with db:
+            db.execute("""INSERT INTO app_settings(key,value) VALUES('acquire_watch',?)
+              ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP""",
+                       ("true" if on else "false",))
+        invalidate_settings()
+        launched = False
+        if on:
+            acquirer.STOP.clear()
+            launched = _launch("acquire", {"watch": True})
+        else:
+            acquirer.STOP.set()  # the in-flight cycle exits at its next stop check
+        return jsonify({"on": on, "launched": launched, "running": jobs["acquire"]["running"]})
+
+    @app.get("/api/acquire/watch")
+    def api_watch_state():
+        return jsonify({"on": settings()["acquire_watch"], "running": jobs["acquire"]["running"]})
+
     # One background job per kind at a time; state polled by the UI.
     jobs = {k: {"running": False, "done": 0, "total": 0, "current": "", "stats": None, "result": None, "error": None}
             for k in ("import", "scan", "organize", "adopt", "acquire")}
@@ -247,7 +293,8 @@ def create_app():
         if kind == "organize":
             return lambda prog: organize(params["path"], systems=params.get("systems") or None, progress=prog)
         if kind == "acquire":
-            return lambda prog: acquirer.auto_acquire(progress=prog)
+            return lambda prog: acquirer.auto_acquire(progress=prog, watch=bool(params.get("watch")),
+                                                      stop=acquirer.STOP)
         return lambda prog: adopt_unmatched(root=params.get("path") or None, progress=prog)
 
     def _launch(kind, params):
@@ -256,6 +303,8 @@ def create_app():
         with job_lock:
             if j["running"]:
                 return False
+            if kind == "acquire":
+                acquirer.STOP.clear()
             j.update(running=True, done=0, total=0, current="starting…", stats=None, result=None, error=None)
         db = connect()
         with db:
@@ -367,6 +416,17 @@ def create_app():
 
     app.recover_interrupted = recover_interrupted
 
+    def start_watcher_if_on():
+        """The watcher toggle survives restarts: flip it on once and every server
+        start resumes the always-on loop."""
+        try:
+            if settings()["acquire_watch"] and not jobs["acquire"]["running"]:
+                _launch("acquire", {"watch": True})
+        except Exception:
+            pass
+
+    app.start_watcher_if_on = start_watcher_if_on
+
     # Back-compat alias used by earlier UI builds.
     @app.get("/api/import-dats/status")
     def api_import_status():
@@ -416,4 +476,5 @@ def serve(host="127.0.0.1", port=8927, open_browser=True, debug=False):
         threading.Timer(1.0, lambda: webbrowser.open(f"http://{host}:{port}/")).start()
     app = create_app()
     app.recover_interrupted()
+    app.start_watcher_if_on()
     app.run(host=host, port=port, debug=debug)

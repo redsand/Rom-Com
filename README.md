@@ -134,6 +134,9 @@ ROMCOM_DOWNLOAD_DIR=H:\downloads\complete
 ROMCOM_ACQUIRE_POLL=30
 ROMCOM_ACQUIRE_MAX_WAIT_MIN=240
 ROMCOM_ACQUIRE_BATCH_MAX=0
+ROMCOM_ACQUIRE_PARALLEL=3
+ROMCOM_ACQUIRE_WATCH=false
+ROMCOM_ACQUIRE_INTERVAL=300
 ROMCOM_WEBDL_BASE=https://www.romsgames.net
 ROMCOM_WEBDL_DELAY=30
 ROMCOM_WEBDL_JITTER=15
@@ -289,6 +292,19 @@ queues the best result in SABnzbd, waits for the downloads to finish, and then s
   whether the search leads to a queue, a skip, or a failure (0 = unlimited). With
   thousands of armed items, set it so a single toggle floods neither SABnzbd nor the
   indexer's API; the result reports how many armed items were left for the next run.
+- `ROMCOM_ACQUIRE_PARALLEL` (default 3) caps how many downloads are kept in flight
+  at once (0 = unlimited). The run is a rolling pipeline: as soon as a download
+  finishes, the next armed item is searched and queued, and the completed file is
+  scanned into the library right away — there's no "download everything, then
+  import" tail.
+- **Continuous watching** — the *keep downloading continuously* toggle on the
+  Acquire tab (or `ROMCOM_ACQUIRE_WATCH=true`, or `romcom auto-acquire --watch`)
+  turns the pipeline into an always-on downloader in the Sonarr/Radarr sense: it
+  sweeps, fills every free download slot, imports files as they land, rests
+  `ROMCOM_ACQUIRE_INTERVAL` seconds (default 300), and sweeps again — forever.
+  The toggle survives server restarts, and items that turned up nothing are
+  held back for an hour (a search cooldown) so the watcher re-searches them at a
+  civil pace instead of hammering the indexer on every sweep.
 - With `ROMCOM_DOWNLOAD_DIR` unset the run still queues and tracks downloads; it just
   reports that the import scan was skipped.
 - When the indexer has no usable result, the item falls back to **romsgames.net**:

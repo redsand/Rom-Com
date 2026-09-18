@@ -1,4 +1,5 @@
 import json
+import threading
 from datetime import datetime, timedelta
 from romcom.db import connect
 from romcom import actions, acquirer
@@ -46,6 +47,68 @@ def test_pick_requires_score_and_url():
     assert _pick([{"title": "x", "url": "u", "score": 5}]) is None        # below floor
     top = {"title": "good", "url": "u2", "score": 80}
     assert _pick([{"title": "x", "url": "u1", "score": 5}, top]) == top
+
+
+def test_skips_and_failures_report_progress(monkeypatch, tmp_path):
+    """A run where nothing is queueable must not look dead: every attempt start,
+    skip, and failure reaches the progress channel (paced direct searches make
+    a single item take minutes — silence reads as a hang)."""
+    db = client_db(monkeypatch, tmp_path)
+    seed(db, [{"id": "i1", "title": "Game One"}])
+    search, _ = fake_search([])  # nothing findable
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.actions.sync", lambda db: None)
+    seen = []
+    auto_acquire(progress=lambda i, t, name, stats: seen.append((name, dict(stats))),
+                 poll_interval=0)
+    assert seen[0][0] == "search: Game One"      # the attempt is visible as it starts
+    assert seen[-1][0].startswith("skipped:")    # and the skip is reported immediately
+    assert seen[-1][1]["skipped"] == 1
+
+
+def test_skip_cooldown_holds_recently_skipped(monkeypatch, tmp_path):
+    """A watching loop must not re-search an item that just turned up nothing:
+    skips leave an 'acquire-skip' event that cools the item out of eligible()."""
+    db = client_db(monkeypatch, tmp_path)
+    seed(db, [{"id": "i1"}, {"id": "i2"}])
+    search, seen = fake_search([])  # nothing findable
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.actions.sync", lambda db: None)
+    r = auto_acquire(poll_interval=0)
+    assert r["skipped"] == 2 and sorted(seen) == ["i1", "i2"]
+    assert eligible() == []  # both sit inside the cooldown window
+    assert db.execute("SELECT COUNT(*) c FROM events WHERE event='acquire-skip'").fetchone()["c"] == 2
+
+
+def test_watch_mode_sweeps_again_until_stopped(monkeypatch, tmp_path):
+    """Watch mode repeats cycles forever (no idle rest with a 0 interval) and
+    re-queries eligibility each cycle; a stop event ends it promptly."""
+    db = client_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("ROMCOM_ACQUIRE_INTERVAL", "0")
+    from romcom.config import invalidate
+    invalidate()
+    seed(db, [{"id": "i1"}])
+    search, seen = fake_search([{"title": "Game", "url": "nzb://1", "size": 1, "score": 90}])
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.sab.add_url", lambda *a, **k: {"nzo_ids": ["n1"]})
+    stop = threading.Event()
+
+    def fake_sync(dbc):
+        with dbc:
+            dbc.execute("UPDATE jobs SET status='DOWNLOADED',completed_at='x' WHERE status='QUEUED'")
+            dbc.execute("UPDATE items SET status='DOWNLOADED' WHERE status='QUEUED'")
+        # cycle 1 syncs twice (wait tick + final), so the 3rd sync is cycle 2's
+        # final pass — end the watch there, after a full second sweep
+        if fake_sync.calls >= 2:
+            stop.set()
+        fake_sync.calls += 1
+    fake_sync.calls = 0
+    monkeypatch.setattr("romcom.actions.sync", fake_sync)
+
+    r = auto_acquire(poll_interval=0, watch=True, stop=stop)
+    assert r["cycles"] >= 2          # it swept again instead of returning after cycle 1
+    assert seen == ["i1"]            # and did not re-search the finished item
+    assert r["queued"] == 1 and r["downloaded"] == 1
 
 
 def test_sync_reaps_vanished_jobs(monkeypatch, tmp_path):
@@ -257,3 +320,52 @@ def test_direct_fallback_skipped_when_no_download_dir(monkeypatch, tmp_path):
     r = auto_acquire(poll_interval=0)
     assert r["direct"] == 0 and r["skipped"] == 1
     assert not called  # never hits the direct site without somewhere to put files
+
+
+def test_parallel_caps_in_flight(monkeypatch, tmp_path):
+    """With 2 slots and 3 items, only two downloads are ever active: the third
+    item isn't searched until a slot frees up — and never is, if sync stalls."""
+    db = client_db(monkeypatch, tmp_path)
+    seed(db, [{"id": "i1"}, {"id": "i2"}, {"id": "i3"}])
+    search, seen = fake_search([{"title": "Game", "url": "nzb://1", "size": 1, "score": 90}])
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.sab.add_url", lambda *a, **k: {"nzo_ids": ["n1"]})
+    monkeypatch.setattr("romcom.actions.sync", lambda db: None)  # nothing ever completes
+    r = auto_acquire(poll_interval=0, parallel=2, max_wait_minutes=0.001)
+    assert r["queued"] == 2 and "i3" not in seen  # the third was never searched
+    assert r["still_pending"] == 2
+    assert db.execute("SELECT status FROM items WHERE id='i3'").fetchone()["status"] == "CATALOGED"
+
+
+def test_rolling_fill_and_incremental_import(monkeypatch, tmp_path):
+    """A completed download frees its slot for the next item, and each finished
+    file is scanned into the library while the run continues — 'adopted'
+    accumulates across passes instead of only counting the last one."""
+    db = client_db(monkeypatch, tmp_path)
+    ddir = tmp_path / "downloads"; ddir.mkdir()
+    monkeypatch.setenv("ROMCOM_DOWNLOAD_DIR", str(ddir))
+    from romcom.config import invalidate
+    invalidate()
+    seed(db, [{"id": "i1"}, {"id": "i2"}])
+    search, seen = fake_search([{"title": "Game", "url": "nzb://1", "size": 1, "score": 90}])
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.sab.add_url", lambda *a, **k: {"nzo_ids": ["n" + str(len(seen))]})
+
+    def fake_sync(dbc):
+        with dbc:  # completes whatever is queued at call time, one item per tick
+            dbc.execute("UPDATE jobs SET status='DOWNLOADED',completed_at='x' WHERE status='QUEUED'")
+            dbc.execute("UPDATE items SET status='DOWNLOADED' WHERE status='QUEUED'")
+    monkeypatch.setattr("romcom.actions.sync", fake_sync)
+    calls = []
+    def fake_scan(root, name_match=True, adopt=True, progress=None):
+        calls.append(str(root))
+        return {"files": 1, "matched": 0, "adopted": 1}
+    monkeypatch.setattr("romcom.acquirer.scan", fake_scan)
+
+    r = auto_acquire(poll_interval=0, parallel=1)
+    assert sorted(seen) == ["i1", "i2"]
+    assert r["queued"] == 2 and r["downloaded"] == 2 and r["still_pending"] == 0
+    # i2 was only queued after i1 finished (1 slot), and each completion was
+    # imported mid-run: two scan passes, both against the download dir.
+    assert calls == [str(ddir), str(ddir)]
+    assert r["scan"]["files"] == 1 and r["scan"]["adopted"] == 2  # accumulated, not overwritten

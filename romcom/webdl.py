@@ -73,6 +73,16 @@ def _request(method, url, referer=None, json_accept=False, stream=False, data=No
     return r
 
 
+def test():
+    """One-off connectivity check for the Settings tab — a single request to the
+    site's front page, outside the scraper flow, so it doesn't wait out the
+    pacing delay (a human clicking "test" is its own rate limit)."""
+    r = requests.get(settings()["webdl_base"], headers={"User-Agent": UA},
+                     timeout=settings()["webdl_timeout"])
+    r.raise_for_status()
+    return True
+
+
 def search(query, system=None):
     """ROM pages matching a title, ranked against it the same way NZB results are.
 

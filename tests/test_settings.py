@@ -45,6 +45,15 @@ def test_numeric_and_bool_coercion(monkeypatch, tmp_path):
     assert s["sab_verify_ssl"] is False
 
 
+def test_parallel_default_and_coercion(monkeypatch, tmp_path):
+    env_db(monkeypatch, tmp_path)
+    assert settings()["acquire_parallel"] == 3  # default: 3 downloads in flight
+    env_db(monkeypatch, tmp_path, ROMCOM_ACQUIRE_PARALLEL="0")
+    assert settings()["acquire_parallel"] == 0  # 0 = unlimited
+    env_db(monkeypatch, tmp_path, ROMCOM_ACQUIRE_PARALLEL="junk")
+    assert settings()["acquire_parallel"] == 3  # bad value falls back, no crash
+
+
 def test_bad_numeric_falls_back(monkeypatch, tmp_path):
     db = env_db(monkeypatch, tmp_path)
     with db:
@@ -87,3 +96,24 @@ def test_settings_roundtrip(monkeypatch, tmp_path):
     d = c.post("/api/settings", json={"sab_category": ""}).get_json()  # "" clears the override
     assert "sab_category" not in d["overrides"]
     assert d["settings"]["sab_category"] == "Games"  # env value is back in charge
+
+
+def test_settings_test_endpoint(monkeypatch, tmp_path):
+    """The Settings 'Test connections' button probes all three sources, and API
+    keys never leak into the error detail (request errors echo the full URL)."""
+    env_db(monkeypatch, tmp_path, NZB_API_KEY="sekret", SAB_API_KEY="sabsekret")
+    monkeypatch.setattr("romcom.indexer.ping", lambda: True)
+    monkeypatch.setattr("romcom.sab.queue", lambda: [])
+    monkeypatch.setattr("romcom.webdl.test", lambda: True)
+    c = create_app().test_client()
+    d = c.post("/api/settings/test").get_json()
+    assert set(d) == {"indexer", "sabnzbd", "romsgames"}
+    assert all(v["ok"] for v in d.values())
+
+    def boom():
+        raise RuntimeError("404 for url https://api.example/api?t=search&apikey=sekret&limit=1")
+    monkeypatch.setattr("romcom.indexer.ping", boom)
+    d = c.post("/api/settings/test").get_json()
+    assert d["indexer"]["ok"] is False
+    assert "sekret" not in d["indexer"]["detail"] and "***" in d["indexer"]["detail"]
+    assert d["sabnzbd"]["ok"] is True  # one failure doesn't mask the rest

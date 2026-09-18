@@ -15,8 +15,9 @@ def make_client(monkeypatch, tmp_path, rows):
     started, release = threading.Event(), threading.Event()
     calls = {"n": 0}
 
-    def stub(progress=None, poll_interval=None, max_wait_minutes=None):
+    def stub(progress=None, **kwargs):
         calls["n"] += 1
+        calls["last_kwargs"] = kwargs
         started.set()
         release.wait(timeout=30)
         return {"queued": 0, "downloaded": 0, "download_failed": 0, "failed": 0, "skipped": 0,
@@ -133,6 +134,35 @@ def test_restart_recovery_relaunches_acquire(monkeypatch, tmp_path):
         assert "interrupted" in statuses  # the stale row was marked, not left dangling
     finally:
         release.set()  # let both blocked stub threads finish their cleanup
+
+def test_watch_toggle_starts_persists_and_resumes(monkeypatch, tmp_path):
+    """The continuous-watcher toggle: on → launches immediately with watch=True;
+    the flag persists in app_settings, so a fresh server resumes the watcher."""
+    import time as _time
+    c, started, release, calls = make_client(monkeypatch, tmp_path, [{"id": "i1"}])
+    try:
+        d = c.post("/api/acquire/watch", json={"on": True}).get_json()
+        assert d["on"] is True and d["launched"] is True
+        assert started.wait(2)
+        assert calls["last_kwargs"].get("watch") is True
+        assert c.get("/api/acquire/watch").get_json()["on"] is True
+
+        # "crash": a fresh server boots with the flag on and must resume watching
+        app2 = create_app()
+        n = calls["n"]
+        app2.start_watcher_if_on()
+        for _ in range(40):
+            if calls["n"] > n:
+                break
+            _time.sleep(0.05)
+        assert calls["n"] > n, "watcher flag must resume the pipeline on server start"
+
+        d = c.post("/api/acquire/watch", json={"on": False}).get_json()
+        assert d["on"] is False
+        assert c.get("/api/acquire/watch").get_json()["on"] is False
+    finally:
+        release.set()
+
 
 def test_next_picks_filter_and_paging(monkeypatch, tmp_path):
     monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))

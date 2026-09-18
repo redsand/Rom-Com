@@ -307,6 +307,8 @@ async function loadAcquire() {
       <td><button class="small primary act-search" data-id="${esc(v.id)}" data-title="${esc(v.title)}">Search</button></td>
     </tr>`).join("") : `<tr><td colspan="6" class="sub">No authorized volumes awaiting download.</td></tr>`;
     loadPicks();
+    const w = await api("/api/acquire/watch");
+    $("#acq-watch").checked = !!w.on;
   } catch (e) { toast("Plan failed: " + e.message, true); }
 }
 
@@ -320,6 +322,22 @@ $("#acq-start").addEventListener("click", () => {
   if (!confirm(`Search the indexer and queue the best result for all ${n.toLocaleString()} approved & wanted missing item(s)?\n` +
       "Downloads run in the background; watch this tab for progress.")) return;
   startJob("acquire", "/api/auto-acquire", {});
+});
+
+/* The continuous watcher: keeps a pipeline running forever — fills download
+   slots, imports as files land, re-sweeps for newly armed items. Survives
+   server restarts (persisted in app_settings). */
+$("#acq-watch").addEventListener("change", async () => {
+  const on = $("#acq-watch").checked;
+  try {
+    const r = await post("/api/acquire/watch", { on });
+    toast(on ? "Continuous downloader on — it keeps working until you turn it off"
+             : "Continuous downloader off — current work finishes, then it stops");
+    if (on) pollJob("acquire", true);
+  } catch (e) {
+    $("#acq-watch").checked = !on;  // revert on failure
+    toast("Watch toggle failed: " + e.message, true);
+  }
 });
 
 /* ---------- Activity ---------- */
@@ -578,6 +596,7 @@ function renderImportResult(r) {
 /* ---------- Settings ---------- */
 const SET_KEYS = ["nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "sab_verify_ssl",
                   "download_dir", "acquire_poll", "acquire_max_wait_min", "acquire_batch_max",
+                  "acquire_parallel", "acquire_watch", "acquire_interval",
                   "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout"];
 
 const SRC_LABEL = { ui: "saved in UI", env: "from .env", default: "default" };
@@ -630,6 +649,24 @@ $("#set-save").addEventListener("click", async () => {
     $("#set-status").textContent = `saved ${new Date().toLocaleTimeString()}`;
     toast("Settings saved");
   } catch (e) { toast("Save failed: " + e.message, true); }
+});
+
+$("#set-test").addEventListener("click", async () => {
+  const card = $("#set-test-card"), out = $("#set-test-result");
+  card.hidden = false;
+  out.innerHTML = `<div class="check"><span class="mark">…</span><span class="d">Testing connections…</span></div>`;
+  try {
+    const r = await post("/api/settings/test", {});
+    const names = { indexer: "NZB indexer", sabnzbd: "SABnzbd", romsgames: "romsgames.net" };
+    out.innerHTML = Object.entries(r).map(([k, v]) => `
+      <div class="check ${v.ok ? "ok" : "bad"}">
+        <span class="mark">${v.ok ? "✓" : "✕"}</span>
+        <span class="n">${esc(names[k] || k)}</span>
+        <span class="d">${esc(v.detail || (v.ok ? "connected" : ""))}</span></div>`).join("");
+    toast(Object.values(r).every(v => v.ok) ? "All connections OK" : "Some connections failed", !Object.values(r).every(v => v.ok));
+  } catch (e) {
+    out.innerHTML = `<div class="check bad"><span class="mark">✕</span><span class="d">${esc(e.message)}</span></div>`;
+  }
 });
 
 /* ---------- File/folder picker ---------- */
