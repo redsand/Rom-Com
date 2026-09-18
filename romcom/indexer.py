@@ -4,6 +4,25 @@ from .config import settings
 
 NS={"newznab":"http://www.newznab.com/DTD/2010/feeds/attributes/"}
 
+def ping():
+    s=settings()
+    if not s["nzb_url"] or not s["nzb_key"]:
+        raise RuntimeError("NZB_API_URL/NZB_API_KEY are not configured")
+    r=requests.get(
+        s["nzb_url"],
+        params={"t":"search","apikey":s["nzb_key"],"q":"romcom-healthcheck","limit":1,"o":"xml"},
+        timeout=30,
+    )
+    r.raise_for_status()
+    # Newznab-style auth failures may be XML <error> documents returned with HTTP 200.
+    root=ET.fromstring(r.content)
+    if root.tag.lower().endswith("error"):
+        raise RuntimeError(root.attrib.get("description") or "indexer API returned an error")
+    err=root.find(".//error")
+    if err is not None:
+        raise RuntimeError(err.attrib.get("description") or "indexer API returned an error")
+    return True
+
 def search(query,limit=50):
     s=settings()
     if not s["nzb_url"] or not s["nzb_key"]:

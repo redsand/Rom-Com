@@ -1,9 +1,9 @@
 from pathlib import Path
 from .config import settings
 from .db import connect
-from . import sab
+from . import sab, indexer
 
-def run(check_sab=True):
+def run(check_sab=True, check_nzb=True):
     s=settings(); results=[]
     try:
         db=connect()
@@ -13,6 +13,12 @@ def run(check_sab=True):
         results.append(("database",False,str(e)))
     results.append(("nzb-config",bool(s["nzb_url"] and s["nzb_key"]),s["nzb_url"] or "not configured"))
     results.append(("sab-config",bool(s["sab_url"] and s["sab_key"]),s["sab_url"] or "not configured"))
+    if check_nzb and s["nzb_url"] and s["nzb_key"]:
+        try:
+            indexer.ping()
+            results.append(("nzb-api",True,"authenticated/reachable"))
+        except Exception as e:
+            results.append(("nzb-api",False,str(e)))
     if check_sab and s["sab_url"] and s["sab_key"]:
         try:
             sab.queue()
