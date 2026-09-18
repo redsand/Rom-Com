@@ -88,8 +88,10 @@ def migrate(db):
     db.commit()
 
 def connect():
-    db=sqlite3.connect(settings()["db"])
+    db=sqlite3.connect(settings()["db"],timeout=15)
     db.row_factory=sqlite3.Row
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=15000")
     db.executescript(SCHEMA)
     migrate(db)
     return db
