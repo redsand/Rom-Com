@@ -54,9 +54,12 @@ CREATE TABLE IF NOT EXISTS events (
 # ALTER TABLE has stricter default-expression rules than CREATE TABLE.
 MIGRATIONS = {
  "items": {
-   "catalog_source":"TEXT","external_id":"TEXT","support_level":"TEXT",
-   "region":"TEXT","language":"TEXT","play_status":"TEXT NOT NULL DEFAULT 'UNPLAYED'",
-   "updated_at":"TEXT"
+   "system":"TEXT","series":"TEXT","series_number":"INTEGER","year":"INTEGER",
+   "authorized":"INTEGER NOT NULL DEFAULT 0","wanted":"INTEGER NOT NULL DEFAULT 1",
+   "status":"TEXT NOT NULL DEFAULT 'CATALOGED'","preferred_runtime":"TEXT",
+   "source":"TEXT","notes":"TEXT","catalog_source":"TEXT","external_id":"TEXT",
+   "support_level":"TEXT","region":"TEXT","language":"TEXT",
+   "play_status":"TEXT NOT NULL DEFAULT 'UNPLAYED'","updated_at":"TEXT"
  },
  "volumes": {"min_bytes":"INTEGER","max_bytes":"INTEGER","updated_at":"TEXT"},
  "jobs": {"result_url":"TEXT"},
