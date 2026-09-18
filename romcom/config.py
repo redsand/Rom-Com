@@ -30,6 +30,8 @@ ENV_VARS = {
     "acquire_parallel": "ROMCOM_ACQUIRE_PARALLEL",
     "acquire_watch": "ROMCOM_ACQUIRE_WATCH",
     "acquire_interval": "ROMCOM_ACQUIRE_INTERVAL",
+    "acquire_watch_batch": "ROMCOM_ACQUIRE_WATCH_BATCH",
+    "acquire_sweep_pause": "ROMCOM_ACQUIRE_SWEEP_PAUSE",
     "webdl_base": "ROMCOM_WEBDL_BASE",
     "webdl_delay": "ROMCOM_WEBDL_DELAY",
     "webdl_jitter": "ROMCOM_WEBDL_JITTER",
@@ -52,6 +54,8 @@ def _env_settings():
         "acquire_parallel": os.getenv("ROMCOM_ACQUIRE_PARALLEL", "3"),
         "acquire_watch": os.getenv("ROMCOM_ACQUIRE_WATCH", "false"),
         "acquire_interval": os.getenv("ROMCOM_ACQUIRE_INTERVAL", "300"),
+        "acquire_watch_batch": os.getenv("ROMCOM_ACQUIRE_WATCH_BATCH", "50"),
+        "acquire_sweep_pause": os.getenv("ROMCOM_ACQUIRE_SWEEP_PAUSE", "15"),
         "webdl_base": (os.getenv("ROMCOM_WEBDL_BASE") or "https://www.romsgames.net").rstrip("/"),
         "webdl_delay": os.getenv("ROMCOM_WEBDL_DELAY", "30"),
         "webdl_jitter": os.getenv("ROMCOM_WEBDL_JITTER", "15"),
@@ -90,6 +94,10 @@ def settings():
     s["acquire_watch"] = str(s["acquire_watch"]).strip().lower() in ("1", "true", "yes", "on")
     try: s["acquire_interval"] = max(0.0, float(s["acquire_interval"]))
     except (TypeError, ValueError): s["acquire_interval"] = 300.0
+    try: s["acquire_watch_batch"] = max(0, int(s["acquire_watch_batch"]))
+    except (TypeError, ValueError): s["acquire_watch_batch"] = 50
+    try: s["acquire_sweep_pause"] = max(0.0, float(s["acquire_sweep_pause"]))
+    except (TypeError, ValueError): s["acquire_sweep_pause"] = 15.0
     for k, dflt in (("webdl_delay", 30.0), ("webdl_jitter", 15.0), ("webdl_timeout", 60.0)):
         try: s[k] = float(s[k])
         except (TypeError, ValueError): s[k] = dflt

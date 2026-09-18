@@ -27,7 +27,8 @@ It separates four concerns:
 - Bulk and individual acquisition support.
 - Automatic acquire-download-import pipeline for approved & wanted items.
 - Downloaded vs verified state separation.
-- Per-item authorization and wanted flags.
+- Per-item authorization and wanted flags, with ownership kept honest automatically
+  (`mark-owned`: everything on disk is wanted & authorized).
 - YAML overrides for durable local preferences.
 - Health/doctor command.
 - Text and JSON reports.
@@ -78,7 +79,10 @@ without the CLI:
 The **Files** tab bulk-imports DAT catalogs (see below), scans downloaded ROM folders
 (hash-matching files to the catalog), and exports matched files into a per-system
 folder layout for an SD card. The Library tab supports bulk marking wanted/authorized
-for everything matching the current filters. CSV round-trips remain CLI-only.
+for everything matching the current filters, and a *Mark owned as wanted + authorized*
+button for everything already on disk (see
+[Ownership](#anything-you-already-have-is-wanted--authorized)). CSV round-trips remain
+CLI-only.
 
 The **Settings** tab edits the indexer/SABnzbd connection details and the automatic
 acquiring behavior (download folder, category, poll interval, caps) without touching
@@ -137,6 +141,8 @@ ROMCOM_ACQUIRE_BATCH_MAX=0
 ROMCOM_ACQUIRE_PARALLEL=3
 ROMCOM_ACQUIRE_WATCH=false
 ROMCOM_ACQUIRE_INTERVAL=300
+ROMCOM_ACQUIRE_WATCH_BATCH=50
+ROMCOM_ACQUIRE_SWEEP_PAUSE=15
 ROMCOM_WEBDL_BASE=https://www.romsgames.net
 ROMCOM_WEBDL_DELAY=30
 ROMCOM_WEBDL_JITTER=15
@@ -189,6 +195,32 @@ The seed tracks all 34 mainline titles independently from their current runtime/
 ## Ownership and authorization
 
 Acquisition commands are blocked unless the entry is explicitly authorized.
+
+### Anything you already have is wanted & authorized
+
+An item in hand — `FOUND`, `DOWNLOADED`, `VERIFIED`, `NORMALIZED`, `INSTALLED`, `TESTED`,
+or a file locally cataloged by `adopt` — is part of the intended collection, so Rom-Com
+flags it **wanted + authorized** rather than leaving it half-flagged. Scanning a folder
+does this as it matches each file, and one sweep covers what is already in the database:
+
+```bash
+romcom mark-owned
+```
+
+The Library tab has the same thing as a *Mark owned as wanted + authorized* button. Two
+properties make this safe to run at any time, including while the watcher is running:
+
+- **It never downloads anything again.** The pipeline only ever searches items whose
+  status is `CATALOGED`/`MISSING` — i.e. with nothing on disk. Owned statuses are not
+  picks, and a `wanted` item is only *missing* while it has nothing on disk.
+- **It only raises the two flags.** Status, notes, play state and everything else are
+  untouched, and an explicitly `EXCLUDED` item is left alone — exclusion is the
+  deliberate "I don't want this back" switch.
+
+What changes is the bookkeeping: coverage, the per-system progress on the dashboard, the
+missing list (`romcom missing`, the Library's *Missing* view) and the volume planner now
+all measure against the collection you actually have instead of the handful of items that
+happened to be flagged.
 
 For a one-off change:
 
@@ -260,6 +292,9 @@ Bulk downloads only move covered titles to **FOUND**. They are not considered ve
 
 ## Individual gap filling
 
+Both `bulk-plan` and `next` measure against items with **nothing on disk yet** — a title
+you already have is not a gap to fill and does not make a bundle worth downloading.
+
 After useful bulk opportunities are exhausted:
 
 ```bash
@@ -300,11 +335,23 @@ queues the best result in SABnzbd, waits for the downloads to finish, and then s
 - **Continuous watching** — the *keep downloading continuously* toggle on the
   Acquire tab (or `ROMCOM_ACQUIRE_WATCH=true`, or `romcom auto-acquire --watch`)
   turns the pipeline into an always-on downloader in the Sonarr/Radarr sense: it
-  sweeps, fills every free download slot, imports files as they land, rests
-  `ROMCOM_ACQUIRE_INTERVAL` seconds (default 300), and sweeps again — forever.
-  The toggle survives server restarts, and items that turned up nothing are
-  held back for an hour (a search cooldown) so the watcher re-searches them at a
-  civil pace instead of hammering the indexer on every sweep.
+  sweeps, fills every free download slot, imports files as they land, rests, and
+  sweeps again — forever. The toggle survives server restarts.
+  - **Every sweep is bounded.** A watching sweep attempts at most
+    `ROMCOM_ACQUIRE_WATCH_BATCH` items (default 50, 0 = unlimited), so it always
+    ends and reports instead of grinding through a whole library in one cycle. A
+    sweep that stopped at the cap rests only `ROMCOM_ACQUIRE_SWEEP_PAUSE` seconds
+    (default 15) because there is a queue of untried items behind it; a sweep with
+    nothing left to do rests the full `ROMCOM_ACQUIRE_INTERVAL` (default 300).
+  - **Search cooldowns make the re-sweep cheap.** An item that turned up nothing is
+    dated in the `events` table and skipped until its window expires — one hour for a
+    transient failure (indexer hiccup, SABnzbd down, no download folder), six hours
+    for "no usable result anywhere", which is a property of the sources rather than a
+    passing problem. That is what lets each new sweep spend its budget on titles it
+    has not tried yet instead of re-searching the same dead ends; the Acquire tab
+    shows the held-back count next to the eligible one, and the trail is pruned after
+    two days. `romcom auto-acquire` reports the same numbers (`armed_remaining`,
+    `cooling`) in its JSON result.
 - With `ROMCOM_DOWNLOAD_DIR` unset the run still queues and tracks downloads; it just
   reports that the import scan was skipped.
 - When the indexer has no usable result, the item falls back to **romsgames.net**:

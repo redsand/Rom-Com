@@ -12,6 +12,15 @@ library while the run continues. With `ROMCOM_ACQUIRE_WATCH` on (or the web UI's
 watcher toggle), cycles repeat forever — newly armed items and expiring search
 cooldowns are picked up on every sweep, like a download manager on duty rather than
 a one-shot batch.
+
+Every sweep is bounded (`ROMCOM_ACQUIRE_WATCH_BATCH`, default 50 items): a watcher
+re-sweeps by itself, so grinding through a whole library in one cycle only starves the
+UI of feedback. Items a sweep passes over are dated in the `events` table and held back
+until their cooldown expires — an hour for a transient failure, six for "nothing found
+anywhere", which rarely changes between sweeps. That trail is what lets a re-sweep skip
+the thousands of titles that turned up nothing and spend its budget on fresh ones, and
+the pile is worked least-recently-tried first so a sweep never re-searches the head of
+the queue while unattempted titles wait behind it.
 """
 import threading
 import time
@@ -19,31 +28,78 @@ from pathlib import Path
 from .config import settings
 from .db import connect
 from .planner import next_individuals
+from .status import MISSING
 from . import indexer, actions, webdl
 from .scanner import scan
 
 MIN_SCORE = 20.0                # rank() floor: % of query tokens that must appear in the release title
-QUEUEABLE = ("CATALOGED", "MISSING")
+QUEUEABLE = MISSING             # the only statuses worth searching for
 SYNC_FAILURE_LIMIT = 10         # consecutive failed syncs before the wait phase gives up
-COOLDOWN_MIN = 60               # an item that turned up nothing waits this long before re-searching
+# Search cooldowns, in minutes, keyed by the event a skip leaves behind. A transient
+# failure (indexer hiccup, SABnzbd down, no download dir yet) is worth retrying soon;
+# "nothing found anywhere" is a property of the sources, so those items cool for hours.
+COOLDOWN_EVENTS = {"acquire-skip": 60, "acquire-miss": 360}
+EVENT_KEEP_DAYS = 2             # cooldown-trail rows older than the longest window are pruned
 
 STOP = threading.Event()        # the web UI sets this to cancel the watcher promptly
 
 
-def eligible():
-    """Armed items the pipeline will attempt this sweep. Items skipped recently
-    (an 'acquire-skip' event inside the cooldown window) are held back so a
-    watching loop re-searches them at a civil pace instead of every sweep."""
-    db = connect()
-    cooled = {r["item_id"] for r in db.execute(
-        "SELECT DISTINCT item_id FROM events WHERE event='acquire-skip' "
-        "AND created_at > datetime('now', ?)", (f"-{COOLDOWN_MIN} minutes",))}
-    return [r for r in next_individuals()
-            if r["status"] in QUEUEABLE and r["id"] not in cooled]
+def _cooled(db):
+    """item_id -> the event holding it back, for every skip inside its cooldown window."""
+    out = {}
+    for event, minutes in COOLDOWN_EVENTS.items():
+        for r in db.execute("SELECT DISTINCT item_id FROM events WHERE event=? "
+                            "AND created_at > datetime('now', ?)", (event, f"-{minutes} minutes")):
+            out[r["item_id"]] = event
+    return out
+
+
+def _armed(db):
+    """The armed pile the pipeline can act on, split into (ready, cooling).
+
+    Ready items come back least-recently-tried first. Ordering matters once sweeps are
+    bounded: with thousands of armed titles, sorting by anything else lets an item whose
+    cooldown expires early re-take the front of the queue on the next sweep and starve
+    everything behind it. Never-tried items sort ahead of retried ones, so sweeps make
+    forward progress and the pile drains before anything is searched twice.
+    """
+    cooled = _cooled(db)
+    armed = [r for r in next_individuals() if r["status"] in QUEUEABLE]
+    tried = {r["item_id"]: r["t"] for r in db.execute(
+        f"SELECT item_id, MAX(created_at) t FROM events WHERE event IN {tuple(COOLDOWN_EVENTS)} "
+        "AND item_id IS NOT NULL GROUP BY item_id")}
+    ready = [r for r in armed if r["id"] not in cooled]
+    ready.sort(key=lambda r: (tried.get(r["id"]) or "", r["system"] or "", r["title"]))
+    return ready, len(armed) - len(ready)
+
+
+def eligible(db=None):
+    """Armed items the pipeline will attempt this sweep."""
+    return _armed(db or connect())[0]
 
 
 def eligible_count():
     return len(eligible())
+
+
+def cooling_count():
+    """Armed items held back by an unexpired cooldown — reported alongside the eligible
+    count so a quiet sweep ("3 armed, 4,000 cooling") is explicable instead of looking
+    stuck, and so the effect of the cooldown is visible in the UI."""
+    return _armed(connect())[1]
+
+
+def _prune_events(db):
+    """Cooldown rows exist only to date a skip and the longest window is hours: drop what
+    nothing can still be reading, so a watcher running for weeks doesn't grow the trail
+    without bound."""
+    events = tuple(COOLDOWN_EVENTS)
+    try:
+        with db:
+            db.execute(f"DELETE FROM events WHERE event IN {events} AND created_at < datetime('now', ?)",
+                       (f"-{EVENT_KEEP_DAYS} days",))
+    except Exception:
+        pass  # housekeeping must never take a sweep down (a busy DB is not a failure)
 
 
 def _pick(results, min_score=MIN_SCORE):
@@ -73,21 +129,27 @@ def auto_acquire(progress=None, poll_interval=None, max_wait_minutes=None, batch
     download directory mid-cycle are scanned in right away instead of waiting
     for the cycle to end.
 
-    With `watch` (or ROMCOM_ACQUIRE_WATCH saved on), the cycle repeats forever,
-    resting `ROMCOM_ACQUIRE_INTERVAL` seconds between sweeps — the always-on
-    "download manager" mode. Setting `stop` cancels the current cycle and ends
-    the watch.
+    With `watch` (or ROMCOM_ACQUIRE_WATCH saved on), the cycle repeats forever —
+    the always-on "download manager" mode. A watching cycle is bounded by
+    `ROMCOM_ACQUIRE_WATCH_BATCH` (0 = unlimited): sweeps end, they don't run away
+    with the whole library. A sweep that ended early because it hit that cap rests
+    only `ROMCOM_ACQUIRE_SWEEP_PAUSE` seconds, since the next one picks up where it
+    left off; a sweep with nothing left to do rests the full `ROMCOM_ACQUIRE_INTERVAL`.
+    Setting `stop` cancels the current cycle and ends the watch.
     """
-    s = settings()
-    poll = poll_interval if poll_interval is not None else s["acquire_poll"]
-    max_wait = (max_wait_minutes if max_wait_minutes is not None else s["acquire_max_wait_min"]) * 60
-    batch = batch_max if batch_max is not None else s["acquire_batch_max"]
-    slots = parallel if parallel is not None else s["acquire_parallel"]
-    interval = s["acquire_interval"]
     started_at = time.monotonic()
     totals = None
     cycles = 0
     while True:
+        # Re-read settings each cycle: the watcher is long-lived, and the UI can retune
+        # it (or turn it off) while it runs.
+        s = settings()
+        watching = watch or s["acquire_watch"]
+        poll = poll_interval if poll_interval is not None else s["acquire_poll"]
+        max_wait = (max_wait_minutes if max_wait_minutes is not None else s["acquire_max_wait_min"]) * 60
+        slots = parallel if parallel is not None else s["acquire_parallel"]
+        batch = batch_max if batch_max is not None else (
+            s["acquire_watch_batch"] if watching else s["acquire_batch_max"])
         result = _cycle(progress, poll, max_wait, batch, slots, stop)
         cycles += 1
         # Watch mode reports what the WHOLE watch did, not just its last cycle.
@@ -101,24 +163,29 @@ def auto_acquire(progress=None, poll_interval=None, max_wait_minutes=None, batch
             if result["failed_items"]:
                 totals["failed_items"] = (totals["failed_items"] + result["failed_items"])[:50]
             totals.update(still_pending=result["still_pending"], wait_note=result["wait_note"],
-                          batch_note=result["batch_note"], elapsed_min=round(
-                              (time.monotonic() - started_at) / 60, 1))
+                          batch_note=result["batch_note"], sweep_capped=result["sweep_capped"],
+                          armed_remaining=result["armed_remaining"], cooling=result["cooling"],
+                          elapsed_min=round((time.monotonic() - started_at) / 60, 1))
             if result["scan"]:
                 totals["scan"], totals["scan_note"] = result["scan"], result["scan_note"]
         totals["cycles"] = cycles
-        watching = watch or settings()["acquire_watch"]
         if not watching or (stop and stop.is_set()):
             return totals
-        # Idle rest between sweeps: newly armed items, expired cooldowns, and
-        # retriable skips are all picked up on the next cycle.
+        # Rest between sweeps: newly armed items, expired cooldowns, and retriable skips
+        # are all picked up on the next one. A sweep that stopped at the cap still has a
+        # queue of untried items behind it, so it comes straight back — the pause only
+        # keeps back-to-back sweeps from hammering the indexer.
+        pause = min(s["acquire_interval"], s["acquire_sweep_pause"]) if result["sweep_capped"] \
+            else s["acquire_interval"]
         slept = 0.0
-        while slept < interval:
+        while slept < pause:
             if stop and stop.is_set():
                 return totals
             if progress:
-                progress(0, 0, f"watching — next sweep in ~{int(interval - slept)}s",
+                more = f", {totals['armed_remaining']:,} armed left" if totals.get("armed_remaining") else ""
+                progress(0, 0, f"watching — {cycles} sweep(s){more}, next in ~{int(pause - slept)}s",
                         {k: v for k, v in totals.items() if isinstance(v, (int, float, dict))})
-            nap = min(5.0, interval - slept)
+            nap = min(5.0, pause - slept)
             time.sleep(nap)
             slept += nap
 
@@ -129,6 +196,7 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
     s = settings()
     db = connect()
     start = time.monotonic()
+    _prune_events(db)
 
     attempted = set()
     processed = [0]  # items searched this cycle (queued, skipped, or failed) — capped per run
@@ -139,14 +207,16 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
     base_dl = db.execute("SELECT COUNT(*) c FROM jobs WHERE status='DOWNLOADED'").fetchone()["c"]
     base_fl = db.execute("SELECT COUNT(*) c FROM jobs WHERE status='FAILED'").fetchone()["c"]
 
-    def _skip(item, reason):
+    def _skip(item, reason, miss=False):
+        """Record a skip and start its cooldown. `miss` marks the reasons that mean "the
+        sources don't have this" (as opposed to "not right now"), which cool for hours."""
         stats["skipped"] += 1
         skipped_by_reason[reason] = skipped_by_reason.get(reason, 0) + 1
         # The cooldown trail: a watching loop must not re-search this every sweep.
         try:
             with db:
-                db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,'acquire-skip',?)",
-                           (item["id"], reason))
+                db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
+                           (item["id"], "acquire-miss" if miss else "acquire-skip", reason))
         except Exception:
             pass
         if progress:
@@ -193,14 +263,14 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
             # The NZB indexer had nothing usable — fall back to the direct-download
             # source (romsgames.net) before giving up on this item.
             if not s["download_dir"]:
-                _skip(c, "no usable result (low score or no url)"); return
+                _skip(c, "no usable indexer result, and no ROMCOM_DOWNLOAD_DIR for the direct fallback"); return
             _say(f"direct search: {c['title']}")
             try:
                 direct = _pick(webdl.search(c["title"], c["system"]))
             except Exception as ex:
                 _skip(c, f"direct search failed: {ex}"); return
             if direct is None:
-                _skip(c, "no usable result anywhere (indexer or direct)"); return
+                _skip(c, "no usable result anywhere (indexer or direct)", miss=True); return
             _say(f"direct download: {c['title']}")
             try:
                 webdl.fetch(direct, s["download_dir"])
@@ -298,18 +368,22 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
     except Exception: pass
     _refresh()
     import_new()
+    # What the sweep leaves behind, for the UI and for the watcher's decision to come
+    # straight back: ready items are freshly armed or finished cooling, cooling ones are
+    # dated in the events table and will rejoin after their window.
+    ready, cooling = _armed(db)
+    capped = bool(batch) and processed[0] >= batch
     result = {"queued": stats["queued"], "downloaded": stats["downloaded"],
               "download_failed": stats["download_failed"], "failed": len(failed_items),
               "skipped": stats["skipped"], "skipped_by_reason": skipped_by_reason,
               "failed_items": failed_items, "still_pending": stats["waiting"],
               "direct": stats["direct"],
               "wait_note": note, "elapsed_min": round((time.monotonic() - start) / 60, 1),
-              "batch_note": None, "scan": imported.get("last_result"), "scan_note": None}
-    if batch and processed[0] >= batch:
-        remaining = eligible_count()
-        if remaining:
-            result["batch_note"] = (f"capped at {batch} attempted; {remaining} armed item(s) "
-                                    "left for the next run")
+              "batch_note": None, "scan": imported.get("last_result"), "scan_note": None,
+              "sweep_capped": capped, "armed_remaining": len(ready), "cooling": cooling}
+    if capped:
+        result["batch_note"] = (f"sweep capped at {batch} attempted; {len(ready)} armed item(s) left"
+                                f"{f' ({cooling:,} held back by search cooldowns)' if cooling else ''}")
     if not ddir:
         result["scan_note"] = "ROMCOM_DOWNLOAD_DIR is not set — files not imported"
     elif not ddir_ok:

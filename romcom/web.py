@@ -12,14 +12,13 @@ from .planner import bulk_plan, next_individuals, next_picks
 from .doctor import run as doctor_run
 from .catalog_status import catalog_status
 from .manage import set_series
-from .status import LIFECYCLE
+from .status import LIFECYCLE, MISSING, SATISFIED, own_all
 from . import indexer, actions, acquirer, sab, webdl
 
 STATIC = Path(__file__).resolve().parent / "webui"
 
 ITEM_FIELDS = {"authorized", "status", "wanted", "preferred_runtime", "notes", "play_status", "system", "region", "language"}
 VOLUME_FIELDS = {"authorized", "status"}
-SATISFIED = ("VERIFIED", "NORMALIZED", "INSTALLED", "TESTED")
 
 def _entity(db, ident):
     i = db.execute("SELECT * FROM items WHERE id=?", (ident,)).fetchone()
@@ -56,6 +55,7 @@ def create_app():
     SETTABLE = {"nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "sab_verify_ssl",
                 "download_dir", "acquire_poll", "acquire_max_wait_min", "acquire_batch_max",
                 "acquire_parallel", "acquire_watch", "acquire_interval",
+                "acquire_watch_batch", "acquire_sweep_pause",
                 "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout"}
 
     def _settings_payload(db):
@@ -136,7 +136,7 @@ def create_app():
             like = f"%{args['q']}%"; p += [like, like, like]
         view = args.get("view", "all")
         if view == "missing":
-            q += " AND wanted=1 AND status NOT IN ('VERIFIED','NORMALIZED','INSTALLED','TESTED','EXCLUDED')"
+            q += f" AND wanted=1 AND status IN {MISSING}"
         elif view == "wanted":
             q += " AND wanted=1"
         elif view == "satisfied":
@@ -203,10 +203,21 @@ def create_app():
             _maybe_auto_acquire()
         return jsonify({"updated": count})
 
+    @app.post("/api/library/own")
+    def api_mark_owned():
+        """Everything already on disk counts as wanted & authorized, so coverage, the
+        missing list and the SD-card export agree with the collection itself. Safe to
+        press while a watcher runs: the pipeline only ever searches CATALOGED/MISSING
+        items, and this never lowers a status. EXCLUDED items are left alone."""
+        db = connect()
+        with db:
+            updated = own_all(db)
+        return jsonify({"updated": updated, "eligible": acquirer.eligible_count()})
+
     @app.get("/api/plan")
     def api_plan():
         return jsonify({"volumes": bulk_plan(), "items": next_individuals(50),
-                        "eligible": acquirer.eligible_count()})
+                        "eligible": acquirer.eligible_count(), "cooling": acquirer.cooling_count()})
 
     @app.get("/api/next")
     def api_next():

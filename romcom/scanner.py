@@ -1,7 +1,7 @@
 from pathlib import Path
 import hashlib, re, zipfile, zlib
 from .db import connect
-from .status import promote
+from .status import promote, own
 
 CHUNK=1024*1024
 
@@ -103,6 +103,7 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True):
             else:
                 promote(db,item_id,"FOUND")
             for it in [item_id]+extra:
+                own(db,it)  # having the file means we want and authorize the item
                 db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",(it,"scan-match",f"{method}: {p}"))
         db.execute("""INSERT INTO files(path,bytes,mtime,crc32,md5,sha1,matched_item_id,match_method,scanned_at)
           VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
@@ -172,8 +173,9 @@ def adopt_unmatched(root=None,progress=None):
             item_id=existing["id"]
         else:
             item_id=f"local-{system}-{digest[:12]}"
-            db.execute("""INSERT INTO items(id,title,system,wanted,status,catalog_source,external_id)
-              VALUES(?,?,?,0,'FOUND','local',?)""",(item_id,p.stem,system,digest))
+            db.execute("""INSERT INTO items(id,title,system,wanted,authorized,status,catalog_source,external_id)
+              VALUES(?,?,?,1,1,'FOUND','local',?)""",(item_id,p.stem,system,digest))
+        own(db,item_id)  # covers items adopted by an earlier scan (EXCLUDED ones stay excluded)
         db.execute("INSERT OR IGNORE INTO aliases(item_id,alias) VALUES(?,?)",(item_id,p.stem))
         for alg,d in (("crc",r["crc32"]),("md5",r["md5"]),("sha1",r["sha1"])):
             if d: db.execute("INSERT OR IGNORE INTO file_hashes(item_id,algorithm,digest) VALUES(?,?,?)",(item_id,alg,d))

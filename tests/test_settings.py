@@ -54,6 +54,16 @@ def test_parallel_default_and_coercion(monkeypatch, tmp_path):
     assert settings()["acquire_parallel"] == 3  # bad value falls back, no crash
 
 
+def test_watch_sweep_settings_default_and_coercion(monkeypatch, tmp_path):
+    env_db(monkeypatch, tmp_path)
+    s = settings()
+    assert s["acquire_watch_batch"] == 50 and s["acquire_sweep_pause"] == 15.0
+    env_db(monkeypatch, tmp_path, ROMCOM_ACQUIRE_WATCH_BATCH="junk", ROMCOM_ACQUIRE_SWEEP_PAUSE="-5")
+    s = settings()
+    assert s["acquire_watch_batch"] == 50      # bad value falls back, no crash
+    assert s["acquire_sweep_pause"] == 0.0     # negatives clamp to "no pause"
+
+
 def test_bad_numeric_falls_back(monkeypatch, tmp_path):
     db = env_db(monkeypatch, tmp_path)
     with db:

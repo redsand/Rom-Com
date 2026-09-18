@@ -55,7 +55,7 @@
       <select id="f-view">
         <option value="all">All items</option>
         <option value="wanted">Wanted</option>
-        <option value="missing" selected>Missing (wanted, unsatisfied)</option>
+        <option value="missing" selected>Missing (wanted, nothing on disk)</option>
         <option value="satisfied">Satisfied</option>
       </select>
       <select id="f-system"><option value="">All systems</option></select>
@@ -70,6 +70,9 @@
         <option value="authorized:0">Mark not authorized</option>
       </select>
       <button id="bulk-apply">Apply</button>
+      <button id="lib-own" class="ghost" title="Everything already in hand (FOUND, DOWNLOADED,
+        VERIFIED and locally cataloged files) counts as wanted and authorized">
+        Mark owned as wanted + authorized</button>
     </div>
     <div class="tablewrap">
       <table id="lib-table">
@@ -90,9 +93,10 @@
       <label class="autolabel"><input type="checkbox" id="acq-watch"> keep downloading continuously</label>
       <span id="acq-eligible" class="count"></span>
       <span class="sub">marks made in the Library start this automatically — the button sweeps
-        everything armed in one run; the toggle keeps a watcher running forever:
-        it fills every free download slot, imports files as they land, and re-sweeps
-        for newly armed items</span>
+        everything armed in one run; the toggle keeps a watcher running forever: it fills
+        every free download slot, imports files as they land, and re-sweeps in bounded
+        batches for newly armed items, holding back anything that found nothing last time
+        so each sweep spends its effort on titles it hasn't tried yet</span>
     </div>
     <div id="acq-progress" hidden>
       <div class="meter big"><i id="acq-bar" style="width:0%"></i></div>
@@ -257,6 +261,15 @@
         <input id="set-acquire_interval" type="search" placeholder="300" spellcheck="false" style="width:90px">
         <span class="sub">seconds the continuous watcher rests between sweeps
           (toggle it on the Acquire tab)</span>
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Watch sweep cap</span>
+        <input id="set-acquire_watch_batch" type="search" placeholder="50" spellcheck="false" style="width:90px">
+        <span class="sub">items the watcher attempts per sweep (0 = unlimited) — a sweep
+          ends, then the next one continues where it left off</span>
+        <span class="count" style="width:150px;margin-left:24px">Sweep pause</span>
+        <input id="set-acquire_sweep_pause" type="search" placeholder="15" spellcheck="false" style="width:90px">
+        <span class="sub">seconds between back-to-back sweeps that hit the cap</span>
       </div>
     </div>
     <div class="card">

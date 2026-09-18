@@ -1,12 +1,13 @@
 from .db import connect
-
-SATISFIED=("VERIFIED","NORMALIZED","INSTALLED","TESTED")
+from .status import MISSING, SATISFIED
 
 def bulk_plan():
     db=connect()
-    rows=db.execute("""SELECT v.id,v.title,v.estimated_bytes,
+    # `missing` counts covered titles with nothing on disk yet — a bundle is only worth
+    # downloading for what it actually adds, not for the titles it covers that we own.
+    rows=db.execute(f"""SELECT v.id,v.title,v.estimated_bytes,
       COUNT(vc.item_id) covered,
-      COALESCE(SUM(CASE WHEN i.wanted=1 AND i.status NOT IN ('VERIFIED','NORMALIZED','INSTALLED','TESTED','EXCLUDED') THEN 1 ELSE 0 END),0) missing
+      COALESCE(SUM(CASE WHEN i.wanted=1 AND i.status IN {MISSING} THEN 1 ELSE 0 END),0) missing
       FROM volumes v LEFT JOIN volume_covers vc ON vc.volume_id=v.id
       LEFT JOIN items i ON i.id=vc.item_id
       WHERE v.authorized=1 AND v.status NOT IN ('QUEUED','DOWNLOADING','DOWNLOADED','VERIFIED')
@@ -18,8 +19,11 @@ def bulk_plan():
         out.append(dict(r)|{"coverage_score":score})
     return sorted(out,key=lambda x:(x["coverage_score"],x["missing"]),reverse=True)
 
-_NEXT_WHERE="""i.wanted=1 AND i.authorized=1
-      AND i.status NOT IN ('QUEUED','DOWNLOADING','DOWNLOADED','VERIFIED','NORMALIZED','INSTALLED','TESTED','EXCLUDED')
+# What is still worth acquiring: armed items with nothing on disk. FOUND/DOWNLOADED
+# items are already downloaded and waiting for a scan — they are not picks, and a
+# FAILED or MANUAL item stays out until it is deliberately retried from the drawer.
+_NEXT_WHERE=f"""i.wanted=1 AND i.authorized=1
+      AND i.status IN {MISSING}
       AND NOT EXISTS (
         SELECT 1 FROM volume_covers vc JOIN volumes v ON v.id=vc.volume_id
         WHERE vc.item_id=i.id AND v.authorized=1

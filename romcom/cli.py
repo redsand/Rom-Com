@@ -8,6 +8,7 @@ from .report import render_text, summary
 from .doctor import run as doctor_run
 from .manage import set_series, export_csv, import_csv
 from .catalog_status import render as render_catalog_status
+from .status import MISSING, own_all
 from . import indexer, actions
 from .config import settings
 
@@ -28,7 +29,7 @@ def entity(db,ident):
 def cmd_status(_): print(render_text())
 
 def cmd_missing(a):
-    db=connect(); q="SELECT * FROM items WHERE wanted=1 AND status NOT IN ('VERIFIED','NORMALIZED','INSTALLED','TESTED','EXCLUDED')"; p=[]
+    db=connect(); q=f"SELECT * FROM items WHERE wanted=1 AND status IN {MISSING}"; p=[]
     if a.system: q+=" AND system=?"; p.append(a.system)
     for r in db.execute(q+" ORDER BY series,series_number,title",p): print(f"{r['id']:34} {r['status']:12} {r['system'] or '-':12} {r['title']}")
 
@@ -110,6 +111,11 @@ def cmd_doctor(a):
         bad=bad or not ok
     if bad: raise SystemExit(1)
 
+def cmd_mark_owned(_):
+    db=connect()
+    with db: n=own_all(db)
+    print(f"Marked {n} item(s) we already have as wanted & authorized")
+
 def cmd_set_series(a):
     try: count=set_series(a.name,a.field,a.value)
     except ValueError as e: raise SystemExit(str(e))
@@ -176,6 +182,7 @@ def main():
     r=s.add_parser("report"); r.add_argument("--json",action="store_true"); r.set_defaults(fn=lambda a:print(json.dumps(summary(),indent=2) if a.json else render_text()))
     st=s.add_parser("set"); st.add_argument("ident"); st.add_argument("field"); st.add_argument("value"); st.set_defaults(fn=cmd_set)
     ss=s.add_parser("set-series"); ss.add_argument("name"); ss.add_argument("field"); ss.add_argument("value"); ss.set_defaults(fn=cmd_set_series)
+    mo=s.add_parser("mark-owned"); mo.set_defaults(fn=cmd_mark_owned)
     ec=s.add_parser("export-csv"); ec.add_argument("path"); ec.set_defaults(fn=cmd_export_csv)
     ic=s.add_parser("import-csv"); ic.add_argument("path"); ic.set_defaults(fn=cmd_import_csv)
     dr=s.add_parser("doctor"); dr.add_argument("--no-sab",action="store_true"); dr.set_defaults(fn=cmd_doctor)

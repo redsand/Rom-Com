@@ -164,7 +164,8 @@ def test_pipeline_skips_low_score(monkeypatch, tmp_path):
     monkeypatch.setattr("romcom.actions.sync", lambda db: None)
     r = auto_acquire(poll_interval=0)
     assert r["queued"] == 0 and r["skipped"] == 1
-    assert any("no usable result" in k for k in r["skipped_by_reason"])
+    # no download dir here, so the reason names the missing fallback rather than the floor
+    assert any("no usable" in k for k in r["skipped_by_reason"])
     assert db.execute("SELECT COUNT(*) c FROM jobs").fetchone()["c"] == 0
     assert db.execute("SELECT status FROM items WHERE id='i1'").fetchone()["status"] == "CATALOGED"
 
@@ -231,6 +232,7 @@ def test_batch_cap_limits_queue(monkeypatch, tmp_path):
     assert db.execute("SELECT status FROM items WHERE id='i3'").fetchone()["status"] == "CATALOGED"
     assert "capped at 2 attempted" in r["batch_note"]
     assert "1 armed item(s)" in r["batch_note"]
+    assert r["sweep_capped"] is True and r["armed_remaining"] == 1
 
 
 def test_batch_cap_counts_skipped_searches(monkeypatch, tmp_path):
@@ -243,6 +245,92 @@ def test_batch_cap_counts_skipped_searches(monkeypatch, tmp_path):
     r = auto_acquire(poll_interval=0, batch_max=2)
     assert len(seen) == 2 and r["skipped"] == 2 and r["queued"] == 0
     assert "capped at 2 attempted" in r["batch_note"]
+
+
+def test_watch_bounds_each_sweep_and_resweeps(monkeypatch, tmp_path):
+    """A watcher must not grind through the whole library in one cycle: each sweep
+    attempts at most ROMCOM_ACQUIRE_WATCH_BATCH items, and the next sweep continues
+    where it left off (the finished items are inside their search cooldown)."""
+    db = client_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("ROMCOM_ACQUIRE_WATCH_BATCH", "2")
+    monkeypatch.setenv("ROMCOM_ACQUIRE_INTERVAL", "0")
+    monkeypatch.setenv("ROMCOM_ACQUIRE_SWEEP_PAUSE", "0")
+    from romcom.config import invalidate
+    invalidate()
+    seed(db, [{"id": f"i{n}"} for n in range(1, 6)])
+    stop = threading.Event()
+
+    def search(dbc, kind, ident):
+        seen.append(ident)
+        if len(seen) == 5:  # all five attempted — end the watch from inside the attempt
+            stop.set()
+        return [], dbc.execute("SELECT * FROM items WHERE id=?", (ident,)).fetchone()
+    seen = []
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.actions.sync", lambda db: None)
+
+    r = auto_acquire(poll_interval=0, watch=True, stop=stop)
+    assert seen == ["i1", "i2", "i3", "i4", "i5"]  # every item, in order, exactly once
+    assert r["cycles"] == 3                        # 2 + 2 + 1: the cap bounded each sweep
+    assert r["skipped"] == 5 and r["queued"] == 0
+    assert r["armed_remaining"] == 0 and r["cooling"] == 5  # all five are cooling now
+    assert r["batch_note"] is None                 # the final sweep was not capped
+
+
+def test_expired_items_queue_behind_untried_ones(monkeypatch, tmp_path):
+    """Sweeps are bounded, so the order they work in decides whether the library ever
+    drains: an item whose cooldown expired must not jump back in front of titles that
+    have never been tried, or the same head of the queue is searched forever."""
+    db = client_db(monkeypatch, tmp_path)
+    seed(db, [{"id": "a"}, {"id": "b"}, {"id": "c"}])
+    with db:
+        db.execute("INSERT INTO events(item_id,event,detail,created_at) "
+                   "VALUES('a','acquire-skip','old',datetime('now','-2 hours'))")
+    assert [r["id"] for r in eligible()] == ["b", "c", "a"]  # expired retry goes last
+    assert acquirer.cooling_count() == 0                     # nothing is inside its window
+
+
+def test_missing_items_cool_longer_than_transient_failures(monkeypatch, tmp_path):
+    """'Nothing found anywhere' is a property of the sources, so it holds the item back
+    for hours; a transient failure (indexer/SABnzbd/network) comes back within the hour."""
+    db = client_db(monkeypatch, tmp_path)
+    ddir = tmp_path / "downloads"; ddir.mkdir()
+    monkeypatch.setenv("ROMCOM_DOWNLOAD_DIR", str(ddir))
+    from romcom.config import invalidate
+    invalidate()
+    seed(db, [{"id": "i1", "title": "Nowhere Game"}])
+    search, _ = fake_search([{"title": "unrelated", "url": "nzb://x", "size": 1, "score": 0}])
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.acquirer.webdl.search", lambda *a: [])  # site has nothing either
+    monkeypatch.setattr("romcom.actions.sync", lambda db: None)
+
+    r = auto_acquire(poll_interval=0)
+    assert r["skipped"] == 1 and r["cooling"] == 1
+    assert db.execute("SELECT event FROM events").fetchone()["event"] == "acquire-miss"
+    with db:  # two hours on: still cooling (miss window is six hours)
+        db.execute("UPDATE events SET created_at=datetime('now','-2 hours')")
+    assert eligible() == [] and acquirer.cooling_count() == 1
+
+    with db:  # the same age on a transient skip is already expired
+        db.execute("UPDATE events SET event='acquire-skip' WHERE event='acquire-miss'")
+    assert [x["id"] for x in eligible()] == ["i1"]
+
+
+def test_cooldown_trail_is_pruned_but_history_is_kept(monkeypatch, tmp_path):
+    db = client_db(monkeypatch, tmp_path)
+    seed(db, [{"id": "i1"}])
+    with db:
+        db.execute("INSERT INTO events(item_id,event,detail,created_at) "
+                   "VALUES('old','acquire-skip','stale',datetime('now','-5 days'))")
+        db.execute("INSERT INTO events(item_id,event,detail,created_at) "
+                   "VALUES('old2','scan-match','x',datetime('now','-5 days'))")
+    search, _ = fake_search([])
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.actions.sync", lambda db: None)
+    auto_acquire(poll_interval=0)
+    kinds = {r["event"] for r in db.execute("SELECT event FROM events")}
+    assert "scan-match" in kinds            # real history is left alone
+    assert db.execute("SELECT COUNT(*) c FROM events WHERE item_id='old'").fetchone()["c"] == 0
 
 
 def test_scan_phase_runs(monkeypatch, tmp_path):

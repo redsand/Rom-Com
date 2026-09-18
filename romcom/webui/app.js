@@ -199,6 +199,22 @@ $("#bulk-apply").addEventListener("click", async () => {
   } catch (e) { toast(e.message, true); }
 });
 
+/* Everything already on disk is part of the intended collection: one sweep marks those
+   items wanted + authorized (see the Ownership section of the README). */
+$("#lib-own").addEventListener("click", async () => {
+  if (!confirm("Mark every item you already have (FOUND, DOWNLOADED, VERIFIED, and locally\n" +
+      "cataloged files) as wanted & authorized?\n\n" +
+      "Nothing already on disk is downloaded again — the pipeline only searches items with\n" +
+      "nothing on disk yet. Explicitly excluded items are left alone.")) return;
+  try {
+    const r = await post("/api/library/own", {});
+    toast(r.updated
+      ? `${r.updated.toLocaleString()} item(s) marked wanted & authorized — ${r.eligible.toLocaleString()} still to find`
+      : "Nothing to change — everything you own is already marked");
+    loadLibrary();
+  } catch (e) { toast(e.message, true); }
+});
+
 let debounce;
 $("#f-q").addEventListener("input", () => { clearTimeout(debounce); debounce = setTimeout(() => loadLibrary(), 300); });
 ["#f-view", "#f-system", "#f-status"].forEach(s => $(s).addEventListener("change", () => loadLibrary()));
@@ -298,7 +314,11 @@ async function loadAcquire() {
     const d = await api("/api/plan");
     const el = $("#acq-eligible");
     el.dataset.n = d.eligible || 0;
-    el.textContent = d.eligible ? `${d.eligible.toLocaleString()} eligible` : "nothing eligible yet";
+    // Cooling items are armed but inside a search cooldown (nothing found last time);
+    // showing them explains why the eligible count is smaller than the armed pile.
+    el.textContent = d.eligible
+      ? `${d.eligible.toLocaleString()} eligible${d.cooling ? ` · ${d.cooling.toLocaleString()} cooling down` : ""}`
+      : (d.cooling ? `nothing eligible yet · ${d.cooling.toLocaleString()} cooling down` : "nothing eligible yet");
     $("#vol-table tbody").innerHTML = d.volumes.length ? d.volumes.map(v => `<tr>
       <td><div>${esc(v.title)}</div><div class="sub">${esc(v.id)}</div></td>
       <td class="r">${v.covered}</td><td class="r">${v.missing}</td>
@@ -491,7 +511,8 @@ function renderAcquireLive(st, s) {
     <div class="tile"><div class="v">${(st.download_failed || 0).toLocaleString()}</div><div class="l">Failed downloads</div></div>
     <div class="tile"><div class="v">${(st.failed || 0).toLocaleString()}</div><div class="l">Queue errors</div></div>
     <div class="tile"><div class="v">${(st.skipped || 0).toLocaleString()}</div><div class="l">Skipped</div></div>
-    <div class="tile"><div class="v">${(st.waiting || 0).toLocaleString()}</div><div class="l">Waiting on SABnzbd</div></div>`;
+    <div class="tile"><div class="v">${(st.waiting || 0).toLocaleString()}</div><div class="l">Waiting on SABnzbd</div></div>`
+    + ((st.cycles || 1) > 1 ? `<div class="tile"><div class="v">${st.cycles}</div><div class="l">Sweeps</div></div>` : "");
   const scanning = st.matched !== undefined
     ? `<div class="tile"><div class="v">${s.done.toLocaleString()}</div><div class="l">Files scanned</div><div class="d">of ${s.total.toLocaleString()}</div></div>
        <div class="tile"><div class="v">${(st.matched || 0).toLocaleString()}</div><div class="l">Matched so far</div></div>
@@ -518,9 +539,11 @@ function renderAcquireResult(r) {
       <div class="tile"><div class="v">${r.download_failed.toLocaleString()}</div><div class="l">Failed downloads</div></div>
       <div class="tile"><div class="v">${r.failed.toLocaleString()}</div><div class="l">Queue errors</div></div>
       <div class="tile"><div class="v">${r.skipped.toLocaleString()}</div><div class="l">Skipped</div></div>
+      <div class="tile"><div class="v">${(r.armed_remaining || 0).toLocaleString()}</div><div class="l">Still armed</div>
+        <div class="d">${(r.cooling || 0).toLocaleString()} cooling down</div></div>
       <div class="tile"><div class="v">${r.still_pending.toLocaleString()}</div><div class="l">Still pending</div>
         ${r.wait_note ? `<div class="d">${esc(r.wait_note)}</div>` : ""}</div></div>`
-    + `<p class="sub">run took ${r.elapsed_min} min${r.batch_note ? " — " + esc(r.batch_note) : ""}${r.still_pending ? " — downloads still in flight; run again later to import them" : ""}</p>`
+    + `<p class="sub">run took ${r.elapsed_min} min${r.cycles > 1 ? ` over ${r.cycles} sweeps` : ""}${r.batch_note ? " — " + esc(r.batch_note) : ""}${r.still_pending ? " — downloads still in flight; run again later to import them" : ""}</p>`
     + (failed ? `<details class="skiplist" open><summary>${r.failed} queue error(s)</summary><div class="checklist" style="max-height:none">${failed}</div></details>` : "")
     + (skipped ? `<details class="skiplist"><summary>${r.skipped} skipped</summary><div class="checklist" style="max-height:none">${skipped}</div></details>` : "")
     + scan;
@@ -597,6 +620,7 @@ function renderImportResult(r) {
 const SET_KEYS = ["nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "sab_verify_ssl",
                   "download_dir", "acquire_poll", "acquire_max_wait_min", "acquire_batch_max",
                   "acquire_parallel", "acquire_watch", "acquire_interval",
+                  "acquire_watch_batch", "acquire_sweep_pause",
                   "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout"];
 
 const SRC_LABEL = { ui: "saved in UI", env: "from .env", default: "default" };

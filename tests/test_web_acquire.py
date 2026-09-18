@@ -102,9 +102,10 @@ def test_plan_eligible_count(monkeypatch, tmp_path):
                                     {"id": "i3", "authorized": 1, "status": "FOUND"}])
     try:
         d = c.get("/api/plan").get_json()
-        assert d["eligible"] == 2
-        # the planner's "next" list still includes FOUND items; only `eligible` filters them
-        assert len(d["items"]) == 3
+        assert d["eligible"] == 2 and d["cooling"] == 0
+        # picks are what the pipeline would actually attempt: the FOUND item is already
+        # on disk (it needs a scan, not a download), so it is not a pick
+        assert len(d["items"]) == 2 and all(i["status"] != "FOUND" for i in d["items"])
     finally:
         release.set()
 
@@ -160,6 +161,28 @@ def test_watch_toggle_starts_persists_and_resumes(monkeypatch, tmp_path):
         d = c.post("/api/acquire/watch", json={"on": False}).get_json()
         assert d["on"] is False
         assert c.get("/api/acquire/watch").get_json()["on"] is False
+    finally:
+        release.set()
+
+
+def test_mark_owned_endpoint(monkeypatch, tmp_path):
+    """One sweep flags everything already on disk. It must not arm the downloader:
+    an owned item is never CATALOGED/MISSING, so nothing new becomes eligible."""
+    c, started, release, _ = make_client(monkeypatch, tmp_path, [
+        {"id": "f", "status": "FOUND", "wanted": 0, "authorized": 0},
+        {"id": "v", "status": "VERIFIED", "wanted": 0, "authorized": 0},
+        {"id": "x", "status": "EXCLUDED", "wanted": 0, "authorized": 0},
+        {"id": "cat", "status": "CATALOGED", "wanted": 1, "authorized": 1},
+    ])
+    try:
+        r = c.post("/api/library/own")
+        assert r.status_code == 200 and r.get_json()["updated"] == 2
+        assert r.get_json()["eligible"] == 1  # only the real to-do item
+        assert not started.is_set()           # nothing new to acquire, so no run started
+        db = connect()
+        flags = {x["id"]: (x["wanted"], x["authorized"]) for x in db.execute("SELECT * FROM items")}
+        assert flags == {"f": (1, 1), "v": (1, 1), "x": (0, 0), "cat": (1, 1)}
+        assert c.post("/api/library/own").get_json()["updated"] == 0  # idempotent
     finally:
         release.set()
 
