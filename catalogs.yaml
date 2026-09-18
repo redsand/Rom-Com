@@ -1,17 +1,78 @@
 catalogs:
   nointro:
     enabled: true
-    systems: [nes, snes, n64, gb, gbc, gba, genesis, mastersystem, gamegear, pcengine, atari2600, atari5200, atari7800, lynx]
+    importer: dat
+    systems:
+      - atari2600
+      - atari5200
+      - atari7800
+      - lynx
+      - nes
+      - snes
+      - n64
+      - gb
+      - gbc
+      - gba
+      - virtualboy
+      - mastersystem
+      - gamegear
+      - genesis
+      - 32x
+      - pcengine
+      - neogeopocket
+      - neogeopocketcolor
+      - wonderswan
+      - wonderswancolor
+
   redump:
     enabled: true
-    systems: [ps1, ps2, psp, dreamcast, saturn, segacd, gamecube, wii, 3do, pcenginecd]
+    importer: dat
+    systems:
+      - segacd
+      - saturn
+      - dreamcast
+      - 3do
+      - neogeocd
+      - pcenginecd
+      - ps1
+      - ps2
+      - psp
+      - gamecube
+      - wii
+      - cdi
+
   scummvm:
     enabled: true
-    source: live-compatibility
-  custom:
-    - nancy-drew
+    importer: scummvm
+    systems:
+      - scummvm
+
+  mame:
+    enabled: false
+    importer: dat
+    systems:
+      - arcade
+
+custom:
+  systems:
     - dos
     - windows
+    - amiga
+    - amigacd32
+    - c64
+    - atarist
+    - apple2
+    - apple2gs
+    - amstradcpc
+    - msx
+    - msx2
+    - pc88
+    - pc98
+    - x68000
+    - fmtowns
+    - nds
+    - 3ds
+    - vita
     - homebrew
     - translations
     - romhacks

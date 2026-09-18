@@ -8,6 +8,7 @@ from .catalog import import_dat, import_scummvm
 from .report import render_text, summary
 from .doctor import run as doctor_run
 from .manage import set_series, export_csv, import_csv
+from .catalog_status import render as render_catalog_status
 from . import indexer, sab
 
 def fmt(n):
@@ -109,6 +110,11 @@ def cmd_export_csv(a):
 def cmd_import_csv(a):
     print(json.dumps(import_csv(a.path),indent=2))
 
+def cmd_catalog_status(a):
+    text,missing=render_catalog_status()
+    print(text)
+    if a.strict and missing: raise SystemExit(2)
+
 def cmd_import_dat(a): print(json.dumps(import_dat(a.path,a.system,a.source,not a.catalog_only),indent=2))
 def cmd_import_scummvm(a): print(f"Imported {import_scummvm(a.url,not a.catalog_only)} ScummVM compatibility entries")
 def cmd_scan(a): print(json.dumps(scan(a.path,not a.no_name_match),indent=2))
@@ -134,6 +140,7 @@ def main():
     ec=s.add_parser("export-csv"); ec.add_argument("path"); ec.set_defaults(fn=cmd_export_csv)
     ic=s.add_parser("import-csv"); ic.add_argument("path"); ic.set_defaults(fn=cmd_import_csv)
     dr=s.add_parser("doctor"); dr.add_argument("--no-sab",action="store_true"); dr.set_defaults(fn=cmd_doctor)
+    cs=s.add_parser("catalog-status"); cs.add_argument("--strict",action="store_true"); cs.set_defaults(fn=cmd_catalog_status)
     a=p.parse_args(); a.fn(a)
 
 if __name__=="__main__": main()

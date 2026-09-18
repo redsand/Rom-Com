@@ -69,6 +69,15 @@ ROMCOM_DB=romcom.db
 ROMCOM_SAB_CATEGORY=odin
 ```
 
+## Catalog completeness
+
+```bash
+romcom catalog-status
+romcom catalog-status --strict
+```
+
+This audits every enabled source/system in `catalogs.yaml`. A whole platform that has never been imported is reported as **MISSING**, preventing a partially-loaded database from appearing complete.
+
 ## Catalogs
 
 ### DAT/XML
