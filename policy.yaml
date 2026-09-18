@@ -1,0 +1,7 @@
+regions:
+  prefer: [USA, World, Europe-English]
+languages:
+  require: [English]
+revisions:
+  preference: latest
+exclude: [beta, proto, demo, kiosk, sample, magazine]

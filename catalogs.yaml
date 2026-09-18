@@ -1,0 +1,17 @@
+catalogs:
+  nointro:
+    enabled: true
+    systems: [nes, snes, n64, gb, gbc, gba, genesis, mastersystem, gamegear, pcengine, atari2600, atari5200, atari7800, lynx]
+  redump:
+    enabled: true
+    systems: [ps1, ps2, psp, dreamcast, saturn, segacd, gamecube, wii, 3do, pcenginecd]
+  scummvm:
+    enabled: true
+    source: live-compatibility
+  custom:
+    - nancy-drew
+    - dos
+    - windows
+    - homebrew
+    - translations
+    - romhacks
