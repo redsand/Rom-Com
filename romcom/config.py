@@ -17,5 +17,6 @@ def settings():
         "nzb_key": os.getenv("NZB_API_KEY", ""),
         "sab_url": os.getenv("SAB_URL", "").rstrip("?"),
         "sab_key": os.getenv("SAB_API_KEY", ""),
+        "sab_verify_ssl": os.getenv("SAB_VERIFY_SSL", "true").strip().lower() not in ("0", "false", "no", "off"),
         "sab_category": os.getenv("ROMCOM_SAB_CATEGORY", "odin"),
     }
