@@ -24,6 +24,7 @@ It separates four concerns:
 - Newznab-compatible index search with ranking and size filters.
 - SABnzbd queue/history integration.
 - Bulk and individual acquisition support.
+- Automatic acquire-download-import pipeline for approved & wanted items.
 - Downloaded vs verified state separation.
 - Per-item authorization and wanted flags.
 - YAML overrides for durable local preferences.
@@ -69,13 +70,22 @@ without the CLI:
 - **Dashboard** — collection progress per system, health checks, catalog coverage
 - **Library** — browse/filter every item; toggle authorized/wanted and edit status inline
 - **Acquire** — recommended bulk volumes and next individual picks; search the indexer
-  and send a release to SABnzbd in two clicks
+  and send a release to SABnzbd in two clicks, or sweep everything approved & wanted
+  in one background run (see [Automatic acquiring](#automatic-acquiring))
 - **Activity** — download jobs with a sync button and automatic 20-second SABnzbd sync
 
 The **Files** tab bulk-imports DAT catalogs (see below), scans downloaded ROM folders
 (hash-matching files to the catalog), and exports matched files into a per-system
 folder layout for an SD card. The Library tab supports bulk marking wanted/authorized
 for everything matching the current filters. CSV round-trips remain CLI-only.
+
+The **Settings** tab edits the indexer/SABnzbd connection details and the automatic
+acquiring behavior (download folder, category, poll interval, caps) without touching
+`.env` by hand. The form is populated with the values currently in effect — including
+anything read from `.env` — and each field carries a badge showing where its value
+comes from: *saved in UI*, *from .env*, or *default*. Saved values live in the
+database and take precedence over `.env`; clearing a field hands control back to
+`.env`/defaults.
 
 ```bash
 romcom scan "H:\downloads\roms"          # hash files, match & verify against the catalog
@@ -118,8 +128,16 @@ SAB_URL=http://127.0.0.1:8080/api
 SAB_API_KEY=
 SAB_VERIFY_SSL=true
 ROMCOM_DB=romcom.db
-ROMCOM_SAB_CATEGORY=odin
+ROMCOM_SAB_CATEGORY=Games
+ROMCOM_DOWNLOAD_DIR=H:\downloads\complete
+ROMCOM_ACQUIRE_POLL=30
+ROMCOM_ACQUIRE_MAX_WAIT_MIN=240
+ROMCOM_ACQUIRE_BATCH_MAX=0
 ```
+
+`ROMCOM_SAB_CATEGORY` is the SABnzbd category every queued download is tagged with —
+SABnzbd files completed downloads into that category's folder, so point
+`ROMCOM_DOWNLOAD_DIR` at it (or at the complete folder root; the scan is recursive).
 
 ## Catalog completeness
 
@@ -242,6 +260,32 @@ romcom search <item-id>
 romcom acquire <item-id> --result 1
 romcom sync
 ```
+
+## Automatic acquiring
+
+Marking an item **both authorized and wanted** is the trigger: the web UI immediately
+starts a background run that loops through every armed item, searches the indexer,
+queues the best result in SABnzbd, waits for the downloads to finish, and then scans
+`ROMCOM_DOWNLOAD_DIR` to match the completed files into the library.
+
+- The **Acquire** tab's *Download approved & wanted* button sweeps everything armed in
+  one run — useful for items armed outside the UI (CSV import, `set-series`, overrides).
+  The CLI equivalent is `romcom auto-acquire` (same pipeline, live progress on stdout).
+- Only **CATALOGED/MISSING** items are attempted. FAILED downloads are not retried
+  automatically (a checkbox toggle elsewhere would otherwise re-queue them forever) —
+  retry those from the search drawer; FOUND items are already waiting in the download
+  directory and get picked up by the scan phase instead.
+- A release is queued only if its title actually resembles the item (rank score ≥ 20);
+  otherwise the item is skipped with a reason and stays CATALOGED for a manual look.
+- The wait phase polls SABnzbd every `ROMCOM_ACQUIRE_POLL` seconds and gives up after
+  `ROMCOM_ACQUIRE_MAX_WAIT_MIN` minutes (or 10 consecutive failed syncs). Interrupted
+  runs resume when the server restarts, and a fresh run skips anything already queued.
+- `ROMCOM_ACQUIRE_BATCH_MAX` caps how many items one run will attempt — searched,
+  whether the search leads to a queue, a skip, or a failure (0 = unlimited). With
+  thousands of armed items, set it so a single toggle floods neither SABnzbd nor the
+  indexer's API; the result reports how many armed items were left for the next run.
+- With `ROMCOM_DOWNLOAD_DIR` unset the run still queues and tracks downloads; it just
+  reports that the import scan was skipped.
 
 ## Verification
 

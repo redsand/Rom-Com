@@ -53,6 +53,9 @@ CREATE TABLE IF NOT EXISTS events (
  id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT, event TEXT NOT NULL,
  detail TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS app_settings (
+ key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 # ALTER TABLE has stricter default-expression rules than CREATE TABLE.
@@ -76,7 +79,8 @@ INDEXES = [
  "CREATE INDEX IF NOT EXISTS idx_items_system ON items(system)",
  "CREATE INDEX IF NOT EXISTS idx_items_series ON items(series)",
  "CREATE INDEX IF NOT EXISTS idx_file_hash_lookup ON file_hashes(algorithm,digest)",
- "CREATE INDEX IF NOT EXISTS idx_jobs_nzo ON jobs(nzo_id)"
+ "CREATE INDEX IF NOT EXISTS idx_jobs_nzo ON jobs(nzo_id)",
+ "CREATE INDEX IF NOT EXISTS idx_files_matched ON files(matched_item_id)"
 ]
 
 def _columns(db,table):

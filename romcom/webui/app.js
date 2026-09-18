@@ -51,7 +51,7 @@ const post = (path, body) => api(path, {
 });
 
 /* ---------- Tabs ---------- */
-const loaders = { dashboard: loadDashboard, library: loadLibrary, acquire: loadAcquire, activity: loadActivity, import: loadImport };
+const loaders = { dashboard: loadDashboard, library: loadLibrary, acquire: loadAcquire, activity: loadActivity, import: loadImport, settings: loadSettings };
 const loaded = {};
 
 function showTab(name) {
@@ -69,19 +69,22 @@ async function loadDashboard() {
     const s = await api("/api/summary");
     const pct = s.wanted ? (100 * s.satisfied / s.wanted) : 0;
     $("#stat-tiles").innerHTML = `
-      <div class="tile"><div class="v">${s.cataloged.toLocaleString()}</div><div class="l">Cataloged</div></div>
+      <div class="tile"><div class="v">${(s.on_disk || 0).toLocaleString()}</div><div class="l">On disk</div><div class="d">your actual collection</div></div>
+      <div class="tile"><div class="v">${s.cataloged.toLocaleString()}</div><div class="l">Cataloged</div><div class="d">known titles (reference)</div></div>
       <div class="tile"><div class="v">${s.wanted.toLocaleString()}</div><div class="l">Wanted</div></div>
       <div class="tile"><div class="v">${s.satisfied.toLocaleString()}</div><div class="l">Satisfied</div><div class="d">${pct.toFixed(1)}% of wanted</div></div>
       <div class="tile"><div class="v">${s.active_jobs}</div><div class="l">Active downloads</div></div>`;
-    const systems = [...s.by_system].sort((a, b) => (b.wanted - a.wanted) || (b.total - a.total));
+    const systems = [...s.by_system].sort((a, b) => (b.have - a.have) || (b.wanted - a.wanted) || (b.total - a.total));
     $("#system-meters").innerHTML = `<div class="meter-row head">
-        <span></span><span></span><span class="nums">wanted</span><span class="nums">cataloged</span></div>` +
+        <span></span><span></span><span class="nums">wanted</span><span class="nums">on disk</span><span class="nums">cataloged</span></div>` +
       systems.map(x => {
-        const p = x.wanted ? 100 * x.satisfied / x.wanted : 0;
+        // The bar is collection completeness: how much of the known catalog is on disk.
+        const p = x.total ? 100 * (x.have || 0) / x.total : 0;
         return `<div class="meter-row">
           <span class="name" title="${esc(x.system)}">${esc(x.system)}</span>
-          <span class="meter"><i style="width:${p.toFixed(1)}%"></i></span>
+          <span class="meter" title="${p.toFixed(1)}% of cataloged titles on disk"><i style="width:${p.toFixed(1)}%"></i></span>
           <span class="nums">${x.wanted ? `${x.satisfied}/${x.wanted}` : "—"}</span>
+          <span class="nums">${(x.have || 0).toLocaleString()}</span>
           <span class="nums">${x.total.toLocaleString()}</span></div>`;
       }).join("");
     $("#status-table").innerHTML = Object.entries(s.by_status).sort()
@@ -206,6 +209,7 @@ $("#lib-table").addEventListener("change", async e => {
     if (t.matches("input.flag")) {
       const r = await post(`/api/items/${encodeURIComponent(t.dataset.id)}`, {field: t.dataset.field, value: t.checked ? 1 : 0});
       toast(`${r.title}: ${t.dataset.field} ${t.checked ? "on" : "off"}`);
+      if (r.auto_acquire_started) toast("Approved & wanted — auto-download started (see the Acquire tab)");
       if (t.dataset.field === "authorized")
         $(`.act-search[data-id="${CSS.escape(t.dataset.id)}"]`).disabled = !t.checked;
     } else if (t.matches("select.status-edit")) {
@@ -261,6 +265,9 @@ document.addEventListener("keydown", e => { if (e.key === "Escape") $("#drawer")
 async function loadAcquire() {
   try {
     const d = await api("/api/plan");
+    const el = $("#acq-eligible");
+    el.dataset.n = d.eligible || 0;
+    el.textContent = d.eligible ? `${d.eligible.toLocaleString()} eligible` : "nothing eligible yet";
     $("#vol-table tbody").innerHTML = d.volumes.length ? d.volumes.map(v => `<tr>
       <td><div>${esc(v.title)}</div><div class="sub">${esc(v.id)}</div></td>
       <td class="r">${v.covered}</td><td class="r">${v.missing}</td>
@@ -276,6 +283,13 @@ async function loadAcquire() {
     </tr>`).join("") : `<tr><td colspan="4" class="sub">Nothing to pick up — authorize wanted items in the Library to see them here.</td></tr>`;
   } catch (e) { toast("Plan failed: " + e.message, true); }
 }
+
+$("#acq-start").addEventListener("click", () => {
+  const n = Number($("#acq-eligible").dataset.n || 0);
+  if (!confirm(`Search the indexer and queue the best result for all ${n.toLocaleString()} approved & wanted missing item(s)?\n` +
+      "Downloads run in the background; watch this tab for progress.")) return;
+  startJob("acquire", "/api/auto-acquire", {});
+});
 
 /* ---------- Activity ---------- */
 async function loadActivity() {
@@ -310,11 +324,12 @@ setInterval(() => {
   if ($("#auto-sync").checked && !document.hidden && $("#tab-activity").classList.contains("active")) doSync();
 }, 20000);
 
-/* ---------- Background jobs: import / scan / organize ---------- */
+/* ---------- Background jobs: import / scan / organize / acquire ---------- */
 const JOBS = {
   import:   {wrap: "#imp-progress",  bar: "#imp-bar",  cur: "#imp-current",  btn: "#imp-start",  out: "#imp-results",  render: renderImportResult,   doneMsg: "Import finished"},
   scan:     {wrap: "#scan-progress", bar: "#scan-bar", cur: "#scan-current", btn: "#scan-start", out: "#scan-result",  render: renderScanResult,     liveRender: renderScanLive, doneMsg: "Scan finished"},
   organize: {wrap: "#org-progress",  bar: "#org-bar",  cur: "#org-current",  btn: "#org-start",  out: "#org-result",   render: renderOrganizeResult, doneMsg: "Export finished"},
+  acquire:  {wrap: "#acq-progress",  bar: "#acq-bar",  cur: "#acq-current",  btn: "#acq-start",  out: "#acq-result",   render: renderAcquireResult, liveRender: renderAcquireLive, doneMsg: "Download run finished"},
 };
 const jobTimers = {};
 
@@ -326,10 +341,12 @@ function loadImport() {
 }
 
 /* Header chip: running jobs are visible from every tab, and survive page refreshes */
+let chipKinds = [];
 async function pollJobChip() {
   let active = {};
   try { active = await api("/api/jobs/active"); } catch { return; }
   const kinds = Object.keys(active);
+  chipKinds = kinds;
   const chip = $("#job-chip");
   chip.hidden = !kinds.length;
   if (kinds.length) {
@@ -339,7 +356,9 @@ async function pollJobChip() {
     }).join(" · ");
   }
 }
-$("#job-chip").addEventListener("click", () => { location.hash = "import"; });
+$("#job-chip").addEventListener("click", () => {
+  location.hash = chipKinds.length === 1 && chipKinds[0] === "acquire" ? "acquire" : "import";
+});
 setInterval(pollJobChip, 4000);
 
 async function startJob(kind, url, body) {
@@ -416,6 +435,46 @@ function renderScanLive(st, s) {
         <div class="checklist">${recent}</div></div>` : "");
 }
 
+function renderAcquireLive(st, s) {
+  const tiles = `<div class="tile"><div class="v">${(st.queued || 0).toLocaleString()}</div><div class="l">Queued</div></div>
+    <div class="tile"><div class="v">${(st.downloaded || 0).toLocaleString()}</div><div class="l">Downloaded</div></div>
+    <div class="tile"><div class="v">${(st.download_failed || 0).toLocaleString()}</div><div class="l">Failed downloads</div></div>
+    <div class="tile"><div class="v">${(st.failed || 0).toLocaleString()}</div><div class="l">Queue errors</div></div>
+    <div class="tile"><div class="v">${(st.skipped || 0).toLocaleString()}</div><div class="l">Skipped</div></div>
+    <div class="tile"><div class="v">${(st.waiting || 0).toLocaleString()}</div><div class="l">Waiting on SABnzbd</div></div>`;
+  const scanning = st.matched !== undefined
+    ? `<div class="tile"><div class="v">${s.done.toLocaleString()}</div><div class="l">Files scanned</div><div class="d">of ${s.total.toLocaleString()}</div></div>
+       <div class="tile"><div class="v">${(st.matched || 0).toLocaleString()}</div><div class="l">Matched so far</div></div>
+       <div class="tile"><div class="v">${(st.adopted || 0).toLocaleString()}</div><div class="l">Cataloged as local</div></div>`
+    : "";
+  $("#acq-result").innerHTML = `<div class="tiles" style="margin-top:12px">${tiles}${scanning}</div>`;
+}
+
+function renderAcquireResult(r) {
+  const failed = (r.failed_items || []).map(x => `<div class="check bad"><span class="mark">✕</span>
+    <span class="d"><b>${esc(x.title)}</b> — ${esc(x.reason)}</span></div>`).join("");
+  const skipped = Object.entries(r.skipped_by_reason || {})
+    .map(([reason, n]) => `<div class="check"><span class="mark">–</span>
+      <span class="d">${n.toLocaleString()} × ${esc(reason)}</span></div>`).join("");
+  const scan = r.scan ? `<div class="tiles" style="margin-top:12px">
+      <div class="tile"><div class="v">${r.scan.files.toLocaleString()}</div><div class="l">Files hashed</div></div>
+      <div class="tile"><div class="v">${r.scan.matched.toLocaleString()}</div><div class="l">Matched to catalog</div></div>
+      <div class="tile"><div class="v">${(r.scan.adopted || 0).toLocaleString()}</div><div class="l">Cataloged as local</div></div></div>`
+    : `<p class="sub">${esc(r.scan_note || "download folder not scanned")}</p>`;
+  $("#acq-result").innerHTML = `<div class="tiles" style="margin-top:12px">
+      <div class="tile"><div class="v">${r.queued.toLocaleString()}</div><div class="l">Queued</div></div>
+      <div class="tile"><div class="v">${r.downloaded.toLocaleString()}</div><div class="l">Downloaded</div></div>
+      <div class="tile"><div class="v">${r.download_failed.toLocaleString()}</div><div class="l">Failed downloads</div></div>
+      <div class="tile"><div class="v">${r.failed.toLocaleString()}</div><div class="l">Queue errors</div></div>
+      <div class="tile"><div class="v">${r.skipped.toLocaleString()}</div><div class="l">Skipped</div></div>
+      <div class="tile"><div class="v">${r.still_pending.toLocaleString()}</div><div class="l">Still pending</div>
+        ${r.wait_note ? `<div class="d">${esc(r.wait_note)}</div>` : ""}</div></div>`
+    + `<p class="sub">run took ${r.elapsed_min} min${r.batch_note ? " — " + esc(r.batch_note) : ""}${r.still_pending ? " — downloads still in flight; run again later to import them" : ""}</p>`
+    + (failed ? `<details class="skiplist" open><summary>${r.failed} queue error(s)</summary><div class="checklist" style="max-height:none">${failed}</div></details>` : "")
+    + (skipped ? `<details class="skiplist"><summary>${r.skipped} skipped</summary><div class="checklist" style="max-height:none">${skipped}</div></details>` : "")
+    + scan;
+}
+
 function renderScanResult(r) {
   const adopted = r.adopted || 0;
   const undetectable = r.adopt_skipped || 0;
@@ -482,6 +541,62 @@ function renderImportResult(r) {
     + (skips ? `<details class="skiplist"><summary>${r.skipped.length} skipped</summary><div class="checklist" style="max-height:none">${skips}</div></details>` : "")
     + (errs ? `<details class="skiplist" open><summary>${r.errors.length} errors</summary><div class="checklist" style="max-height:none">${errs}</div></details>` : "");
 }
+
+/* ---------- Settings ---------- */
+const SET_KEYS = ["nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "sab_verify_ssl",
+                  "download_dir", "acquire_poll", "acquire_max_wait_min", "acquire_batch_max"];
+
+const SRC_LABEL = { ui: "saved in UI", env: "from .env", default: "default" };
+
+function renderSettings(d) {
+  for (const k of SET_KEYS) {
+    const el = $(`#set-${k}`);
+    if (!el) continue;
+    if (el.type === "checkbox") el.checked = !!d.settings[k];
+    else el.value = d.settings[k] ?? "";
+    // Source badge: where this value comes from — a UI save, .env, or the default.
+    const host = el.type === "checkbox" ? (el.closest("label") || el.parentElement) : el.parentElement;
+    let badge = host.querySelector(`.src[data-key="${k}"]`);
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.dataset.key = k;
+      host.appendChild(badge);
+    }
+    const src = d.sources?.[k] || "default";
+    badge.className = `src ${src}`;
+    badge.textContent = SRC_LABEL[src] || src;
+  }
+  $("#set-overrides").textContent = d.overrides.length
+    ? `saved in UI (overrides .env): ${d.overrides.join(", ")}`
+    : "nothing saved yet — values below come from .env or defaults";
+  $("#settings-doctor").textContent = "Running checks…";
+  api("/api/doctor").then(checks => {
+    $("#settings-doctor").innerHTML = checks.map(c => `
+      <div class="check ${c.ok ? "ok" : "bad"}">
+        <span class="mark">${c.ok ? "✓" : "✕"}</span>
+        <span class="n">${esc(c.name)}</span><span class="d">${esc(c.detail)}</span></div>`).join("");
+  }).catch(e => { $("#settings-doctor").textContent = e.message; });
+}
+
+async function loadSettings() {
+  try {
+    renderSettings(await api("/api/settings"));
+  } catch (e) { toast("Settings failed: " + e.message, true); }
+}
+
+$("#set-save").addEventListener("click", async () => {
+  const body = {};
+  for (const k of SET_KEYS) {
+    const el = $(`#set-${k}`);
+    if (!el) continue;
+    body[k] = el.type === "checkbox" ? (el.checked ? "true" : "false") : el.value.trim();
+  }
+  try {
+    renderSettings(await post("/api/settings", body));
+    $("#set-status").textContent = `saved ${new Date().toLocaleTimeString()}`;
+    toast("Settings saved");
+  } catch (e) { toast("Save failed: " + e.message, true); }
+});
 
 /* ---------- File/folder picker ---------- */
 let pickerPath = "";

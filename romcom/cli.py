@@ -57,6 +57,13 @@ def cmd_sync(_):
     r=actions.sync()
     print(f"SABnzbd state synchronized ({r['tracked']} tracked, {r['updated']} updated); downloaded content still requires scan/verification")
 
+def cmd_auto_acquire(a):
+    from .acquirer import auto_acquire
+    def prog(i,total,name,stats=None):
+        extra=" ".join(f"{k}={v}" for k,v in (stats or {}).items() if isinstance(v,(int,float)))
+        print(f"[{i}/{total}] {name}  {extra}",flush=True)
+    print(json.dumps(auto_acquire(progress=prog,poll_interval=a.poll,max_wait_minutes=a.max_wait,batch_max=a.max_batch),indent=2))
+
 def cmd_web(a):
     from .web import serve
     serve(host=a.host,port=a.port,open_browser=not a.no_browser)
@@ -135,6 +142,7 @@ def main():
     q=s.add_parser("search"); q.add_argument("ident"); q.set_defaults(fn=cmd_search)
     ac=s.add_parser("acquire"); ac.add_argument("ident"); ac.add_argument("--result",type=int,required=True); ac.set_defaults(fn=cmd_acquire)
     s.add_parser("sync").set_defaults(fn=cmd_sync)
+    aa=s.add_parser("auto-acquire"); aa.add_argument("--poll",type=float,default=None); aa.add_argument("--max-wait",type=float,dest="max_wait",default=None); aa.add_argument("--max-batch",type=int,dest="max_batch",default=None); aa.set_defaults(fn=cmd_auto_acquire)
     sc=s.add_parser("scan"); sc.add_argument("path"); sc.add_argument("--no-name-match",action="store_true"); sc.add_argument("--no-adopt",action="store_true"); sc.set_defaults(fn=cmd_scan)
     og=s.add_parser("organize"); og.add_argument("dest"); og.add_argument("--system",action="append"); og.set_defaults(fn=cmd_organize)
     ad=s.add_parser("adopt"); ad.add_argument("--root"); ad.set_defaults(fn=cmd_adopt)

@@ -1,8 +1,8 @@
 """Local web UI: `romcom web` serves this Flask app on 127.0.0.1."""
-import json, string, threading
+import json, os, string, threading
 from flask import Flask, jsonify, request, send_from_directory
 from pathlib import Path
-from .config import load_yaml
+from .config import load_yaml, settings, ENV_VARS, invalidate as invalidate_settings
 from .db import connect
 from .catalog import import_dats
 from .scanner import scan, adopt_unmatched
@@ -13,7 +13,7 @@ from .doctor import run as doctor_run
 from .catalog_status import catalog_status
 from .manage import set_series
 from .status import LIFECYCLE
-from . import indexer, actions
+from . import indexer, actions, acquirer
 
 STATIC = Path(__file__).resolve().parent / "webui"
 
@@ -52,6 +52,44 @@ def create_app():
     @app.get("/api/doctor")
     def api_doctor():
         return jsonify([{"name": n, "ok": ok, "detail": d} for n, ok, d in doctor_run()])
+
+    SETTABLE = {"nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "sab_verify_ssl",
+                "download_dir", "acquire_poll", "acquire_max_wait_min", "acquire_batch_max"}
+
+    def _settings_payload(db):
+        s = settings()
+        rows = {r["key"]: r["value"] for r in db.execute("SELECT key,value FROM app_settings")}
+        sources = {}
+        for k in SETTABLE:
+            if rows.get(k):
+                sources[k] = "ui"    # saved via the Settings tab (overrides .env)
+            elif os.getenv(ENV_VARS.get(k, "")):
+                sources[k] = "env"  # set in .env (load_dotenv) or the process environment
+            else:
+                sources[k] = "default"
+        return {"settings": {k: s[k] for k in sorted(SETTABLE)},
+                "overrides": sorted(k for k in SETTABLE if rows.get(k)),
+                "sources": sources}
+
+    @app.get("/api/settings")
+    def api_settings():
+        db = connect()  # first call on an old DB migrates the app_settings table in
+        return jsonify(_settings_payload(db))
+
+    @app.post("/api/settings")
+    def api_save_settings():
+        body = request.get_json(force=True) or {}
+        for k in body:
+            if k not in SETTABLE:
+                return jsonify({"error": f"unknown setting: {k}"}), 400
+        db = connect()
+        with db:
+            for k, v in body.items():
+                db.execute("""INSERT INTO app_settings(key,value) VALUES(?,?)
+                  ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP""",
+                           (k, "" if v is None else str(v).strip()))
+        invalidate_settings()
+        return jsonify(_settings_payload(db))
 
     @app.get("/api/catalog-status")
     def api_catalog_status():
@@ -109,7 +147,10 @@ def create_app():
         with db:
             db.execute(f"UPDATE {table} SET {field}=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (value, ident))
         _, updated = _entity(db, ident)
-        return jsonify(dict(updated))
+        out = dict(updated)
+        if kind == "item" and field in ("authorized", "wanted") and _maybe_auto_acquire():
+            out["auto_acquire_started"] = True
+        return jsonify(out)
 
     @app.post("/api/items/bulk")
     def api_bulk():
@@ -124,6 +165,8 @@ def create_app():
         with db:
             cur = db.execute(f"UPDATE items SET {field}=?,updated_at=CURRENT_TIMESTAMP "
                              f"WHERE id IN (SELECT id FROM ({q}))", [value] + p)
+        if field in ("wanted", "authorized"):
+            _maybe_auto_acquire()
         return jsonify({"updated": cur.rowcount})
 
     @app.post("/api/series/<name>")
@@ -133,11 +176,14 @@ def create_app():
             count = set_series(name, body.get("field"), body.get("value"))
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
+        if body.get("field") in ("authorized", "wanted"):
+            _maybe_auto_acquire()
         return jsonify({"updated": count})
 
     @app.get("/api/plan")
     def api_plan():
-        return jsonify({"volumes": bulk_plan(), "items": next_individuals(50)})
+        return jsonify({"volumes": bulk_plan(), "items": next_individuals(50),
+                        "eligible": acquirer.eligible_count()})
 
     @app.get("/api/search/<ident>")
     def api_search(ident):
@@ -170,9 +216,13 @@ def create_app():
     def api_sync():
         return jsonify(actions.sync())
 
+    @app.post("/api/auto-acquire")
+    def api_auto_acquire():
+        return start_job("acquire", {})
+
     # One background job per kind at a time; state polled by the UI.
     jobs = {k: {"running": False, "done": 0, "total": 0, "current": "", "stats": None, "result": None, "error": None}
-            for k in ("import", "scan", "organize", "adopt")}
+            for k in ("import", "scan", "organize", "adopt", "acquire")}
     job_lock = threading.Lock()
 
     def _job_fn(kind, params):
@@ -185,6 +235,8 @@ def create_app():
                                      adopt=params.get("adopt", True), progress=prog)
         if kind == "organize":
             return lambda prog: organize(params["path"], systems=params.get("systems") or None, progress=prog)
+        if kind == "acquire":
+            return lambda prog: acquirer.auto_acquire(progress=prog)
         return lambda prog: adopt_unmatched(root=params.get("path") or None, progress=prog)
 
     def _launch(kind, params):
@@ -221,6 +273,22 @@ def create_app():
         if not _launch(kind, params):
             return jsonify({"error": f"a {kind} job is already running"}), 409
         return jsonify({"started": True})
+
+    def _maybe_auto_acquire():
+        """Marking an item approved & wanted arms it — start the acquire pipeline.
+
+        Silently no-ops when nothing is eligible or a run is already in flight
+        (the running job's sweeps pick the item up on their next pass).
+        """
+        try:
+            if acquirer.eligible_count() == 0:
+                return False
+        except Exception:
+            return False
+        try:
+            return _launch("acquire", {})
+        except Exception:
+            return False
 
     def recover_interrupted():
         """Re-launch jobs that were mid-flight when the server last stopped."""

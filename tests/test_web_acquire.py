@@ -1,0 +1,135 @@
+import threading
+from romcom.db import connect
+from romcom.web import create_app
+
+
+def make_client(monkeypatch, tmp_path, rows):
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
+    db = connect()
+    with db:
+        for r in rows:
+            db.execute("INSERT INTO items(id,title,series,authorized,wanted,status) VALUES(?,?,?,?,?,?)",
+                       (r["id"], r.get("title", r["id"]), r.get("series"), r.get("authorized", 0),
+                        r.get("wanted", 1), r.get("status", "CATALOGED")))
+    # Block the pipeline on an Event so "running" is observable from the request thread.
+    started, release = threading.Event(), threading.Event()
+    calls = {"n": 0}
+
+    def stub(progress=None, poll_interval=None, max_wait_minutes=None):
+        calls["n"] += 1
+        started.set()
+        release.wait(timeout=30)
+        return {"queued": 0, "downloaded": 0, "download_failed": 0, "failed": 0, "skipped": 0,
+                "skipped_by_reason": {}, "failed_items": [], "still_pending": 0,
+                "wait_note": None, "elapsed_min": 0, "scan": None, "scan_note": None}
+    monkeypatch.setattr("romcom.acquirer.auto_acquire", stub)
+    app = create_app()
+    return app.test_client(), started, release, calls
+
+
+def test_toggle_arms_auto_acquire(monkeypatch, tmp_path):
+    c, started, release, _ = make_client(monkeypatch, tmp_path, [{"id": "i1", "title": "Game"}])
+    try:
+        r = c.post("/api/items/i1", json={"field": "authorized", "value": 1})
+        assert r.status_code == 200
+        assert r.get_json()["auto_acquire_started"] is True
+        assert started.wait(2)
+    finally:
+        release.set()
+
+
+def test_unrelated_field_does_not_trigger(monkeypatch, tmp_path):
+    c, started, release, _ = make_client(monkeypatch, tmp_path,
+                                         [{"id": "i1", "title": "Game", "authorized": 1}])
+    try:
+        r = c.post("/api/items/i1", json={"field": "notes", "value": "check later"})
+        assert r.status_code == 200
+        assert "auto_acquire_started" not in r.get_json()
+        assert not started.is_set()
+    finally:
+        release.set()
+
+
+def test_disarming_does_not_trigger(monkeypatch, tmp_path):
+    c, started, release, _ = make_client(monkeypatch, tmp_path,
+                                         [{"id": "i1", "title": "Game", "authorized": 1}])
+    try:
+        r = c.post("/api/items/i1", json={"field": "authorized", "value": 0})
+        assert r.status_code == 200
+        assert "auto_acquire_started" not in r.get_json()
+        assert not started.is_set()
+    finally:
+        release.set()
+
+
+def test_bulk_triggers(monkeypatch, tmp_path):
+    c, started, release, _ = make_client(monkeypatch, tmp_path,
+                                         [{"id": "i1"}, {"id": "i2"}, {"id": "i3", "wanted": 0}])
+    try:
+        r = c.post("/api/items/bulk", json={"field": "authorized", "value": 1, "filters": {}})
+        assert r.status_code == 200 and r.get_json()["updated"] == 3
+        assert started.wait(2)
+    finally:
+        release.set()
+
+
+def test_series_triggers(monkeypatch, tmp_path):
+    c, started, release, _ = make_client(monkeypatch, tmp_path,
+                                         [{"id": "i1", "series": "Saga", "title": "Saga 1"}])
+    try:
+        r = c.post("/api/series/Saga", json={"field": "authorized", "value": "true"})
+        assert r.status_code == 200 and r.get_json()["updated"] == 1
+        assert started.wait(2)
+    finally:
+        release.set()
+
+
+def test_manual_endpoint_and_409(monkeypatch, tmp_path):
+    c, started, release, _ = make_client(monkeypatch, tmp_path, [{"id": "i1"}])
+    try:
+        assert c.post("/api/auto-acquire").status_code == 200
+        assert started.wait(2)
+        r = c.post("/api/auto-acquire")
+        assert r.status_code == 409 and "already running" in r.get_json()["error"]
+    finally:
+        release.set()
+
+
+def test_plan_eligible_count(monkeypatch, tmp_path):
+    c, _, release, _ = make_client(monkeypatch, tmp_path,
+                                   [{"id": "i1", "authorized": 1}, {"id": "i2", "authorized": 1},
+                                    {"id": "i3", "authorized": 1, "status": "FOUND"}])
+    try:
+        d = c.get("/api/plan").get_json()
+        assert d["eligible"] == 2
+        # the planner's "next" list still includes FOUND items; only `eligible` filters them
+        assert len(d["items"]) == 3
+    finally:
+        release.set()
+
+
+def test_restart_recovery_relaunches_acquire(monkeypatch, tmp_path):
+    """A server killed mid-run leaves the job journaled as 'running'; a fresh server
+    must flip it to 'interrupted' and relaunch the acquire pipeline."""
+    from romcom.db import connect as _connect
+    c, started, release, calls = make_client(monkeypatch, tmp_path, [{"id": "i1"}])
+    try:
+        assert c.post("/api/auto-acquire").status_code == 200
+        assert started.wait(2)
+        assert calls["n"] == 1
+        # "crash": abandon the first server (its blocked thread) and boot a new one
+        app2 = create_app()
+        app2.recover_interrupted()
+        deadline_calls, deadline_started = calls["n"], calls["n"]  # wait for the relaunch
+        import time as _time
+        for _ in range(40):
+            if calls["n"] > deadline_calls:
+                break
+            _time.sleep(0.05)
+        assert calls["n"] == 2, "recovered server must relaunch the acquire job"
+        db = _connect()
+        statuses = [r["status"] for r in db.execute(
+            "SELECT status FROM web_jobs WHERE kind='acquire' ORDER BY id")]
+        assert "interrupted" in statuses  # the stale row was marked, not left dangling
+    finally:
+        release.set()  # let both blocked stub threads finish their cleanup

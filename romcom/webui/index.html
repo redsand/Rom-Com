@@ -16,6 +16,7 @@
     <button class="tab" data-tab="acquire">Acquire</button>
     <button class="tab" data-tab="activity">Activity</button>
     <button class="tab" data-tab="import">Files</button>
+    <button class="tab" data-tab="settings">Settings</button>
   </nav>
   <div id="job-chip" class="chip job" title="Background jobs — click for details" hidden></div>
   <div id="health-chip" class="chip" title="Connection health">checking&hellip;</div>
@@ -84,6 +85,18 @@
 
   <!-- Acquire -->
   <section id="tab-acquire" class="tabpane">
+    <div class="filters">
+      <button id="acq-start" class="primary">Download approved &amp; wanted</button>
+      <span id="acq-eligible" class="count"></span>
+      <span class="sub">marks made in the Library start this automatically — this button sweeps
+        everything armed in one run: queue the top indexer hit for each, wait for SABnzbd,
+        then scan the download folder</span>
+    </div>
+    <div id="acq-progress" hidden>
+      <div class="meter big"><i id="acq-bar" style="width:0%"></i></div>
+      <div class="sub" id="acq-current"></div>
+    </div>
+    <div id="acq-result"></div>
     <div class="card">
       <h2>Bulk volumes <span class="hint">best coverage per GB first</span></h2>
       <div class="tablewrap">
@@ -175,6 +188,68 @@
         <div class="sub" id="org-current"></div>
       </div>
       <div id="org-result"></div>
+    </div>
+  </section>
+
+  <!-- Settings -->
+  <section id="tab-settings" class="tabpane">
+    <div class="card">
+      <h2>NZB indexer</h2>
+      <div class="filters">
+        <span class="count" style="width:150px">API URL</span>
+        <input id="set-nzb_url" type="search" placeholder="https://indexer…/api" spellcheck="false" style="flex:1">
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">API key</span>
+        <input id="set-nzb_key" type="password" placeholder="indexer API key" spellcheck="false" style="flex:1">
+      </div>
+    </div>
+    <div class="card">
+      <h2>SABnzbd</h2>
+      <div class="filters">
+        <span class="count" style="width:150px">API URL</span>
+        <input id="set-sab_url" type="search" placeholder="http://127.0.0.1:8080/api" spellcheck="false" style="flex:1">
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">API key</span>
+        <input id="set-sab_key" type="password" placeholder="SABnzbd API key" spellcheck="false" style="flex:1">
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Category</span>
+        <input id="set-sab_category" type="search" placeholder="games" spellcheck="false" style="width:200px">
+        <span class="sub">completed downloads land in this category's folder</span>
+        <label class="autolabel" style="margin-left:auto"><input type="checkbox" id="set-sab_verify_ssl"> verify HTTPS certificate</label>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Automatic acquiring</h2>
+      <div class="filters">
+        <span class="count" style="width:150px">Download folder</span>
+        <input id="set-download_dir" type="search" placeholder="H:\Games" spellcheck="false" style="flex:1">
+        <button class="ghost browse" data-target="#set-download_dir">Browse&hellip;</button>
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Poll interval</span>
+        <input id="set-acquire_poll" type="search" placeholder="30" spellcheck="false" style="width:90px">
+        <span class="sub">seconds between SABnzbd checks</span>
+        <span class="count" style="width:150px;margin-left:24px">Wait cap</span>
+        <input id="set-acquire_max_wait_min" type="search" placeholder="240" spellcheck="false" style="width:90px">
+        <span class="sub">minutes</span>
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Batch cap</span>
+        <input id="set-acquire_batch_max" type="search" placeholder="0" spellcheck="false" style="width:90px">
+        <span class="sub">max items attempted per run (0 = unlimited)</span>
+      </div>
+    </div>
+    <div class="filters">
+      <button id="set-save" class="primary">Save settings</button>
+      <span id="set-status" class="count"></span>
+      <span id="set-overrides" class="sub"></span>
+    </div>
+    <div class="card">
+      <h2>Connection health</h2>
+      <div id="settings-doctor" class="checklist">Running checks&hellip;</div>
     </div>
   </section>
 </main>
