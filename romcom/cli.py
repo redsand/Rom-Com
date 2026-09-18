@@ -1,15 +1,14 @@
 import argparse, json
-from datetime import datetime
 from .db import connect
 from .seed import seed
 from .planner import bulk_plan, next_individuals
 from .scanner import scan
-from .catalog import import_dat, import_scummvm
+from .catalog import import_dat, import_dats, import_scummvm
 from .report import render_text, summary
 from .doctor import run as doctor_run
 from .manage import set_series, export_csv, import_csv
 from .catalog_status import render as render_catalog_status
-from . import indexer, sab
+from . import indexer, actions
 
 def fmt(n):
     x=float(n or 0)
@@ -51,34 +50,16 @@ def cmd_search(a):
 def cmd_acquire(a):
     db=connect(); kind,e,results=search_results(a.ident)
     if a.result<1 or a.result>len(results): raise SystemExit("invalid result number")
-    x=results[a.result-1]; resp=sab.add_url(x["url"],f"ROMCOM__{e['id']}",priority=1 if kind=="volume" else 0)
-    ids=resp.get("nzo_ids",[]); nzo=ids[0] if ids else None
-    table="items" if kind=="item" else "volumes"
-    with db:
-        db.execute(f"UPDATE {table} SET status='QUEUED' WHERE id=?",(e["id"],))
-        db.execute("""INSERT INTO jobs(entity_type,entity_id,nzo_id,result_title,result_url,bytes,status,queued_at)
-          VALUES(?,?,?,?,?,?,'QUEUED',?)""",(kind,e["id"],nzo,x["title"],x["url"],x["size"],datetime.now().isoformat(timespec="seconds")))
+    nzo=actions.queue_result(db,kind,e,results[a.result-1])
     print(f"Queued {e['title']} as {nzo}")
 
 def cmd_sync(_):
-    db=connect(); hist={x.get("nzo_id"):x for x in sab.history() if x.get("nzo_id")}; que={x.get("nzo_id"):x for x in sab.queue() if x.get("nzo_id")}
-    with db:
-        jobs=db.execute("SELECT * FROM jobs WHERE status NOT IN ('DOWNLOADED','FAILED')").fetchall()
-        for j in jobs:
-            n=j["nzo_id"]; table="items" if j["entity_type"]=="item" else "volumes"
-            if n in que:
-                st=(que[n].get("status") or "QUEUED").upper()
-                mapped="DOWNLOADING" if st not in ("QUEUED","PAUSED") else "QUEUED"
-                db.execute("UPDATE jobs SET status=? WHERE id=?",(mapped,j["id"])); db.execute(f"UPDATE {table} SET status=? WHERE id=?",(mapped,j["entity_id"]))
-            elif n in hist:
-                st=(hist[n].get("status") or "UNKNOWN").upper()
-                mapped="DOWNLOADED" if st=="COMPLETED" else ("FAILED" if st=="FAILED" else st)
-                db.execute("UPDATE jobs SET status=?,completed_at=? WHERE id=?",(mapped,datetime.now().isoformat(timespec="seconds"),j["id"]))
-                db.execute(f"UPDATE {table} SET status=? WHERE id=?",(mapped,j["entity_id"]))
-                if j["entity_type"]=="volume" and mapped=="DOWNLOADED":
-                    for c in db.execute("SELECT item_id FROM volume_covers WHERE volume_id=?",(j["entity_id"],)):
-                        db.execute("""UPDATE items SET status='FOUND' WHERE id=? AND status IN ('CATALOGED','MISSING','FAILED')""",(c["item_id"],))
-    print("SABnzbd state synchronized; downloaded content still requires scan/verification")
+    r=actions.sync()
+    print(f"SABnzbd state synchronized ({r['tracked']} tracked, {r['updated']} updated); downloaded content still requires scan/verification")
+
+def cmd_web(a):
+    from .web import serve
+    serve(host=a.host,port=a.port,open_browser=not a.no_browser)
 
 def cmd_set(a):
     db=connect(); kind,_=entity(db,a.ident); table="items" if kind=="item" else "volumes"
@@ -116,8 +97,26 @@ def cmd_catalog_status(a):
     if a.strict and missing: raise SystemExit(2)
 
 def cmd_import_dat(a): print(json.dumps(import_dat(a.path,a.system,a.source,not a.catalog_only),indent=2))
+
+def cmd_import_dats(a):
+    def prog(i,total,name):
+        if i<total: print(f"[{i+1}/{total}] {name}",flush=True)
+    r=import_dats(a.path,system=a.system,source=a.source,wanted=a.wanted,progress=prog)
+    if a.json: print(json.dumps(r,indent=2)); return
+    print(f"\nFiles: {r['files']}  Dats: {r['dats']}  Items: {r['items']}  Hashes: {r['hashes']}  ScummVM matched: {r['scummvm_matched']}")
+    print(f"Imported: {len(r['imported'])}  Skipped: {len(r['skipped'])}  Errors: {len(r['errors'])}")
+    for x in r["skipped"]: print(f"  SKIP {x['file']}: {x.get('header') or x.get('dat') or ''} ({x['reason']})")
+    for x in r["errors"]: print(f"  ERR  {x['file']}: {x['error']}")
 def cmd_import_scummvm(a): print(f"Imported {import_scummvm(a.url,not a.catalog_only)} ScummVM compatibility entries")
-def cmd_scan(a): print(json.dumps(scan(a.path,not a.no_name_match),indent=2))
+def cmd_scan(a): print(json.dumps(scan(a.path,not a.no_name_match,adopt=not a.no_adopt),indent=2))
+
+def cmd_adopt(a):
+    from .scanner import adopt_unmatched
+    print(json.dumps(adopt_unmatched(root=a.root),indent=2))
+
+def cmd_organize(a):
+    from .organizer import organize
+    print(json.dumps(organize(a.dest,systems=a.system or None),indent=2))
 
 def main():
     p=argparse.ArgumentParser(prog="romcom"); s=p.add_subparsers(dest="cmd",required=True)
@@ -131,8 +130,11 @@ def main():
     q=s.add_parser("search"); q.add_argument("ident"); q.set_defaults(fn=cmd_search)
     ac=s.add_parser("acquire"); ac.add_argument("ident"); ac.add_argument("--result",type=int,required=True); ac.set_defaults(fn=cmd_acquire)
     s.add_parser("sync").set_defaults(fn=cmd_sync)
-    sc=s.add_parser("scan"); sc.add_argument("path"); sc.add_argument("--no-name-match",action="store_true"); sc.set_defaults(fn=cmd_scan)
+    sc=s.add_parser("scan"); sc.add_argument("path"); sc.add_argument("--no-name-match",action="store_true"); sc.add_argument("--no-adopt",action="store_true"); sc.set_defaults(fn=cmd_scan)
+    og=s.add_parser("organize"); og.add_argument("dest"); og.add_argument("--system",action="append"); og.set_defaults(fn=cmd_organize)
+    ad=s.add_parser("adopt"); ad.add_argument("--root"); ad.set_defaults(fn=cmd_adopt)
     d=s.add_parser("import-dat"); d.add_argument("path"); d.add_argument("--system",required=True); d.add_argument("--source",default="dat"); d.add_argument("--catalog-only",action="store_true"); d.set_defaults(fn=cmd_import_dat)
+    ds=s.add_parser("import-dats"); ds.add_argument("path"); ds.add_argument("--system"); ds.add_argument("--source"); ds.add_argument("--wanted",action="store_true"); ds.add_argument("--json",action="store_true"); ds.set_defaults(fn=cmd_import_dats)
     sv=s.add_parser("import-scummvm"); sv.add_argument("--url",default="https://www.scummvm.org/compatibility"); sv.add_argument("--catalog-only",action="store_true"); sv.set_defaults(fn=cmd_import_scummvm)
     r=s.add_parser("report"); r.add_argument("--json",action="store_true"); r.set_defaults(fn=lambda a:print(json.dumps(summary(),indent=2) if a.json else render_text()))
     st=s.add_parser("set"); st.add_argument("ident"); st.add_argument("field"); st.add_argument("value"); st.set_defaults(fn=cmd_set)
@@ -140,6 +142,7 @@ def main():
     ec=s.add_parser("export-csv"); ec.add_argument("path"); ec.set_defaults(fn=cmd_export_csv)
     ic=s.add_parser("import-csv"); ic.add_argument("path"); ic.set_defaults(fn=cmd_import_csv)
     dr=s.add_parser("doctor"); dr.add_argument("--no-sab",action="store_true"); dr.set_defaults(fn=cmd_doctor)
+    w=s.add_parser("web"); w.add_argument("--host",default="127.0.0.1"); w.add_argument("--port",type=int,default=8927); w.add_argument("--no-browser",action="store_true"); w.set_defaults(fn=cmd_web)
     cs=s.add_parser("catalog-status"); cs.add_argument("--strict",action="store_true"); cs.set_defaults(fn=cmd_catalog_status)
     a=p.parse_args(); a.fn(a)
 

@@ -56,6 +56,57 @@ pip install -e .
 romcom status
 ```
 
+## Web UI
+
+```bash
+romcom web
+```
+
+Starts a local web interface at http://127.0.0.1:8927/ and opens it in your browser
+(`--port`, `--host`, `--no-browser` to override). It covers the day-to-day workflow
+without the CLI:
+
+- **Dashboard** — collection progress per system, health checks, catalog coverage
+- **Library** — browse/filter every item; toggle authorized/wanted and edit status inline
+- **Acquire** — recommended bulk volumes and next individual picks; search the indexer
+  and send a release to SABnzbd in two clicks
+- **Activity** — download jobs with a sync button and automatic 20-second SABnzbd sync
+
+The **Files** tab bulk-imports DAT catalogs (see below), scans downloaded ROM folders
+(hash-matching files to the catalog), and exports matched files into a per-system
+folder layout for an SD card. The Library tab supports bulk marking wanted/authorized
+for everything matching the current filters. CSV round-trips remain CLI-only.
+
+```bash
+romcom scan "H:\downloads\roms"          # hash files, match & verify against the catalog
+romcom adopt                             # catalog unmatched scanned files as 'local' entries
+romcom organize "E:\" --system nes       # copy matched files to E:\nes\… (blank = all systems)
+```
+
+Scanning matches loose files by hash and also looks **inside zip archives** (zip directories
+carry each member's CRC32, so this is cheap; candidates are confirmed via md5/sha1).
+Anything still unmatched can be *adopted*: `adopt` creates `local` catalog entries with the
+system detected from the folder name or file extension, registers the file's hashes, and marks
+them FOUND — so downloaded content always appears in the Library and the SD-card export.
+
+## Bulk DAT import
+
+```bash
+romcom import-dats "H:\path\to\dats"          # catalog only (wanted=0)
+romcom import-dats "H:\path\to\dats" --wanted # also mark everything wanted
+romcom import-dats file.zip --system snes     # force a system instead of auto-detect
+```
+
+Walks a folder (or single file) of `.dat` / `.xml` / `.zip` / `.gz` catalogs and imports
+every recognized DAT. Handles Logiqx XML, clrmamepro, and DOSCenter formats. The system
+and source are auto-detected from each DAT's header, filename, and folder; DATs for
+unsupported systems (arcade sets, artwork packs, BIOS images…) are skipped and reported.
+ScummVM engine DATs don't create new items — they attach verification hashes and aliases
+to your existing ScummVM entries so `romcom scan` can hash-verify them.
+
+Imported items default to `wanted=0` so reference catalogs don't flood the missing list;
+flag the ones you care about in the Library tab (or `set-series` / CSV).
+
 ## Secrets
 
 `.env` is gitignored.
@@ -65,6 +116,7 @@ NZB_API_URL=https://api.nzbplanet.net/api
 NZB_API_KEY=
 SAB_URL=http://127.0.0.1:8080/api
 SAB_API_KEY=
+SAB_VERIFY_SSL=true
 ROMCOM_DB=romcom.db
 ROMCOM_SAB_CATEGORY=odin
 ```

@@ -12,7 +12,11 @@ dependencies = [
   "PyYAML>=6.0",
   "python-dotenv>=1.0",
   "beautifulsoup4>=4.12",
+  "flask>=3.0",
 ]
+
+[tool.setuptools.package-data]
+romcom = ["webui/*"]
 
 [project.scripts]
 romcom = "romcom.cli:main"

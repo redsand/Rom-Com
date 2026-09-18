@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rom-Com</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#127918;</text></svg>">
+</head>
+<body>
+<header>
+  <h1>Rom&#8209;Com</h1>
+  <nav>
+    <button class="tab active" data-tab="dashboard">Dashboard</button>
+    <button class="tab" data-tab="library">Library</button>
+    <button class="tab" data-tab="acquire">Acquire</button>
+    <button class="tab" data-tab="activity">Activity</button>
+    <button class="tab" data-tab="import">Files</button>
+  </nav>
+  <div id="health-chip" class="chip" title="Connection health">checking&hellip;</div>
+</header>
+
+<main>
+  <!-- Dashboard -->
+  <section id="tab-dashboard" class="tabpane active">
+    <div id="stat-tiles" class="tiles"></div>
+    <div class="cols">
+      <div class="card">
+        <h2>Collection by system</h2>
+        <div id="system-meters"></div>
+      </div>
+      <div class="card">
+        <h2>Items by status</h2>
+        <table class="mini" id="status-table"></table>
+      </div>
+    </div>
+    <div class="cols">
+      <div class="card">
+        <h2>Health checks</h2>
+        <div id="doctor-list" class="checklist">Running checks&hellip;</div>
+      </div>
+      <div class="card">
+        <h2>Catalog coverage</h2>
+        <div id="catalog-list" class="checklist"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Library -->
+  <section id="tab-library" class="tabpane">
+    <div class="filters">
+      <input id="f-q" type="search" placeholder="Search title / series / id&hellip;">
+      <select id="f-view">
+        <option value="all">All items</option>
+        <option value="wanted">Wanted</option>
+        <option value="missing" selected>Missing (wanted, unsatisfied)</option>
+        <option value="satisfied">Satisfied</option>
+      </select>
+      <select id="f-system"><option value="">All systems</option></select>
+      <select id="f-status"><option value="">All statuses</option></select>
+      <span id="lib-count" class="count"></span>
+      <span style="flex:1"></span>
+      <select id="bulk-action">
+        <option value="">Bulk action for all matching&hellip;</option>
+        <option value="wanted:1">Mark wanted</option>
+        <option value="wanted:0">Mark not wanted</option>
+        <option value="authorized:1">Mark authorized</option>
+        <option value="authorized:0">Mark not authorized</option>
+      </select>
+      <button id="bulk-apply">Apply</button>
+    </div>
+    <div class="tablewrap">
+      <table id="lib-table">
+        <thead><tr>
+          <th>Title</th><th>System</th><th>Year</th><th>Status</th>
+          <th class="c">Authorized</th><th class="c">Wanted</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <button id="lib-more" class="ghost" hidden>Load more</button>
+  </section>
+
+  <!-- Acquire -->
+  <section id="tab-acquire" class="tabpane">
+    <div class="card">
+      <h2>Bulk volumes <span class="hint">best coverage per GB first</span></h2>
+      <div class="tablewrap">
+        <table id="vol-table">
+          <thead><tr><th>Volume</th><th class="r">Covers</th><th class="r">Missing</th><th class="r">Est. size</th><th class="r">Score</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Next individual picks <span class="hint">authorized &amp; wanted, not covered by a pending volume</span></h2>
+      <div class="tablewrap">
+        <table id="next-table">
+          <thead><tr><th>Title</th><th>System</th><th>Status</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- Activity -->
+  <section id="tab-activity" class="tabpane">
+    <div class="filters">
+      <button id="sync-now">Sync with SABnzbd</button>
+      <span id="sync-status" class="count"></span>
+      <label class="autolabel"><input type="checkbox" id="auto-sync" checked> auto&#8209;sync every 20s</label>
+    </div>
+    <div class="tablewrap">
+      <table id="jobs-table">
+        <thead><tr><th>Entity</th><th>Result</th><th class="r">Size</th><th>Status</th><th>Queued</th><th>Completed</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+  <!-- Import -->
+  <section id="tab-import" class="tabpane">
+    <div class="card">
+      <h2>Import DAT catalogs <span class="hint">a folder (or single file) of .dat / .xml / .zip / .gz</span></h2>
+      <div class="filters">
+        <input id="imp-path" type="search" placeholder="H:\path\to\dats" spellcheck="false" style="width:340px">
+        <button class="ghost browse" data-target="#imp-path">Browse&hellip;</button>
+        <select id="imp-system"><option value="">Auto-detect system</option></select>
+        <label class="autolabel"><input type="checkbox" id="imp-wanted"> mark imported items as wanted</label>
+        <button id="imp-start" class="primary">Import</button>
+      </div>
+      <p class="sub">System and source are read from each DAT's header and filename. ScummVM engine DATs
+        attach verification hashes to your existing ScummVM entries instead of creating duplicates.
+        Unrecognized DATs (arcade sets, artwork packs, BIOS images…) are skipped and listed below.</p>
+      <div id="imp-progress" hidden>
+        <div class="meter big"><i id="imp-bar" style="width:0%"></i></div>
+        <div class="sub" id="imp-current"></div>
+      </div>
+    </div>
+    <div id="imp-summary" class="tiles"></div>
+    <div id="imp-results"></div>
+
+    <div class="card">
+      <h2>Scan ROM files <span class="hint">hash downloaded files and match them to the catalog</span></h2>
+      <div class="filters">
+        <input id="scan-path" type="search" placeholder="H:\path\to\roms" spellcheck="false" style="width:340px">
+        <button class="ghost browse" data-target="#scan-path">Browse&hellip;</button>
+        <label class="autolabel"><input type="checkbox" id="scan-name" checked> also match by filename</label>
+        <label class="autolabel"><input type="checkbox" id="scan-adopt" checked> catalog unmatched as local entries</label>
+        <button id="scan-start" class="primary">Scan</button>
+      </div>
+      <p class="sub"><b>Step 1 of 2:</b> scanning identifies what you have — every file is hashed (CRC/MD5/SHA1)
+        and matched against the DAT catalogs, including ROMs inside zip archives. Anything unmatched is
+        automatically cataloged as a <i>local</i> entry (system from folder name or extension) so nothing is lost.
+        Files stay where they are. <b>Step 2</b> — organizing them onto your SD card — is the next card below.</p>
+      <div id="scan-progress" hidden>
+        <div class="meter big"><i id="scan-bar" style="width:0%"></i></div>
+        <div class="sub" id="scan-current"></div>
+      </div>
+      <div id="scan-result"></div>
+    </div>
+
+    <div class="card">
+      <h2 id="org-card">Organize &amp; export to SD card <span class="hint">step 2 — copy matched files into &lt;dest&gt;\&lt;system&gt;\ folders</span></h2>
+      <div class="filters">
+        <input id="org-path" type="search" placeholder="E:\ (SD card or staging folder)" spellcheck="false" style="width:340px">
+        <button class="ghost browse" data-target="#org-path">Browse&hellip;</button>
+        <input id="org-systems" type="search" placeholder="systems: nes, snes (blank = all)" spellcheck="false" style="width:220px">
+        <button id="org-start" class="primary">Export</button>
+      </div>
+      <p class="sub">Copies every scanned-and-matched file into a per-system folder layout. Nothing is moved
+        or deleted; files already present at the destination are skipped, so re-running just tops up.</p>
+      <div id="org-progress" hidden>
+        <div class="meter big"><i id="org-bar" style="width:0%"></i></div>
+        <div class="sub" id="org-current"></div>
+      </div>
+      <div id="org-result"></div>
+    </div>
+  </section>
+</main>
+
+<!-- Search results drawer -->
+<div id="drawer" class="drawer" hidden>
+  <div class="drawer-panel">
+    <div class="drawer-head">
+      <h2 id="drawer-title">Search results</h2>
+      <button id="drawer-close" class="ghost">Close</button>
+    </div>
+    <div id="drawer-body">Searching the indexer&hellip;</div>
+  </div>
+</div>
+
+<!-- File/folder picker -->
+<div id="picker" class="modal" hidden>
+  <div class="modal-panel">
+    <div class="drawer-head">
+      <h2>Choose a folder or DAT file</h2>
+      <button id="picker-close" class="ghost">Cancel</button>
+    </div>
+    <div id="picker-path" class="sub"></div>
+    <div id="picker-list" class="picker-list"></div>
+    <div class="picker-foot">
+      <button id="picker-select" class="primary">Use this folder</button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+<script src="app.js"></script>
+</body>
+</html>
