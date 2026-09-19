@@ -21,6 +21,25 @@ function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 }
 
+// Timestamps: show a compact relative time, with the full absolute date on hover.
+function relDate(s) {
+  if (!s) return "—";
+  const d = new Date(s);
+  if (isNaN(d)) return esc(s);                 // unparseable — show it verbatim
+  const sec = Math.round((Date.now() - d.getTime()) / 1000);
+  if (sec < 0) return "just now";
+  if (sec < 60) return sec + "s ago";
+  if (sec < 3600) return Math.floor(sec / 60) + "m ago";
+  if (sec < 86400) return Math.floor(sec / 3600) + "h ago";
+  if (sec < 604800) return Math.floor(sec / 86400) + "d ago";
+  return d.toLocaleDateString();
+}
+function absDate(s) {
+  if (!s) return "";
+  const d = new Date(s);
+  return isNaN(d) ? String(s) : d.toLocaleString();
+}
+
 function fmtBytes(n) {
   let x = Number(n || 0);
   if (!x) return "—";
@@ -376,8 +395,8 @@ async function loadActivity() {
       <td class="sub">${esc(j.result_title || "")}</td>
       <td class="r">${fmtBytes(j.bytes)}</td>
       <td>${badge(j.status || "UNKNOWN")}</td>
-      <td class="sub">${esc(j.queued_at || "—")}</td>
-      <td class="sub">${esc(j.completed_at || "—")}</td>
+      <td class="sub" title="${esc(absDate(j.queued_at))}">${relDate(j.queued_at)}</td>
+      <td class="sub" title="${esc(absDate(j.completed_at))}">${relDate(j.completed_at)}</td>
     </tr>`).join("") : `<tr><td colspan="6" class="sub">No downloads yet — grab something from Acquire or the Library.</td></tr>`;
   } catch (e) { toast("Jobs failed: " + e.message, true); }
 }
