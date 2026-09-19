@@ -13,7 +13,8 @@ from .doctor import run as doctor_run
 from .catalog_status import catalog_status
 from .manage import set_series
 from .status import LIFECYCLE, MISSING, SATISFIED, own_all
-from . import indexer, actions, acquirer, sab, webdl, webauth, chattools, webchat
+from . import (indexer, actions, acquirer, sab, webdl, webauth, chattools, webchat,
+               mcpclient, mcpserver)
 
 STATIC = Path(__file__).resolve().parent / "webui"
 
@@ -345,7 +346,8 @@ def create_app():
                                             wanted=bool(params.get("wanted")), progress=prog)
         if kind == "scan":
             return lambda prog: scan(params["path"], name_match=params.get("name_match", True),
-                                     adopt=params.get("adopt", True), progress=prog)
+                                     adopt=params.get("adopt", True),
+                                     recursive=params.get("recursive", True), progress=prog)
         if kind == "organize":
             return lambda prog: organize(params["path"], systems=params.get("systems") or None, progress=prog)
         if kind == "acquire":
@@ -479,7 +481,8 @@ def create_app():
             return jsonify({"error": f"path not found: {body.get('path') or '(empty)'}"}), 400
         return start_job("scan", {"path": path,
                                   "name_match": body.get("name_match", True) not in (False, "false", 0),
-                                  "adopt": body.get("adopt", True) not in (False, "false", 0)})
+                                  "adopt": body.get("adopt", True) not in (False, "false", 0),
+                                  "recursive": body.get("recursive", True) not in (False, "false", 0)})
 
     @app.post("/api/organize")
     def api_organize():
@@ -620,6 +623,11 @@ def create_app():
         arm_acquire=_maybe_auto_acquire,
         set_settings=_set_settings)
     webchat.register(app, chat_ctx)
+
+    # MCP server. Registered unconditionally: an unset ROMCOM_MCP_KEY already means every
+    # call 401s, so gating registration on a flag would only make the failure mode less
+    # legible (404 instead of 401).
+    mcpserver.register(app, chat_ctx)
 
     return app
 

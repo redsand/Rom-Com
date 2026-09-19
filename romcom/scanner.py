@@ -64,9 +64,14 @@ def _zip_member_matches(db,p):
         if n>=2 or members<=4: items.append(it)
     return items
 
-def scan(root,name_match=True,progress=None,rehash=False,adopt=True):
+def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=True):
     db=connect(); root=Path(root); count=matched=verified=reused=0
-    paths=[root] if root.is_file() else [p for p in root.rglob("*") if p.is_file()]
+    if root.is_file():
+        paths=[root]
+    elif recursive:
+        paths=[p for p in root.rglob("*") if p.is_file()]
+    else:  # top-level only — sometimes a folder holds one system's roms and you don't
+        paths=[p for p in root.iterdir() if p.is_file()]  # want to sweep every subfolder
     idx=_name_index(db) if name_match else {}
     recent=[]
     def _stats():

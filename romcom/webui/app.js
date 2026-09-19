@@ -530,7 +530,7 @@ $("#scan-start").addEventListener("click", () => {
   const path = $("#scan-path").value.trim();
   if (!path) { toast("Enter the folder with your ROM files first", true); return; }
   localStorage.setItem("romcom-rom-path", path);
-  startJob("scan", "/api/scan", {path, name_match: $("#scan-name").checked, adopt: $("#scan-adopt").checked});
+  startJob("scan", "/api/scan", {path, name_match: $("#scan-name").checked, adopt: $("#scan-adopt").checked, recursive: $("#scan-recursive").checked});
 });
 
 $("#org-start").addEventListener("click", () => {
@@ -944,6 +944,10 @@ function chatEventHandler(bot) {
       fillToolCall(bot, d.name, d.ok, d.data === undefined ? d.error : d.data, d.truncated);
     } else if (ev === "approval_required") {
       addConfirmCard(bot, d);
+    } else if (ev === "summarizing") {
+      // Compressing the older part of a long thread. It is a second model call before the
+      // first token, so without saying so the tab looks hung for as long as it takes.
+      addThinking(bot, `compressing ${d.messages || "the"} earlier messages into memory…`);
     } else if (ev === "error") {
       bot.el.classList.add("err");
       bot.body.textContent += (bot.body.textContent ? "\n" : "") + (d.message || "the turn failed");
@@ -1112,7 +1116,55 @@ async function loadAssistant() {
 
   try { await loadChatSessions(); } catch { /* the dropdown is decoration; the log still works */ }
   if (!chatSession && !$("#chat-log").children.length) chatEmpty();
+  loadChatBrain();
 }
+
+let chatFacts = [];
+
+// What the assistant durably remembers, and who else can reach it. Both halves are best
+// effort: memory and MCP are each optional, and neither being unavailable should stop the
+// tab from opening.
+async function loadChatBrain() {
+  const el = $("#chat-brain");
+  let mem = null, mcp = null;
+  try { mem = await api("/api/chat/memory"); } catch { /* memory is optional */ }
+  try { mcp = await api("/api/chat/mcp"); } catch { /* MCP is optional */ }
+  if (!mem && !mcp) { el.hidden = true; return; }
+
+  const bits = [];
+  if (mem) bits.push(`memory: ${mem.facts.length} fact${mem.facts.length === 1 ? "" : "s"}, ` +
+    `${mem.chunks} chunk${mem.chunks === 1 ? "" : "s"}`);
+  if (mcp) {
+    if (!mcp.enabled) bits.push("tools from MCP servers: off");
+    else if (!mcp.servers.length) bits.push("tools from MCP servers: none configured");
+    else {
+      const down = mcp.servers.filter(s => s.state === "error");
+      const ok = mcp.servers.filter(s => s.state === "ok").length;
+      bits.push(`tools from MCP servers: ${ok}/${mcp.servers.length} up` +
+        (down.length ? ` (${down.map(s => s.name).join(", ")} failing)` : ""));
+      el.title = down.map(s => `${s.name} (${s.url}): ${s.error}`).join("\n");
+    }
+    // "out" is the other direction — whether something else can drive this library. Worth
+    // saying plainly, because it is the one that has no UI of its own.
+    bits.push(mcp.key_set ? "driveable at /mcp" : "ROMCOM_MCP_KEY not set — /mcp refuses everyone");
+  }
+  el.textContent = bits.join("  ·  ") + (mem && mem.facts.length ? "  ·  click for facts" : "");
+  el.hidden = false;
+  if (mem) chatFacts = mem.facts;
+}
+
+$("#chat-brain").addEventListener("click", () => {
+  // The owner's window into a store only the agent can otherwise see. Memory nobody can
+  // inspect is memory nobody can correct.
+  const box = $("#chat-facts");
+  if (!box.hidden) { box.hidden = true; return; }
+  box.textContent = chatFacts.length
+    ? chatFacts.map(f => `${f.key} = ${f.value}` +
+        (f.source ? `   [${f.source}${f.confidence < 1 ? `, ${f.confidence}` : ""}]` : "")).join("\n")
+    : "Nothing remembered as a fact yet. It records these when you tell it something durable " +
+      "(\"the SNES folder is D:\\\\roms\\\\snes\") or when it learns it and decides it matters.";
+  box.hidden = false;
+});
 
 $("#chat-tools").addEventListener("change", e => {
   // Selecting a tool is documentation, not a command: it explains what the assistant can

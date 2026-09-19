@@ -172,6 +172,7 @@
       <div class="filters">
         <input id="scan-path" type="search" placeholder="H:\path\to\roms" spellcheck="false" style="width:340px">
         <button class="ghost browse" data-target="#scan-path">Browse&hellip;</button>
+        <label class="autolabel"><input type="checkbox" id="scan-recursive" checked> recursive (include subfolders)</label>
         <label class="autolabel"><input type="checkbox" id="scan-name" checked> also match by filename</label>
         <label class="autolabel"><input type="checkbox" id="scan-adopt" checked> catalog unmatched as local entries</label>
         <button id="scan-start" class="primary">Scan</button>
@@ -385,6 +386,8 @@
         <select id="chat-tools" title="Tools the assistant can call"></select>
         <span id="chat-usage" class="count"></span>
       </div>
+      <div id="chat-brain" class="sub chat-brain" hidden></div>
+      <div id="chat-facts" class="sub chat-facts" hidden></div>
       <div id="chat-log" class="chat-log"></div>
       <form id="chat-form" class="chat-composer">
         <textarea id="chat-input" rows="2" spellcheck="false"

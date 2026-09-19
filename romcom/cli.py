@@ -156,7 +156,7 @@ def cmd_scan(a):
         if i%100==0 and total:
             extra=f"  matched={stats.get('matched',0)} verified={stats.get('verified',0)} adopted={stats.get('adopted',0)}" if stats else ""
             print(f"[{i}/{total}]{extra}  {name}",flush=True)
-    print(json.dumps(scan(a.path,not a.no_name_match,adopt=not a.no_adopt,progress=prog),indent=2))
+    print(json.dumps(scan(a.path,not a.no_name_match,adopt=not a.no_adopt,recursive=not a.no_recursive,progress=prog),indent=2))
 
 def cmd_adopt(a):
     from .scanner import adopt_unmatched
@@ -180,7 +180,7 @@ def main():
     s.add_parser("sync").set_defaults(fn=cmd_sync)
     aa=s.add_parser("auto-acquire"); aa.add_argument("--poll",type=float,default=None); aa.add_argument("--max-wait",type=float,dest="max_wait",default=None); aa.add_argument("--max-batch",type=int,dest="max_batch",default=None); aa.add_argument("--parallel",type=int,default=None); aa.add_argument("--watch",action="store_true"); aa.set_defaults(fn=cmd_auto_acquire)
     wd=s.add_parser("webdl"); wd.add_argument("ident"); wd.add_argument("--result",type=int); wd.add_argument("--out"); wd.set_defaults(fn=cmd_webdl)
-    sc=s.add_parser("scan"); sc.add_argument("path"); sc.add_argument("--no-name-match",action="store_true"); sc.add_argument("--no-adopt",action="store_true"); sc.set_defaults(fn=cmd_scan)
+    sc=s.add_parser("scan"); sc.add_argument("path"); sc.add_argument("--no-name-match",action="store_true"); sc.add_argument("--no-adopt",action="store_true"); sc.add_argument("--no-recursive",action="store_true"); sc.set_defaults(fn=cmd_scan)
     og=s.add_parser("organize"); og.add_argument("dest"); og.add_argument("--system",action="append"); og.set_defaults(fn=cmd_organize)
     ad=s.add_parser("adopt"); ad.add_argument("--root"); ad.set_defaults(fn=cmd_adopt)
     d=s.add_parser("import-dat"); d.add_argument("path"); d.add_argument("--system",required=True); d.add_argument("--source",default="dat"); d.add_argument("--catalog-only",action="store_true"); d.set_defaults(fn=cmd_import_dat)
