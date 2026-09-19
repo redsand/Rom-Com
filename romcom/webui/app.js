@@ -649,7 +649,7 @@ const SET_KEYS = ["nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "s
                   "acquire_watch_batch", "acquire_sweep_pause",
                   "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout",
                   "vimm_enabled", "vimm_base", "vimm_dl_base", "vimm_delay", "vimm_jitter", "vimm_timeout",
-                  "search_cache_ttl"];
+                  "search_cache_ttl", "llm_enabled", "llm_base", "llm_model", "llm_timeout"];
 
 const SRC_LABEL = { ui: "saved in UI", env: "from .env", default: "default" };
 

@@ -33,7 +33,7 @@ from .config import settings
 from .db import connect
 from .planner import next_individuals
 from .status import MISSING
-from . import indexer, actions, webdl, vimm
+from . import indexer, actions, webdl, vimm, llm
 from .scanner import scan
 
 MIN_SCORE = 20.0                # rank() floor: % of query tokens that must appear in the release title
@@ -382,6 +382,16 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                 _skip(c, f"indexer search failed, no download dir for the direct fallback: {ex}", wdb)
             return
         top = _pick(results)
+        if top is None and llm.enabled():
+            # The strict ranker found nothing confident. Ask the LLM to salvage a real
+            # match from the below-floor candidates before falling back to direct sources.
+            cand = [r for r in results if r.get("url")]
+            if cand:
+                _emit(f"llm review: {c['title']}")
+                try:
+                    top = llm.choose(c["title"], c.get("system"), cand)
+                except Exception:
+                    top = None
         if top is None:
             if not s["download_dir"]:
                 _skip(c, "no usable indexer result, and no ROMCOM_DOWNLOAD_DIR for the direct fallback", wdb); return

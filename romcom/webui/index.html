@@ -325,6 +325,25 @@
         <span class="sub">seconds per HTTP request (downloads are large)</span>
       </div>
     </div>
+    <div class="card">
+      <h2>LLM disambiguation <span class="hint">Ollama — salvages good matches the strict ranker rejects (opt-in)</span></h2>
+      <div class="filters">
+        <label class="autolabel"><input type="checkbox" id="set-llm_enabled"> use a local LLM to review ambiguous matches</label>
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Ollama URL</span>
+        <input id="set-llm_base" type="search" placeholder="http://localhost:11434" spellcheck="false" style="flex:1">
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Model</span>
+        <input id="set-llm_model" type="search" placeholder="deepseek-v4.1-flash:cloud" spellcheck="false" style="flex:1">
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Timeout</span>
+        <input id="set-llm_timeout" type="search" placeholder="60" spellcheck="false" style="width:90px">
+        <span class="sub">seconds per request</span>
+      </div>
+    </div>
     <div class="filters">
       <button id="set-save" class="primary">Save settings</button>
       <button id="set-test" class="ghost">Test connections</button>

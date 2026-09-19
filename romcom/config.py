@@ -43,6 +43,10 @@ ENV_VARS = {
     "vimm_jitter": "ROMCOM_VIMM_JITTER",
     "vimm_timeout": "ROMCOM_VIMM_TIMEOUT",
     "search_cache_ttl": "ROMCOM_SEARCH_CACHE_TTL",
+    "llm_enabled": "ROMCOM_LLM_ENABLED",
+    "llm_base": "ROMCOM_LLM_BASE",
+    "llm_model": "ROMCOM_LLM_MODEL",
+    "llm_timeout": "ROMCOM_LLM_TIMEOUT",
 }
 
 def _env_settings():
@@ -74,6 +78,10 @@ def _env_settings():
         "vimm_jitter": os.getenv("ROMCOM_VIMM_JITTER", "10"),
         "vimm_timeout": os.getenv("ROMCOM_VIMM_TIMEOUT", "120"),
         "search_cache_ttl": os.getenv("ROMCOM_SEARCH_CACHE_TTL", "360"),
+        "llm_enabled": os.getenv("ROMCOM_LLM_ENABLED", "false"),
+        "llm_base": (os.getenv("ROMCOM_LLM_BASE") or "http://localhost:11434").rstrip("/"),
+        "llm_model": os.getenv("ROMCOM_LLM_MODEL", "deepseek-v4.1-flash:cloud"),
+        "llm_timeout": os.getenv("ROMCOM_LLM_TIMEOUT", "60"),
     }
 
 def _overrides(db_path):
@@ -119,6 +127,9 @@ def settings():
     s["vimm_enabled"] = str(s["vimm_enabled"]).strip().lower() in ("1", "true", "yes", "on")
     try: s["search_cache_ttl"] = max(0.0, float(s["search_cache_ttl"]))
     except (TypeError, ValueError): s["search_cache_ttl"] = 360.0
+    s["llm_enabled"] = str(s["llm_enabled"]).strip().lower() in ("1", "true", "yes", "on")
+    try: s["llm_timeout"] = max(1.0, float(s["llm_timeout"]))
+    except (TypeError, ValueError): s["llm_timeout"] = 60.0
     s["sab_verify_ssl"] = str(s["sab_verify_ssl"]).strip().lower() not in ("0", "false", "no", "off")
     return s
 

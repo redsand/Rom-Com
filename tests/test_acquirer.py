@@ -499,6 +499,31 @@ def test_one_shot_run_still_raises_on_cycle_error(monkeypatch, tmp_path):
         auto_acquire(poll_interval=0)
 
 
+def test_llm_salvages_a_below_floor_result(monkeypatch, tmp_path):
+    """When enabled, the LLM reviews below-floor indexer candidates and can salvage a real
+    match the strict ranker turned away — which then gets queued to SABnzbd normally."""
+    from romcom.config import invalidate
+    db = client_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("ROMCOM_LLM_ENABLED", "true")
+    invalidate()
+    seed(db, [{"id": "i1", "title": "Nancy Drew"}])
+    search, _ = fake_search([{"title": "Nancy Drew Secrets v1.1 [xyz]", "url": "nzb://1", "size": 10, "score": 5}])
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.acquirer.llm.choose", lambda title, sys, cand: cand[0])
+    monkeypatch.setattr("romcom.sab.add_url", lambda *a, **k: {"nzo_ids": ["n1"]})
+
+    def fake_sync(dbc):
+        with dbc:
+            dbc.execute("UPDATE jobs SET status='DOWNLOADED',completed_at='x' WHERE status='QUEUED'")
+            dbc.execute("UPDATE items SET status='DOWNLOADED' WHERE status='QUEUED'")
+    monkeypatch.setattr("romcom.actions.sync", fake_sync)
+    monkeypatch.setattr("romcom.acquirer.scan", lambda *a, **k: None)
+
+    r = auto_acquire(poll_interval=0)
+    assert r["queued"] == 1
+    assert db.execute("SELECT result_url FROM jobs").fetchone()["result_url"] == "nzb://1"
+
+
 def test_indexer_error_falls_through_to_direct(monkeypatch, tmp_path):
     """An indexer outage must not stop the direct sources from filling the library: when
     search_entity *raises* (not just returns empty), the item still goes to the direct
