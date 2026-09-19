@@ -247,10 +247,18 @@ async function quickSearch(ident, title) {
   toast(`Searching: ${title}…`);
   try {
     const d = await api(`/api/search/${encodeURIComponent(ident)}`);
-    if (!d.results.length) { toast(`${title}: no indexer results`, true); return; }
+    if (!d.results.length) { return deferPick(ident, title, "no indexer results"); }
     const top = d.results[0];
     toast(`${title}: ${d.results.length} result(s) — best "${top.title}" (score ${top.score.toFixed(0)}, ${fmtBytes(top.size)})`);
-  } catch (e) { toast(`Search failed: ${e.message}`, true); }
+  } catch (e) { deferPick(ident, title, e.message); }
+}
+
+// A failed manual search shouldn't leave the item stuck at the top to be clicked again:
+// record a skip so it sinks to the back of the queue (least-recently-tried ordering).
+async function deferPick(ident, title, reason) {
+  try { await post("/api/acquire/skip", { ident, reason: `manual search: ${reason}` }); } catch (_) {}
+  toast(`${title}: ${reason} — moved to the back of the queue`, true);
+  if (typeof loadPicks === "function" && $("#tab-acquire") && $("#tab-acquire").classList.contains("active")) loadPicks();
 }
 
 /* ---------- Acquire ---------- */
@@ -621,7 +629,8 @@ const SET_KEYS = ["nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "s
                   "acquire_parallel", "acquire_watch", "acquire_interval",
                   "acquire_watch_batch", "acquire_sweep_pause",
                   "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout",
-                  "vimm_enabled", "vimm_base", "vimm_dl_base", "vimm_delay", "vimm_jitter", "vimm_timeout"];
+                  "vimm_enabled", "vimm_base", "vimm_dl_base", "vimm_delay", "vimm_jitter", "vimm_timeout",
+                  "search_cache_ttl"];
 
 const SRC_LABEL = { ui: "saved in UI", env: "from .env", default: "default" };
 

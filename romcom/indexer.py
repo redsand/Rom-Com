@@ -27,6 +27,11 @@ def search(query,limit=50):
     s=settings()
     if not s["nzb_url"] or not s["nzb_key"]:
         raise RuntimeError("NZB_API_URL/NZB_API_KEY are not configured")
+    from . import searchcache
+    return searchcache.cached("nzb", f"{query}|{limit}", lambda: _search_live(query, limit))
+
+def _search_live(query,limit=50):
+    s=settings()
     r=requests.get(s["nzb_url"],params={"t":"search","apikey":s["nzb_key"],"q":query,"limit":limit,"extended":1,"o":"xml"},timeout=30)
     r.raise_for_status(); root=ET.fromstring(r.content); out=[]
     for item in root.findall(".//item"):

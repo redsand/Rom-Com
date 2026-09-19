@@ -48,7 +48,13 @@ def next_picks(search=None,system=None,limit=50,offset=0):
     if system:
         where+=" AND i.system=?"; args.append(system)
     total=db.execute(f"SELECT COUNT(*) c FROM items i WHERE {where}",args).fetchone()["c"]
+    # Least-recently-tried first (never-tried at the top), matching the auto-acquire
+    # queue: an item whose search just failed gets an acquire-skip event and so sinks to
+    # the back instead of staying at the front to be clicked again.
     rows=db.execute(f"""SELECT i.* FROM items i
+      LEFT JOIN (SELECT item_id, MAX(created_at) last FROM events
+                 WHERE event IN ('acquire-skip','acquire-miss') GROUP BY item_id) t ON t.item_id=i.id
       WHERE {where}
-      ORDER BY i.system,i.title LIMIT ? OFFSET ?""",(*args,int(limit),int(offset)))
+      ORDER BY (t.last IS NOT NULL), t.last, i.system, i.title
+      LIMIT ? OFFSET ?""",(*args,int(limit),int(offset)))
     return [dict(r) for r in rows],total

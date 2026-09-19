@@ -116,28 +116,31 @@ def search(query, system=None):
     identity-bearing groups, which the old strip-everything regex deleted). Ranking
     still uses the original query, so region words count against a candidate.
     """
-    clean = indexer.clean_query(query)
-    base = settings()["vimm_base"]
-    html = _get(f"{base}/vault/?p=list&mode=search&q={quote(clean)}",
-                referer=f"{base}/vault/").text
-    allowed = VIMM_SYSTEMS.get((system or "").lower())
-    pages = {}
-    for a in BeautifulSoup(html, "html.parser").select('a[href^="/vault/"]'):
-        m = _VAULT_ID.match(a.get("href", ""))
-        if not m:
-            continue
-        title = a.get_text(strip=True)
-        # Rows carry decoration links (a "new" marker at /vault/999999, a /manual/… icon):
-        # a real game link has a non-numeric title that isn't the manual.
-        if not title or title.isdigit() or "manual" in title.lower():
-            continue
-        row = a.find_parent("tr")
-        sys_cell = row.find("td").get_text(strip=True).lower() if row and row.find("td") else ""
-        if allowed and not any(sys_cell == lbl or sys_cell.startswith(lbl) for lbl in allowed):
-            continue
-        url = f"{base}/vault/{m.group(1)}"
-        pages[url] = {"title": title, "url": url, "console": sys_cell, "source": "vimm"}
-    return indexer.rank(list(pages.values()), [query])
+    def _pages():
+        clean = indexer.clean_query(query)
+        base = settings()["vimm_base"]
+        html = _get(f"{base}/vault/?p=list&mode=search&q={quote(clean)}",
+                    referer=f"{base}/vault/").text
+        allowed = VIMM_SYSTEMS.get((system or "").lower())
+        pages = {}
+        for a in BeautifulSoup(html, "html.parser").select('a[href^="/vault/"]'):
+            m = _VAULT_ID.match(a.get("href", ""))
+            if not m:
+                continue
+            title = a.get_text(strip=True)
+            # Rows carry decoration links (a "new" marker at /vault/999999, a /manual/… icon):
+            # a real game link has a non-numeric title that isn't the manual.
+            if not title or title.isdigit() or "manual" in title.lower():
+                continue
+            row = a.find_parent("tr")
+            sys_cell = row.find("td").get_text(strip=True).lower() if row and row.find("td") else ""
+            if allowed and not any(sys_cell == lbl or sys_cell.startswith(lbl) for lbl in allowed):
+                continue
+            url = f"{base}/vault/{m.group(1)}"
+            pages[url] = {"title": title, "url": url, "console": sys_cell, "source": "vimm"}
+        return list(pages.values())
+    from . import searchcache
+    return indexer.rank(searchcache.cached("vimm", f"{query}|{system or ''}", _pages), [query])
 
 
 def fetch(result, dest_dir):

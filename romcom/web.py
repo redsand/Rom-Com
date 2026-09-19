@@ -57,7 +57,8 @@ def create_app():
                 "acquire_parallel", "acquire_watch", "acquire_interval",
                 "acquire_watch_batch", "acquire_sweep_pause",
                 "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout",
-                "vimm_enabled", "vimm_base", "vimm_dl_base", "vimm_delay", "vimm_jitter", "vimm_timeout"}
+                "vimm_enabled", "vimm_base", "vimm_dl_base", "vimm_delay", "vimm_jitter", "vimm_timeout",
+                "search_cache_ttl"}
 
     def _settings_payload(db):
         s = settings()
@@ -246,6 +247,21 @@ def create_app():
         except PermissionError as ex:
             return jsonify({"error": str(ex)}), 403
         return jsonify({"kind": kind, "entity": dict(e), "results": results})
+
+    @app.post("/api/acquire/skip")
+    def api_acquire_skip():
+        """Defer an item to the back of the queue after a failed manual search — record an
+        acquire-skip event so next_picks (least-recently-tried first) sinks it, and the
+        auto-watcher cools it briefly rather than re-hitting the same empty search."""
+        body = request.get_json(force=True) or {}
+        db = connect()
+        kind, e = _entity(db, body.get("ident", ""))
+        if kind != "item":
+            return jsonify({"error": "unknown item"}), 404
+        with db:
+            db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,'acquire-skip',?)",
+                       (e["id"], body.get("reason") or "manual search: no usable result"))
+        return jsonify({"deferred": e["id"]})
 
     @app.post("/api/acquire")
     def api_acquire():

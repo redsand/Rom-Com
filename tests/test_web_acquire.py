@@ -236,6 +236,24 @@ def test_mark_owned_endpoint(monkeypatch, tmp_path):
         release.set()
 
 
+def test_acquire_skip_defers_to_back_of_queue(monkeypatch, tmp_path):
+    """A failed manual search records an acquire-skip; next_picks (least-recently-tried
+    first) then sinks that item to the back instead of leaving it at the top."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
+    db = connect()
+    with db:
+        db.executemany("INSERT INTO items(id,title,system,authorized,wanted,status) VALUES(?,?,?,?,?,?)",
+                       [(f"i{n}", f"Game {n}", "nes", 1, 1, "CATALOGED") for n in range(3)])
+    c = create_app().test_client()
+    assert [x["id"] for x in c.get("/api/next").get_json()["items"]] == ["i0", "i1", "i2"]
+
+    r = c.post("/api/acquire/skip", json={"ident": "i0"})
+    assert r.status_code == 200 and r.get_json()["deferred"] == "i0"
+    ids = [x["id"] for x in c.get("/api/next").get_json()["items"]]
+    assert ids == ["i1", "i2", "i0"]                       # i0 sank to the back
+    assert c.post("/api/acquire/skip", json={"ident": "nope"}).status_code == 404
+
+
 def test_next_picks_filter_and_paging(monkeypatch, tmp_path):
     monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
     db = connect()

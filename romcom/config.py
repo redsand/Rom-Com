@@ -42,6 +42,7 @@ ENV_VARS = {
     "vimm_delay": "ROMCOM_VIMM_DELAY",
     "vimm_jitter": "ROMCOM_VIMM_JITTER",
     "vimm_timeout": "ROMCOM_VIMM_TIMEOUT",
+    "search_cache_ttl": "ROMCOM_SEARCH_CACHE_TTL",
 }
 
 def _env_settings():
@@ -72,6 +73,7 @@ def _env_settings():
         "vimm_delay": os.getenv("ROMCOM_VIMM_DELAY", "20"),
         "vimm_jitter": os.getenv("ROMCOM_VIMM_JITTER", "10"),
         "vimm_timeout": os.getenv("ROMCOM_VIMM_TIMEOUT", "120"),
+        "search_cache_ttl": os.getenv("ROMCOM_SEARCH_CACHE_TTL", "360"),
     }
 
 def _overrides(db_path):
@@ -115,6 +117,8 @@ def settings():
         try: s[k] = float(s[k])
         except (TypeError, ValueError): s[k] = dflt
     s["vimm_enabled"] = str(s["vimm_enabled"]).strip().lower() in ("1", "true", "yes", "on")
+    try: s["search_cache_ttl"] = max(0.0, float(s["search_cache_ttl"]))
+    except (TypeError, ValueError): s["search_cache_ttl"] = 360.0
     s["sab_verify_ssl"] = str(s["sab_verify_ssl"]).strip().lower() not in ("0", "false", "no", "off")
     return s
 

@@ -96,17 +96,20 @@ def search(query, system=None):
     region/revision words still count against a candidate: a page that lacks them
     is a worse match than one that has them.
     """
-    clean = indexer.clean_query(query)
-    base = settings()["webdl_base"]
-    html = _request("GET", f"{base}/search/?q={quote(clean)}").text
-    allowed = SYSTEM_SLUGS.get((system or "").lower())
-    pages = {}
-    for console, slug in _PAGE_LINK.findall(html):
-        if allowed and console not in allowed:
-            continue
-        url = f"{base}/{console}-rom-{slug}/"  # search cards repeat each link; keep one
-        pages[url] = {"title": slug.replace("-", " ").strip(), "url": url, "console": console}
-    return indexer.rank(list(pages.values()), [query])
+    def _pages():
+        clean = indexer.clean_query(query)
+        base = settings()["webdl_base"]
+        html = _request("GET", f"{base}/search/?q={quote(clean)}").text
+        allowed = SYSTEM_SLUGS.get((system or "").lower())
+        pages = {}
+        for console, slug in _PAGE_LINK.findall(html):
+            if allowed and console not in allowed:
+                continue
+            url = f"{base}/{console}-rom-{slug}/"  # search cards repeat each link; keep one
+            pages[url] = {"title": slug.replace("-", " ").strip(), "url": url, "console": console}
+        return list(pages.values())
+    from . import searchcache
+    return indexer.rank(searchcache.cached("webdl", f"{query}|{system or ''}", _pages), [query])
 
 
 def fetch(result, dest_dir):

@@ -92,6 +92,13 @@ def cmd_web(a):
     from .web import serve
     serve(host=a.host,port=a.port,open_browser=not a.no_browser)
 
+def cmd_cache(a):
+    from . import searchcache
+    if a.action=="clear":
+        print(f"Cleared {searchcache.clear(a.source)} cached search(es)")
+    else:
+        print(json.dumps(searchcache.stats(),indent=2))
+
 def cmd_set(a):
     db=connect(); kind,_=entity(db,a.ident); table="items" if kind=="item" else "volumes"
     allowed={"authorized","status"}
@@ -188,6 +195,7 @@ def main():
     dr=s.add_parser("doctor"); dr.add_argument("--no-sab",action="store_true"); dr.set_defaults(fn=cmd_doctor)
     w=s.add_parser("web"); w.add_argument("--host",default="127.0.0.1"); w.add_argument("--port",type=int,default=8927); w.add_argument("--no-browser",action="store_true"); w.set_defaults(fn=cmd_web)
     cs=s.add_parser("catalog-status"); cs.add_argument("--strict",action="store_true"); cs.set_defaults(fn=cmd_catalog_status)
+    cc=s.add_parser("cache"); cc.add_argument("action",choices=["stats","clear"],nargs="?",default="stats"); cc.add_argument("--source"); cc.set_defaults(fn=cmd_cache)
     a=p.parse_args(); a.fn(a)
 
 if __name__=="__main__": main()
