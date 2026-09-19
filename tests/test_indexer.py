@@ -38,6 +38,20 @@ def test_rank_still_accepts_a_real_match_with_extra_words():
     rows = [{"title": "4 nin uchi mahjong h1", "url": "b", "size": 1}]
     assert rank(rows, ["4 Nin Uchi Mahjong (Japan)"])[0]["score"] >= 20
 
+def test_rank_rejects_tv_and_movie_rips():
+    """The real ledger garbage: a TV episode / movie carries the full game name (high
+    recall) but is never a ROM. Video markers (SxxExx, 1080p, WEBRip, x264) refuse it."""
+    q = ["Nancy Drew Message in a Haunted Mansion"]
+    garbage = [
+        {"title": "Playdate.S04E21.Nancy.Drew.Message.in.a.Haunted.Mansion.1080p.WEBRip.x264", "url": "tv", "size": 900_000_000},
+        {"title": "The.Protos.Experiment.2025.1080p.WEBRip.DDP5.1.x265", "url": "movie", "size": 8_000_000_000},
+    ]
+    assert rank(garbage, q) == []
+    # a legitimately-titled ROM release with the same name still ranks
+    ok = [{"title": "Nancy Drew Message in a Haunted Mansion", "url": "rom", "size": 500_000_000}]
+    assert rank(ok, q)[0]["url"] == "rom"
+
+
 def test_rank_prefers_title_match():
     rows=[
       {"title":"Random Collection","url":"a","size":100},

@@ -82,6 +82,19 @@ def clean_query(query):
 
 _YEAR = re.compile(r"(?:19|20)\d{2}")
 
+# Unambiguous markers of a TV/movie/video release — never a ROM. NZB indexers are full of
+# these (a game's name appears in an episode/film title: "Playdate.S04E21.Nancy.Drew…",
+# "The.Protos.Experiment.2025.1080p.WEBRip"), and they carry the full title so recall is
+# high enough to slip past the score floor. A title with any of these is refused outright.
+_VIDEO = re.compile(
+    r"\b(?:s\d{1,2}e\d{1,3}|\d{3,4}p|web-?rip|web-?dl|blu-?ray|bd-?rip|dvd-?rip|hd-?rip"
+    r"|hdtv|x26[45]|h\.?26[45]|hevc|xvid|divx|aac|ac3|dts|ddp?\d(?:\.\d)?)\b", re.I)
+
+
+def is_video_release(title):
+    """True if the title looks like a TV/movie/video rip rather than a ROM."""
+    return bool(_VIDEO.search(title or ""))
+
 
 def _required(qtokens):
     """Query tokens a title must contain to be that title at all.
@@ -113,6 +126,7 @@ def rank(results,queries,kind="item",min_bytes=None,max_bytes=None):
     ranked=[]
     for r in results:
         if not r.get("url"): continue
+        if is_video_release(r.get("title")): continue  # TV/movie rip, never a ROM
         size=r.get("size") or 0
         if min_bytes and size<min_bytes: continue
         if max_bytes and size>max_bytes: continue
