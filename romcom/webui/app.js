@@ -94,7 +94,10 @@ $$(".tab").forEach(b => b.addEventListener("click", () => { location.hash = b.da
 window.addEventListener("hashchange", () => showTab(location.hash.slice(1)));
 
 /* ---------- Dashboard ---------- */
-async function loadDashboard() {
+// The fast, live part: tiles/meters/status from /api/summary. Auto-refreshed on an
+// interval so the archive is watched growing without a manual reload. The doctor/catalog
+// checks (which ping external services) run only on a full loadDashboard(), not the tick.
+async function refreshDashboardStats() {
   try {
     const s = await api("/api/summary");
     const pct = s.wanted ? (100 * s.satisfied / s.wanted) : 0;
@@ -120,6 +123,10 @@ async function loadDashboard() {
     $("#status-table").innerHTML = Object.entries(s.by_status).sort()
       .map(([k, v]) => `<tr><td>${badge(k)}</td><td class="r">${v}</td></tr>`).join("");
   } catch (e) { toast("Summary failed: " + e.message, true); }
+}
+
+async function loadDashboard() {
+  await refreshDashboardStats();
 
   api("/api/catalog-status").then(rows => {
     $("#catalog-list").innerHTML = rows.length ? rows.map(r => `
@@ -146,6 +153,13 @@ async function loadDashboard() {
     $("#health-chip").textContent = "health unknown"; $("#health-chip").className = "chip";
   });
 }
+
+// Live dashboard: refresh the stats every 15s while the tab is open and visible, so the
+// collection is watched growing in real time without a manual reload.
+setInterval(() => {
+  const pane = $("#tab-dashboard");
+  if (!document.hidden && pane && pane.classList.contains("active")) refreshDashboardStats();
+}, 15000);
 
 /* ---------- Library ---------- */
 const lib = { offset: 0, limit: 200, total: 0 };
