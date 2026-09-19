@@ -13,7 +13,7 @@ from .doctor import run as doctor_run
 from .catalog_status import catalog_status
 from .manage import set_series
 from .status import LIFECYCLE, MISSING, SATISFIED, own_all
-from . import indexer, actions, acquirer, sab, webdl, webauth
+from . import indexer, actions, acquirer, sab, webdl, webauth, chattools, webchat
 
 STATIC = Path(__file__).resolve().parent / "webui"
 
@@ -60,7 +60,7 @@ def create_app():
 
     SETTABLE = {"nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "sab_verify_ssl",
                 "download_dir", "acquire_poll", "acquire_max_wait_min", "acquire_batch_max",
-                "acquire_parallel", "acquire_watch", "acquire_interval",
+                "acquire_parallel", "acquire_direct_parallel", "acquire_watch", "acquire_interval",
                 "acquire_watch_batch", "acquire_sweep_pause",
                 "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout",
                 "vimm_enabled", "vimm_base", "vimm_dl_base", "vimm_delay", "vimm_jitter", "vimm_timeout",
@@ -303,19 +303,7 @@ def create_app():
         matters: a run in flight keeps going and picks the flag up at cycle end."""
         body = request.get_json(force=True) or {}
         on = str(body.get("on", "")).strip().lower() in ("1", "true", "yes", "on")
-        db = connect()
-        with db:
-            db.execute("""INSERT INTO app_settings(key,value) VALUES('acquire_watch',?)
-              ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP""",
-                       ("true" if on else "false",))
-        invalidate_settings()
-        launched = False
-        if on:
-            acquirer.STOP.clear()
-            launched = _launch("acquire", {"watch": True})
-        else:
-            acquirer.STOP.set()  # the in-flight cycle exits at its next stop check
-        return jsonify({"on": on, "launched": launched, "running": jobs["acquire"]["running"]})
+        return jsonify(_set_watch(on))
 
     @app.get("/api/acquire/watch")
     def api_watch_state():
@@ -403,6 +391,40 @@ def create_app():
         if not _launch(kind, params):
             return jsonify({"error": f"a {kind} job is already running"}), 409
         return jsonify({"started": True})
+
+    def _set_watch(on):
+        """Flip the always-on watcher. Shared by the Acquire tab's toggle and the
+        assistant's watcher tool so the two can never diverge — one implementation, one
+        behaviour."""
+        db = connect()
+        with db:
+            db.execute("""INSERT INTO app_settings(key,value) VALUES('acquire_watch',?)
+              ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP""",
+                       ("true" if on else "false",))
+        invalidate_settings()
+        launched = False
+        if on:
+            acquirer.STOP.clear()
+            launched = _launch("acquire", {"watch": True})
+        else:
+            acquirer.STOP.set()  # the in-flight cycle exits at its next stop check
+        return {"on": on, "launched": launched, "running": jobs["acquire"]["running"]}
+
+    def _set_settings(values):
+        """The assistant's set_setting tool. Routed through here rather than writing
+        app_settings itself so the SETTABLE whitelist is enforced in exactly one place — a
+        tool must not be able to persist a key the Settings tab would reject."""
+        bad = sorted(k for k in values if k not in SETTABLE)
+        if bad:
+            return {"error": f"unknown setting(s): {', '.join(bad)}"}
+        db = connect()
+        with db:
+            for k, v in values.items():
+                db.execute("""INSERT INTO app_settings(key,value) VALUES(?,?)
+                  ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=CURRENT_TIMESTAMP""",
+                           (k, "" if v is None else str(v).strip()))
+        invalidate_settings()
+        return {"saved": sorted(values)}
 
     def _maybe_auto_acquire():
         """Marking an item approved & wanted arms it — start the acquire pipeline.
@@ -585,6 +607,19 @@ def create_app():
           LEFT JOIN volumes v ON j.entity_type='volume' AND v.id=j.entity_id
           ORDER BY j.id DESC LIMIT 200""").fetchall()
         return jsonify([dict(r) for r in rows])
+
+    # Assistant. `ctx` is how tools reach closure state that lives in here — the job dict,
+    # the launcher, the watcher toggle — without chattools importing web.py (circular).
+    # Everything else a tool needs it imports from a sibling at call time.
+    chat_ctx = chattools.Ctx(
+        job_status=lambda kind: dict(jobs.get(kind) or {}),
+        jobs_active=lambda: {k: {"done": j["done"], "total": j["total"], "current": j["current"]}
+                             for k, j in jobs.items() if j["running"]},
+        launch_job=lambda kind, params: _launch(kind, params),
+        launch_watcher=_set_watch,
+        arm_acquire=_maybe_auto_acquire,
+        set_settings=_set_settings)
+    webchat.register(app, chat_ctx)
 
     return app
 

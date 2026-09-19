@@ -166,6 +166,17 @@ input.flag { width: 16px; height: 16px; accent-color: var(--accent); }
   width: min(560px, 92vw); max-height: 80vh; display: flex; flex-direction: column;
   background: var(--page); border: 1px solid var(--hairline); border-radius: 12px; padding: 16px 18px;
 }
+/* Login. Scoped rather than added to the global input rule so the existing Settings
+   password fields keep rendering exactly as they do today. */
+.login-panel { width: min(340px, 92vw); display: block; }
+.login-panel h2 { margin: 0 0 2px; }
+.login-label { display: block; margin: 10px 0 4px; font-size: 12px; color: var(--muted); }
+.login-panel input {
+  width: 100%; font: inherit; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px;
+}
+.login-panel .picker-foot { margin-top: 16px; }
+
 #picker-path { margin: 4px 0 8px; min-height: 1em; overflow-wrap: anywhere; }
 .picker-list { flex: 1; overflow-y: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
 .picker-row { display: flex; gap: 8px; align-items: center; padding: 7px 12px; cursor: pointer; border-bottom: 1px solid var(--hairline); }
@@ -174,6 +185,62 @@ input.flag { width: 16px; height: 16px; accent-color: var(--accent); }
 .picker-row .ic { flex: none; }
 .picker-row.file { color: var(--ink-2); }
 .picker-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+
+/* Assistant chat */
+.chat-log {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px 16px; min-height: 320px; max-height: 62vh; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px;
+}
+.chat-log .empty { color: var(--muted); text-align: center; margin: auto; }
+.msg { display: flex; flex-direction: column; gap: 6px; max-width: 92%; }
+.msg.user { align-self: flex-end; align-items: flex-end; }
+.msg.bot  { align-self: flex-start; }
+.msg .who { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.msg .body {
+  padding: 9px 13px; border-radius: 10px; white-space: pre-wrap; overflow-wrap: anywhere;
+  background: var(--page); border: 1px solid var(--border);
+}
+.msg.user .body { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.msg .body.streaming::after { content: "▍"; color: var(--accent); }
+.msg.err .body { border-color: var(--critical); color: var(--critical); }
+
+/* Reasoning and tool calls are details: present, but folded away unless you want them. */
+details.think, details.tool {
+  border: 1px solid var(--border); border-radius: 8px; background: var(--page);
+  font-size: 12.5px; width: 100%;
+}
+details.think > summary, details.tool > summary {
+  cursor: pointer; padding: 5px 10px; color: var(--ink-2);
+}
+details.tool > summary .ok   { color: var(--good-text); }
+details.tool > summary .fail { color: var(--critical); }
+details.think pre, details.tool pre {
+  margin: 0; padding: 8px 12px; border-top: 1px solid var(--hairline);
+  white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink-2);
+  max-height: 240px; overflow-y: auto; font-size: 12px;
+}
+details .label { color: var(--muted); padding: 6px 12px 0; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+
+/* Confirmation card — a gated tool call the owner has to answer before it runs. */
+.confirm {
+  border: 1px solid color-mix(in srgb, var(--warning) 55%, transparent);
+  background: color-mix(in srgb, var(--warning) 10%, var(--page));
+  border-radius: 8px; padding: 10px 12px; width: 100%;
+}
+.confirm .what { margin-bottom: 4px; }
+.confirm .who { text-transform: none; letter-spacing: 0; margin-bottom: 8px; }
+.confirm .row { display: flex; gap: 8px; }
+.confirm.yes { border-color: color-mix(in srgb, var(--good) 50%, transparent);
+               background: color-mix(in srgb, var(--good) 8%, var(--page)); }
+.confirm.no  { border-color: var(--hairline); background: var(--page); opacity: .8; }
+
+.chat-composer { display: flex; gap: 10px; align-items: flex-end; }
+.chat-composer textarea {
+  flex: 1; font: inherit; color: var(--ink); background: var(--surface);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 11px; resize: vertical;
+}
+.chat-buttons { display: flex; flex-direction: column; gap: 6px; }
 
 /* Toasts */
 #toasts { position: fixed; right: 16px; top: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 100; }

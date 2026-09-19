@@ -51,6 +51,9 @@ function fmtBytes(n) {
 }
 
 function toast(msg, err = false) {
+  // While the login form is up every poll on the page is failing with the same 401; one
+  // prompt is the message, a toast per request is just noise.
+  if (err && authPrompted) return;
   const el = document.createElement("div");
   el.className = "toast" + (err ? " err" : "");
   el.textContent = msg;
@@ -58,10 +61,18 @@ function toast(msg, err = false) {
   setTimeout(() => el.remove(), err ? 8000 : 4000);
 }
 
+// Set while the login overlay is showing, so repeated 401s from the page's polls don't
+// each re-open it or stack up an error toast apiece.
+let authPrompted = false;
+
 async function api(path, opts) {
   const r = await fetch(path, opts);
   let data = null;
   try { data = await r.json(); } catch { /* non-JSON error body */ }
+  // The gate answers 401 JSON rather than redirecting (a redirect would be followed by
+  // fetch and parsed as if it were the API response). Catch it here so an expired session
+  // mid-use surfaces as a login form instead of a wall of failed requests.
+  if (r.status === 401) { showLogin("Your session expired — sign in to continue."); throw new Error("authentication required"); }
   if (!r.ok) throw new Error((data && data.error) || `${r.status} ${r.statusText}`);
   return data;
 }
@@ -70,7 +81,7 @@ const post = (path, body) => api(path, {
 });
 
 /* ---------- Tabs ---------- */
-const loaders = { dashboard: loadDashboard, library: loadLibrary, acquire: loadAcquire, activity: loadActivity, import: loadImport, settings: loadSettings };
+const loaders = { dashboard: loadDashboard, library: loadLibrary, acquire: loadAcquire, activity: loadActivity, import: loadImport, settings: loadSettings, assistant: loadAssistant };
 const loaded = {};
 
 function showTab(name) {
@@ -645,7 +656,7 @@ function renderImportResult(r) {
 /* ---------- Settings ---------- */
 const SET_KEYS = ["nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "sab_verify_ssl",
                   "download_dir", "acquire_poll", "acquire_max_wait_min", "acquire_batch_max",
-                  "acquire_parallel", "acquire_watch", "acquire_interval",
+                  "acquire_parallel", "acquire_direct_parallel", "acquire_watch", "acquire_interval",
                   "acquire_watch_batch", "acquire_sweep_pause",
                   "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout",
                   "vimm_enabled", "vimm_base", "vimm_dl_base", "vimm_delay", "vimm_jitter", "vimm_timeout",
@@ -769,13 +780,426 @@ $("#picker-list").addEventListener("click", e => {
   }
 });
 
+/* ---------- Assistant ---------- */
+// Not `EventSource`: that is GET-only, so it cannot carry the message body and would need
+// the payload in a query string. `fetch` + a reader over the body gives the same streaming
+// with a POST, and the abort signal for free.
+async function streamChat(path, body, onEvent, signal) {
+  const r = await fetch(path, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (r.status === 401) { showLogin("Your session expired — sign in to continue."); throw new Error("authentication required"); }
+  if (!r.ok) {
+    let d = null;
+    try { d = await r.json(); } catch { /* non-JSON body */ }
+    throw new Error((d && d.error) || `${r.status} ${r.statusText}`);
+  }
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const {value, done} = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, {stream: true});
+    // Frames are separated by a blank line; the last chunk may be a partial frame.
+    let cut;
+    while ((cut = buf.indexOf("\n\n")) >= 0) {
+      const frame = buf.slice(0, cut);
+      buf = buf.slice(cut + 2);
+      let name = null, data = null;
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event: ")) name = line.slice(7);
+        else if (line.startsWith("data: ")) { try { data = JSON.parse(line.slice(6)); } catch { /* skip */ } }
+      }
+      if (name) onEvent(name, data || {});
+    }
+  }
+}
+
+let chatSession = null;     // null means the next send starts a new conversation
+let chatBusy = false;
+let chatAbort = null;
+let chatModel = "";         // "" = auto
+let chatTools = [];
+const DEFAULT_HINT = $("#chat-hint").textContent;
+
+function chatScroll() {
+  const log = $("#chat-log");
+  log.scrollTop = log.scrollHeight;
+}
+
+function chatEmpty() {
+  $("#chat-log").innerHTML = '<div class="empty">Ask about the library — or tell it what to do.</div>';
+}
+
+function addMsg(role, text) {
+  const log = $("#chat-log");
+  const empty = log.querySelector(".empty");
+  if (empty) empty.remove();
+  const el = document.createElement("div");
+  el.className = "msg " + role;
+  const who = document.createElement("div");
+  who.className = "who";
+  who.textContent = role === "user" ? "You" : "Assistant";
+  const body = document.createElement("div");
+  body.className = "body";
+  body.textContent = text || "";
+  el.append(who, body);
+  log.appendChild(el);
+  chatScroll();
+  return {el, body, tools: []};
+}
+
+function addToolCall(bot, name, args) {
+  const d = document.createElement("details");
+  d.className = "tool";
+  const s = document.createElement("summary");
+  s.textContent = `${name} …`;
+  const label = document.createElement("div");
+  label.className = "label";
+  label.textContent = "arguments";
+  const call = document.createElement("pre");
+  call.textContent = JSON.stringify(args || {}, null, 2);
+  d.append(s, label, call);
+  bot.el.appendChild(d);
+  const entry = {name, el: d, summary: s, call, filled: false};
+  bot.tools.push(entry);
+  chatScroll();
+  return entry;
+}
+
+function fillToolCall(bot, name, ok, data, truncated) {
+  const entry = bot.tools.find(t => t.name === name && !t.filled);
+  if (!entry) return;
+  entry.filled = true;
+  entry.summary.innerHTML = "";
+  entry.summary.append(`${name} `);
+  const mark = document.createElement("span");
+  mark.className = ok ? "ok" : "fail";
+  mark.textContent = ok ? "✓" : "✗";
+  entry.summary.append(mark, truncated ? " (truncated)" : "");
+  const label = document.createElement("div");
+  label.className = "label";
+  label.textContent = "returned";
+  const out = document.createElement("pre");
+  out.textContent = typeof data === "string" ? data : JSON.stringify(data, null, 2);
+  entry.el.append(label, out);
+  chatScroll();
+}
+
+function addThinking(bot, text) {
+  let d = bot.el.querySelector("details.think");
+  if (!d) {
+    d = document.createElement("details");
+    d.className = "think";
+    const s = document.createElement("summary");
+    s.textContent = "Thinking";
+    const pre = document.createElement("pre");
+    d.append(s, pre);
+    bot.el.insertBefore(d, bot.body);
+  }
+  d.querySelector("pre").textContent += text;
+  chatScroll();
+}
+
+function chatBusyState(on) {
+  chatBusy = on;
+  $("#chat-send").disabled = on;
+  $("#chat-stop").hidden = !on;
+  $("#chat-input").placeholder = on
+    ? "Working… press Stop to cancel."
+    : "Ask about the library — or tell it what to do. Enter sends, Shift+Enter adds a line.";
+}
+
+function chatEventHandler(bot) {
+  return (ev, d) => {
+    if (ev === "start") {
+      chatSession = d.session_id || chatSession;
+      loadChatSessions().catch(() => {});
+    } else if (ev === "token") {
+      bot.body.textContent += d.text || "";
+      chatScroll();
+    } else if (ev === "thinking") {
+      addThinking(bot, d.text || "");
+    } else if (ev === "tool_start") {
+      addToolCall(bot, d.name, d.args);
+    } else if (ev === "tool_result") {
+      fillToolCall(bot, d.name, d.ok, d.data === undefined ? d.error : d.data, d.truncated);
+    } else if (ev === "approval_required") {
+      addConfirmCard(bot, d);
+    } else if (ev === "error") {
+      bot.el.classList.add("err");
+      bot.body.textContent += (bot.body.textContent ? "\n" : "") + (d.message || "the turn failed");
+      chatScroll();
+    } else if (ev === "done") {
+      bot.ended = true;
+      const u = d.usage || {};
+      const parts = [];
+      if (u.eval_count) parts.push(`${u.eval_count} out`);
+      if (u.prompt_eval_count) parts.push(`${u.prompt_eval_count} in`);
+      if (u.total_duration) parts.push(`${(u.total_duration / 1e9).toFixed(1)}s`);
+      $("#chat-usage").textContent = parts.join(" · ");
+      // A turn that stopped early with nothing to say still needs to say so, or the bubble
+      // is an unexplained blank.
+      if (!bot.body.textContent.trim() && d.stopped) bot.body.textContent = d.stopped;
+      chatScroll();
+    }
+  };
+}
+
+function addConfirmCard(bot, d) {
+  const card = document.createElement("div");
+  card.className = "confirm";
+  const what = document.createElement("div");
+  what.className = "what";
+  what.textContent = d.summary || `Run ${d.tool}?`;
+  const note = document.createElement("div");
+  note.className = "who";
+  note.textContent = "nothing has run yet";
+  const row = document.createElement("div");
+  row.className = "row";
+  const yes = document.createElement("button");
+  yes.className = "primary small";
+  yes.textContent = "Approve";
+  const no = document.createElement("button");
+  no.className = "ghost small";
+  no.textContent = "Decline";
+  row.append(yes, no);
+  card.append(what, note, row);
+  bot.el.appendChild(card);
+  chatScroll();
+  const answer = ok => {
+    yes.disabled = no.disabled = true;
+    card.classList.add(ok ? "yes" : "no");
+    note.textContent = ok ? "approved" : "declined";
+    // Same stream, same handler: the server appends the decision to the history and the
+    // agent continues from there, so this reads as one continuous reply.
+    runChatStream(`/api/chat/approve/${d.approval_id}`, {approve: ok, model: chatModel || null}, bot);
+  };
+  yes.addEventListener("click", () => answer(true));
+  no.addEventListener("click", () => answer(false));
+}
+
+async function runChatStream(path, body, bot) {
+  bot.body.classList.add("streaming");
+  chatBusyState(true);
+  chatAbort = new AbortController();
+  try {
+    await streamChat(path, body, chatEventHandler(bot), chatAbort.signal);
+  } catch (err) {
+    if (err.name === "AbortError") {
+      if (!bot.body.textContent.trim()) bot.body.textContent = "Stopped.";
+    } else {
+      bot.el.classList.add("err");
+      bot.body.textContent = err.message;
+    }
+  } finally {
+    bot.body.classList.remove("streaming");
+    chatBusyState(false);
+    chatAbort = null;
+    loadChatSessions().catch(() => {});
+  }
+}
+
+async function sendChat(text) {
+  text = (text || "").trim();
+  if (!text || chatBusy) return;
+  $("#chat-input").value = "";
+  addMsg("user", text);
+  const bot = addMsg("bot", "");
+  await runChatStream("/api/chat/stream",
+    {message: text, session_id: chatSession, model: chatModel || null}, bot);
+}
+
+async function loadChatSessions() {
+  const rows = await api("/api/chat/sessions");
+  const sel = $("#chat-sessions");
+  if (!rows.length) {
+    sel.innerHTML = '<option value="">no conversations yet</option>';
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  sel.innerHTML = rows.map(s =>
+    `<option value="${s.id}">${esc((s.title || "untitled").slice(0, 60))} · ${s.messages}</option>`).join("");
+  if (chatSession) sel.value = String(chatSession);
+}
+
+async function openChatSession(sid) {
+  if (!sid) return;
+  const d = await api(`/api/chat/session/${sid}`);
+  chatSession = d.session.id;
+  const log = $("#chat-log");
+  log.innerHTML = "";
+  let bot = null;
+  for (const m of d.messages) {
+    if (m.role === "tool") {
+      const entry = {name: m.tool_name || "tool", el: document.createElement("details"), filled: true};
+      entry.el.className = "tool";
+      const s = document.createElement("summary");
+      s.textContent = `${entry.name} — earlier result`;
+      const pre = document.createElement("pre");
+      pre.textContent = m.content || "";
+      entry.el.append(s, pre);
+      log.appendChild(entry.el);
+    } else if (m.role === "user") {
+      addMsg("user", m.content);
+      bot = null;
+    } else if (m.content || m.thinking) {
+      bot = addMsg("bot", m.content || "");
+      if (m.thinking) addThinking(bot, m.thinking);
+    }
+  }
+  if (!log.children.length) chatEmpty();
+  // Approvals are persisted, so a card that was on screen when the page was reloaded is
+  // still answerable — otherwise a paused turn would be stranded with no way to resume it.
+  const pending = await api(`/api/chat/approvals/${sid}?status=pending`);
+  if (pending.length) {
+    const target = bot || addMsg("bot", "");
+    for (const p of pending) {
+      addConfirmCard(target, {approval_id: p.id, tool: p.tool, summary: p.summary});
+    }
+  }
+  chatScroll();
+}
+
+function newChat() {
+  chatSession = null;
+  chatEmpty();
+  $("#chat-usage").textContent = "";
+  $("#chat-hint").textContent = DEFAULT_HINT;
+  const sel = $("#chat-sessions");
+  if (sel.options.length) sel.selectedIndex = 0;
+}
+
+async function loadAssistant() {
+  let st;
+  try { st = await api("/api/chat/status"); }
+  catch (err) { $("#chat-off").hidden = false; $("#chat-main").hidden = true; toast(err.message, true); return; }
+  if (!st.enabled) { $("#chat-off").hidden = false; $("#chat-main").hidden = true; return; }
+  $("#chat-off").hidden = true;
+  $("#chat-main").hidden = false;
+
+  $("#chat-model").innerHTML = `<option value="">auto${st.model ? " — " + esc(st.model) : ""}</option>` +
+    (st.models || []).map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join("");
+  $("#chat-model").value = chatModel;
+  if (!st.reachable) toast(`Ollama at ${st.base} is not answering: ${st.error || "unreachable"}`, true);
+
+  if (!chatTools.length) {
+    try { chatTools = await api("/api/chat/tools"); } catch { chatTools = []; }
+  }
+  chatTools.forEach(t => { t.risk = t.risk || "low"; t.description = t.description || ""; });
+  $("#chat-tools").innerHTML = `<option value="">${chatTools.length} tools</option>` +
+    chatTools.map(t => `<option value="${esc(t.name)}">${esc(t.name)} — ${esc(t.risk)}</option>`).join("");
+  $("#chat-tools").value = "";
+
+  try { await loadChatSessions(); } catch { /* the dropdown is decoration; the log still works */ }
+  if (!chatSession && !$("#chat-log").children.length) chatEmpty();
+}
+
+$("#chat-tools").addEventListener("change", e => {
+  // Selecting a tool is documentation, not a command: it explains what the assistant can
+  // reach without pretending the user is queueing a call.
+  const t = chatTools.find(x => x.name === e.target.value);
+  $("#chat-hint").textContent = t ? `${t.name} (${t.risk}): ${t.description}` : DEFAULT_HINT;
+});
+
+$("#chat-model").addEventListener("change", e => { chatModel = e.target.value; });
+
+$("#chat-sessions").addEventListener("change", e => {
+  if (chatBusy) { toast("a turn is still running — stop it first", true); return; }
+  openChatSession(e.target.value).catch(err => toast(err.message, true));
+});
+
+$("#chat-new").addEventListener("click", () => {
+  if (chatBusy) { toast("a turn is still running — stop it first", true); return; }
+  newChat();
+});
+
+$("#chat-delete").addEventListener("click", async () => {
+  if (!chatSession) { newChat(); return; }
+  if (chatBusy) { toast("a turn is still running — stop it first", true); return; }
+  try {
+    await api(`/api/chat/session/${chatSession}`, {method: "DELETE"});
+    newChat();
+    await loadChatSessions();
+  } catch (err) { toast(err.message, true); }
+});
+
+$("#chat-form").addEventListener("submit", e => {
+  e.preventDefault();
+  sendChat($("#chat-input").value);
+});
+
+// Enter sends, Shift+Enter adds a line — but only when the composer has focus, so a stray
+// Enter elsewhere on the page never fires a turn.
+$("#chat-input").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat($("#chat-input").value); }
+});
+
+$("#chat-stop").addEventListener("click", () => {
+  // Ask the server to stop *and* drop the connection. The abort alone would work (the
+  // generator's finally sets the flag), but the POST is what makes Stop take effect even if
+  // the aborted response is still draining.
+  const p = chatSession ? post("/api/chat/cancel", {session_id: chatSession}).catch(() => {}) : Promise.resolve();
+  p.finally(() => { if (chatAbort) chatAbort.abort(); });
+});
+
 /* ---------- Wrappers to track first-load ---------- */
 for (const k of Object.keys(loaders)) {
   const fn = loaders[k];
   loaders[k] = (...a) => { loaded[k] = true; return fn(...a); };
 }
 
-initFacets();
-showTab(location.hash.slice(1) || "dashboard");
-loadImport();     // reattach to any running background jobs regardless of the open tab
-pollJobChip();
+/* ---------- Master login ---------- */
+function showLogin(msg) {
+  authPrompted = true;
+  $("#login-msg").textContent = msg || "Sign in to continue.";
+  $("#login-overlay").hidden = false;
+}
+
+$("#login-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const btn = $("#login-submit");
+  btn.disabled = true;
+  try {
+    await post("/api/auth/login", {
+      username: $("#login-user").value.trim(),
+      password: $("#login-pass").value,
+    });
+    $("#login-pass").value = "";
+    $("#login-overlay").hidden = true;
+    authPrompted = false;
+    startApp();          // the boot calls all ran into the 401 — do them now
+  } catch (err) {
+    authPrompted = false;   // let this one toast through
+    showLogin(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// What the shell does on load. Split out so it can run *after* a login rather than only at
+// boot: on a protected app the boot-time calls all 401 against an empty session, so there
+// is nothing to render until one exists.
+let started = false;
+function startApp() {
+  if (started) return;
+  started = true;
+  initFacets();
+  showTab(location.hash.slice(1) || "dashboard");
+  loadImport();     // reattach to any running background jobs regardless of the open tab
+  pollJobChip();
+}
+
+// Ask whether a login is configured before making any gated call, so an unprotected app
+// behaves exactly as it always has.
+(async () => {
+  let s = null;
+  try { s = await api("/api/auth/session"); } catch { /* treat as unprotected */ }
+  if (s && s.configured && !s.user) return showLogin();
+  startApp();
+})();

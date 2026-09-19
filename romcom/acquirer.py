@@ -46,10 +46,10 @@ COOLDOWN_EVENTS = {"acquire-skip": 60, "acquire-miss": 360}
 EVENT_KEEP_DAYS = 2             # cooldown-trail rows older than the longest window are pruned
 
 STOP = threading.Event()        # the web UI sets this to cancel the watcher promptly
-# Process-wide: exactly one direct (romsgames/vimm) download runs at a time, no matter how
-# many sweeps or workers exist. The NZB pipeline runs in parallel alongside it — the
-# "other provider" is the single-lane road; SABnzbd is the multi-lane highway.
-_DIRECT_SLOT = threading.Semaphore(1)
+# Direct downloads run ROMCOM_ACQUIRE_DIRECT_PARALLEL at a time (romsgames transfers
+# overlap; its request pacing still spaces the HTTP calls). Vimm self-limits to one at a
+# time via its own module semaphore regardless of this. SABnzbd is the multi-lane highway
+# alongside; the direct workers are the (now multi-lane) side road.
 DEFAULT_NZB_WORKERS = 4         # parallel indexer searches/queues when ROMCOM_ACQUIRE_PARALLEL is unset/0
 
 
@@ -314,9 +314,10 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
             stats["downloaded"] = max(0, dl - base_dl)
             stats["download_failed"] = max(0, fl - base_fl)
 
-    # --- the single background direct worker: one game at a time, off the NZB path ---
+    # --- background direct workers (romsgames/vimm), off the NZB path ---
     direct_q = queue.Queue()
     DONE = object()
+    direct_inflight = set()      # source urls being fetched right now, to dedup across workers
 
     def _direct_worker():
         wdb = connect()
@@ -343,14 +344,26 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                     _skip(c, "no usable result anywhere (indexer or direct)", wdb, miss=not had_error)
                     continue
                 sname, mod, direct = picked
-                if _already_fetched(wdb, direct.get("url")):
-                    _skip(c, f"already downloaded from {direct['url']}", wdb, miss=True)
+                url = direct.get("url")
+                # Dedup across workers AND across sweeps: the same source page can be the top
+                # pick for several items (a multicart). Claim the url under the lock — if the
+                # ledger already has it, or another worker is fetching it right now, skip.
+                with lock:
+                    dup = url in direct_inflight or _already_fetched(wdb, url)
+                    if not dup:
+                        direct_inflight.add(url)
+                if dup:
+                    _skip(c, f"already downloaded from {url}", wdb, miss=True)
                     continue
                 _emit(f"{sname} download: {c['title']}")
                 try:
-                    with _DIRECT_SLOT:   # process-wide: exactly one direct download at a time
-                        path = mod.fetch(direct, s["download_dir"])
+                    # romsgames runs several in parallel (transfers overlap; its request
+                    # pacing still spaces the HTTP calls). Vimm self-serializes to exactly
+                    # one at a time via its own module semaphore, regardless of worker count.
+                    path = mod.fetch(direct, s["download_dir"])
                 except Exception as ex:
+                    with lock:
+                        direct_inflight.discard(url)   # failed — let it be retried later
                     _fail(c, f"{sname} download failed: {ex}"); continue
                 with wdb:
                     wdb.execute("UPDATE items SET status='DOWNLOADED' WHERE id=?", (c["id"],))
@@ -360,12 +373,15 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                     pass  # the file is on disk; a ledger hiccup must not fail the item
                 with lock:
                     stats["direct"] += 1
+                    direct_inflight.discard(url)        # the ledger now covers this url
                 _emit(c["title"])
             finally:
                 direct_q.task_done()
 
-    direct_thread = threading.Thread(target=_direct_worker, daemon=True)
-    direct_thread.start()
+    n_direct = max(1, int(s["acquire_direct_parallel"]))
+    direct_threads = [threading.Thread(target=_direct_worker, daemon=True) for _ in range(n_direct)]
+    for _t in direct_threads:
+        _t.start()
 
     # --- NZB search + queue, run concurrently across the worker pool ---
     def _nzb_attempt(c):
@@ -490,10 +506,13 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                     note = f"wait cap reached; {waiting} download(s) still pending"; break
                 time.sleep(poll)
 
-    # Tell the direct worker to stop after its current item. The process-wide slot keeps any
-    # straggler (a long paced download) from overlapping the next sweep's direct download.
-    direct_q.put(DONE)
-    direct_thread.join(timeout=poll if poll else 1.0)
+    # Tell each direct worker to stop after its current item. A straggler mid-download keeps
+    # running as a daemon (Vimm self-serializes; romsgames is request-paced) and won't
+    # overlap the next sweep meaningfully.
+    for _t in direct_threads:
+        direct_q.put(DONE)
+    for _t in direct_threads:
+        _t.join(timeout=poll if poll else 1.0)
 
     try: actions.sync(db)
     except Exception: pass

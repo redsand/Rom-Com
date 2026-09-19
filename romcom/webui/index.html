@@ -17,6 +17,7 @@
     <button class="tab" data-tab="activity">Activity</button>
     <button class="tab" data-tab="import">Files</button>
     <button class="tab" data-tab="settings">Settings</button>
+    <button class="tab" data-tab="assistant">Assistant</button>
   </nav>
   <div id="job-chip" class="chip job" title="Background jobs — click for details" hidden></div>
   <div id="health-chip" class="chip" title="Connection health">checking&hellip;</div>
@@ -255,7 +256,12 @@
         <span class="sub">max items attempted per run (0 = unlimited)</span>
         <span class="count" style="width:150px;margin-left:24px">NZB workers</span>
         <input id="set-acquire_parallel" type="search" placeholder="4" spellcheck="false" style="width:90px">
-        <span class="sub">parallel indexer searches (0 = default 4); direct sources always run 1 at a time</span>
+        <span class="sub">parallel indexer searches (0 = default 4)</span>
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Direct workers</span>
+        <input id="set-acquire_direct_parallel" type="search" placeholder="3" spellcheck="false" style="width:90px">
+        <span class="sub">parallel website downloads (romsgames overlaps; Vimm always 1 at a time)</span>
       </div>
       <div class="filters">
         <span class="count" style="width:150px">Idle sweep</span>
@@ -359,6 +365,40 @@
       <div id="settings-doctor" class="checklist">Running checks&hellip;</div>
     </div>
   </section>
+
+  <!-- Assistant -->
+  <section id="tab-assistant" class="tabpane">
+    <div id="chat-off" class="card" hidden>
+      <h2>Assistant is off</h2>
+      <p class="sub">Set <code>ROMCOM_CHAT_ENABLED=true</code> in <code>.env</code> (or tick it on the
+        Settings tab) and restart to turn it on. It talks to the Ollama server at
+        <code>ROMCOM_LLM_BASE</code> and needs a locally installed model that supports tool calling.</p>
+    </div>
+
+    <div id="chat-main" hidden>
+      <div class="filters">
+        <button id="chat-new" class="ghost">New chat</button>
+        <select id="chat-sessions" title="Previous conversations"></select>
+        <button id="chat-delete" class="ghost">Delete</button>
+        <span style="flex:1"></span>
+        <select id="chat-model" title="Model — 'auto' picks the first installed model that supports tools"></select>
+        <select id="chat-tools" title="Tools the assistant can call"></select>
+        <span id="chat-usage" class="count"></span>
+      </div>
+      <div id="chat-log" class="chat-log"></div>
+      <form id="chat-form" class="chat-composer">
+        <textarea id="chat-input" rows="2" spellcheck="false"
+          placeholder="Ask about the library — or tell it what to do. Enter sends, Shift+Enter adds a line."></textarea>
+        <div class="chat-buttons">
+          <button id="chat-send" class="primary" type="submit">Send</button>
+          <button id="chat-stop" class="ghost" type="button" hidden>Stop</button>
+        </div>
+      </form>
+      <p class="sub" id="chat-hint">It reads the library with real queries and cites what it used.
+        Anything that would move files, mark things in bulk, or change source settings stops for
+        your confirmation first.</p>
+    </div>
+  </section>
 </main>
 
 <!-- Search results drawer -->
@@ -385,6 +425,24 @@
       <button id="picker-select" class="primary">Use this folder</button>
     </div>
   </div>
+</div>
+
+<!-- Master login. This lives in the static shell rather than being built by JS, because the
+     server leaves this file ungated for exactly this reason: if index.html were gated, a
+     refused browser would get a 401 JSON body instead of a login form. Hidden unless
+     /api/auth/session says a login is configured and we don't have one yet. -->
+<div id="login-overlay" class="modal" hidden>
+  <form id="login-form" class="modal-panel login-panel">
+    <h2>Rom-Com</h2>
+    <p class="sub" id="login-msg">Sign in to continue.</p>
+    <label class="login-label" for="login-user">Username</label>
+    <input id="login-user" type="text" autocomplete="username" spellcheck="false">
+    <label class="login-label" for="login-pass">Password</label>
+    <input id="login-pass" type="password" autocomplete="current-password">
+    <div class="picker-foot">
+      <button class="primary" type="submit" id="login-submit">Sign in</button>
+    </div>
+  </form>
 </div>
 
 <div id="toasts"></div>

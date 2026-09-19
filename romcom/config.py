@@ -28,6 +28,7 @@ ENV_VARS = {
     "acquire_max_wait_min": "ROMCOM_ACQUIRE_MAX_WAIT_MIN",
     "acquire_batch_max": "ROMCOM_ACQUIRE_BATCH_MAX",
     "acquire_parallel": "ROMCOM_ACQUIRE_PARALLEL",
+    "acquire_direct_parallel": "ROMCOM_ACQUIRE_DIRECT_PARALLEL",
     "acquire_watch": "ROMCOM_ACQUIRE_WATCH",
     "acquire_interval": "ROMCOM_ACQUIRE_INTERVAL",
     "acquire_watch_batch": "ROMCOM_ACQUIRE_WATCH_BATCH",
@@ -75,6 +76,7 @@ def _env_settings():
         "acquire_max_wait_min": os.getenv("ROMCOM_ACQUIRE_MAX_WAIT_MIN", "240"),
         "acquire_batch_max": os.getenv("ROMCOM_ACQUIRE_BATCH_MAX", "0"),
         "acquire_parallel": os.getenv("ROMCOM_ACQUIRE_PARALLEL", "4"),
+        "acquire_direct_parallel": os.getenv("ROMCOM_ACQUIRE_DIRECT_PARALLEL", "3"),
         "acquire_watch": os.getenv("ROMCOM_ACQUIRE_WATCH", "false"),
         "acquire_interval": os.getenv("ROMCOM_ACQUIRE_INTERVAL", "300"),
         "acquire_watch_batch": os.getenv("ROMCOM_ACQUIRE_WATCH_BATCH", "50"),
@@ -135,6 +137,8 @@ def settings():
     except (TypeError, ValueError): s["acquire_batch_max"] = 0
     try: s["acquire_parallel"] = max(0, int(s["acquire_parallel"]))
     except (TypeError, ValueError): s["acquire_parallel"] = 4
+    try: s["acquire_direct_parallel"] = max(1, int(s["acquire_direct_parallel"]))
+    except (TypeError, ValueError): s["acquire_direct_parallel"] = 3
     s["acquire_watch"] = str(s["acquire_watch"]).strip().lower() in ("1", "true", "yes", "on")
     try: s["acquire_interval"] = max(0.0, float(s["acquire_interval"]))
     except (TypeError, ValueError): s["acquire_interval"] = 300.0
