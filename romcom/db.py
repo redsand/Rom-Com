@@ -71,6 +71,51 @@ CREATE TABLE IF NOT EXISTS search_cache (
  source TEXT NOT NULL, cache_key TEXT NOT NULL, results TEXT NOT NULL,
  fetched_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(source, cache_key)
 );
+-- Assistant chat. These are NEW tables, so they need no MIGRATIONS entry: an existing
+-- database picks them up on its first connect() after the upgrade, exactly how
+-- app_settings arrived. Nothing here ALTERs a table the live watcher is writing to.
+CREATE TABLE IF NOT EXISTS chat_sessions (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, summary TEXT,
+ summarized_to INTEGER NOT NULL DEFAULT 0,
+ created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS chat_messages (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL,
+ role TEXT NOT NULL, content TEXT, thinking TEXT, tool_name TEXT, tool_args TEXT,
+ created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS chat_facts (
+ key TEXT PRIMARY KEY, value TEXT NOT NULL, source TEXT,
+ confidence REAL DEFAULT 1.0,
+ created_at TEXT DEFAULT CURRENT_TIMESTAMP, updated_at TEXT
+);
+-- `dim` and `model` are the dimension lock: a vector is only ever compared against
+-- vectors written by the same model, so swapping embed models can never silently
+-- cosine against foreign-dimension rows (it's refused at insert instead).
+-- `norm` is precomputed so cosine is a bare dot product over array('f').
+CREATE TABLE IF NOT EXISTS chat_memory_chunks (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, ref_id TEXT,
+ text TEXT NOT NULL, embedding BLOB NOT NULL, dim INTEGER NOT NULL,
+ model TEXT NOT NULL, norm REAL NOT NULL,
+ created_at TEXT DEFAULT CURRENT_TIMESTAMP, last_accessed TEXT
+);
+CREATE TABLE IF NOT EXISTS chat_approvals (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER,
+ tool TEXT NOT NULL, arguments TEXT NOT NULL, summary TEXT,
+ status TEXT NOT NULL DEFAULT 'pending', result TEXT,
+ created_at TEXT DEFAULT CURRENT_TIMESTAMP, decided_at TEXT
+);
+CREATE TABLE IF NOT EXISTS chat_tool_log (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER, tool TEXT NOT NULL,
+ arguments TEXT, ok INTEGER, risk TEXT, result_summary TEXT,
+ created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+-- Web login tokens. The token is stored HASHED, so a database dump yields nothing
+-- usable; the plaintext exists only in the user's cookie.
+CREATE TABLE IF NOT EXISTS web_sessions (
+ token_hash TEXT PRIMARY KEY, user TEXT NOT NULL,
+ created_at TEXT DEFAULT CURRENT_TIMESTAMP, expires_at TEXT NOT NULL, last_seen TEXT
+);
 """
 
 # ALTER TABLE has stricter default-expression rules than CREATE TABLE.
@@ -104,7 +149,15 @@ INDEXES = [
  "CREATE INDEX IF NOT EXISTS idx_events_item_event ON events(item_id, event, created_at)",
  # "what content is on disk" — the dashboard's hottest query. Indexed on the stored flag
  # so it's a range scan, not a full-table path sweep.
- "CREATE INDEX IF NOT EXISTS idx_files_content ON files(content, matched_item_id)"
+ "CREATE INDEX IF NOT EXISTS idx_files_content ON files(content, matched_item_id)",
+ # Assistant chat. History is fetched per session and paged by id, approvals are looked
+ # up pending-per-session, and recall always filters by model (the dimension lock), so
+ # model is the leading column there.
+ "CREATE INDEX IF NOT EXISTS idx_chat_msg_session ON chat_messages(session_id, id)",
+ "CREATE INDEX IF NOT EXISTS idx_chat_chunks_model ON chat_memory_chunks(model)",
+ "CREATE INDEX IF NOT EXISTS idx_chat_approvals ON chat_approvals(session_id, status)",
+ "CREATE INDEX IF NOT EXISTS idx_chat_log_session ON chat_tool_log(session_id, id)",
+ "CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at)"
 ]
 
 def _columns(db,table):

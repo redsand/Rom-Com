@@ -47,7 +47,19 @@ ENV_VARS = {
     "llm_base": "ROMCOM_LLM_BASE",
     "llm_model": "ROMCOM_LLM_MODEL",
     "llm_timeout": "ROMCOM_LLM_TIMEOUT",
+    "chat_enabled": "ROMCOM_CHAT_ENABLED",
+    "chat_model": "ROMCOM_CHAT_MODEL",
+    "chat_embed_model": "ROMCOM_CHAT_EMBED_MODEL",
+    "chat_history_max": "ROMCOM_CHAT_HISTORY_MAX",
+    "mcp_enabled": "ROMCOM_MCP_ENABLED",
+    "mcp_servers_path": "ROMCOM_MCP_SERVERS",
 }
+# Deliberately NOT here: the web master login (ROMCOM_WEB_USER/ROMCOM_WEB_PASS) and the
+# MCP key (ROMCOM_MCP_KEY). A key absent from _env_settings() is invisible to settings(),
+# so it can never be persisted to app_settings, can never be echoed by GET /api/settings,
+# and can never be edited from the Settings tab. webauth.py reads those via os.getenv —
+# the settings-precedence system IS the security boundary, which is why nothing has to be
+# masked out of the payload afterwards.
 
 def _env_settings():
     return {
@@ -82,6 +94,16 @@ def _env_settings():
         "llm_base": (os.getenv("ROMCOM_LLM_BASE") or "http://localhost:11434").rstrip("/"),
         "llm_model": os.getenv("ROMCOM_LLM_MODEL", "deepseek-v4.1-flash:cloud"),
         "llm_timeout": os.getenv("ROMCOM_LLM_TIMEOUT", "60"),
+        "chat_enabled": os.getenv("ROMCOM_CHAT_ENABLED", "false"),
+        # Empty by default, and that is load-bearing: llm_model's default is a CLOUD model
+        # (deepseek-v4.1-flash:cloud), so inheriting it would make the assistant need the
+        # network and a cloud account. llmclient.resolve_model() picks a locally-present
+        # tool-capable model instead, keeping the assistant fully offline.
+        "chat_model": os.getenv("ROMCOM_CHAT_MODEL", ""),
+        "chat_embed_model": os.getenv("ROMCOM_CHAT_EMBED_MODEL", "nomic-embed-text:latest"),
+        "chat_history_max": os.getenv("ROMCOM_CHAT_HISTORY_MAX", "20"),
+        "mcp_enabled": os.getenv("ROMCOM_MCP_ENABLED", "false"),
+        "mcp_servers_path": os.getenv("ROMCOM_MCP_SERVERS", str(ROOT / "mcp-servers.json")),
     }
 
 def _overrides(db_path):
@@ -130,6 +152,10 @@ def settings():
     s["llm_enabled"] = str(s["llm_enabled"]).strip().lower() in ("1", "true", "yes", "on")
     try: s["llm_timeout"] = max(1.0, float(s["llm_timeout"]))
     except (TypeError, ValueError): s["llm_timeout"] = 60.0
+    s["chat_enabled"] = str(s["chat_enabled"]).strip().lower() in ("1", "true", "yes", "on")
+    try: s["chat_history_max"] = max(1, int(s["chat_history_max"]))
+    except (TypeError, ValueError): s["chat_history_max"] = 20
+    s["mcp_enabled"] = str(s["mcp_enabled"]).strip().lower() in ("1", "true", "yes", "on")
     s["sab_verify_ssl"] = str(s["sab_verify_ssl"]).strip().lower() not in ("0", "false", "no", "off")
     return s
 

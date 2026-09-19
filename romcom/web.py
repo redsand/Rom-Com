@@ -13,7 +13,7 @@ from .doctor import run as doctor_run
 from .catalog_status import catalog_status
 from .manage import set_series
 from .status import LIFECYCLE, MISSING, SATISFIED, own_all
-from . import indexer, actions, acquirer, sab, webdl
+from . import indexer, actions, acquirer, sab, webdl, webauth
 
 STATIC = Path(__file__).resolve().parent / "webui"
 
@@ -37,6 +37,12 @@ def create_app():
             return jsonify({"error": str(e)}), code
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
 
+    # Master login. Inert unless ROMCOM_WEB_USER/ROMCOM_WEB_PASS are set, so this is a
+    # no-op for every existing test and for anyone running the app as before. The gate is a
+    # before_request hook, so it only ever sees HTTP requests — the watcher, watchdog, and
+    # checkpointer run in threads that call functions directly and are unaffected.
+    webauth.install(app)
+
     @app.get("/")
     def index():
         return send_from_directory(app.static_folder, "index.html")
@@ -58,7 +64,9 @@ def create_app():
                 "acquire_watch_batch", "acquire_sweep_pause",
                 "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout",
                 "vimm_enabled", "vimm_base", "vimm_dl_base", "vimm_delay", "vimm_jitter", "vimm_timeout",
-                "search_cache_ttl", "llm_enabled", "llm_base", "llm_model", "llm_timeout"}
+                "search_cache_ttl", "llm_enabled", "llm_base", "llm_model", "llm_timeout",
+                "chat_enabled", "chat_model", "chat_embed_model", "chat_history_max",
+                "mcp_enabled", "mcp_servers_path"}
 
     def _settings_payload(db):
         s = settings()
