@@ -15,12 +15,13 @@ session at a time — two would interleave writes into the same history and prod
 conversation the model never actually saw.
 """
 import json
+import os
 import queue
 import threading
 
 from flask import Response, jsonify, request
 
-from . import chatagent, chatstore, chattools
+from . import chatagent, chatstore, chattools, mcpclient
 from .config import settings
 
 # session_id -> cancel Event for the turn currently running on it.
@@ -102,7 +103,13 @@ def _sse(sid, work):
 
 def register(app, ctx):
     def _registry():
-        return chattools.build_registry(ctx)
+        """Native tools plus any external MCP tools.
+
+        `merge` returns a *copy*: the native registry is also what `/mcp` serves, so adding
+        external tools in place would make Rom-Com re-advertise another server's tools as its
+        own — a loop that grows a level per hop.
+        """
+        return mcpclient.merge(chattools.build_registry(ctx))
 
     @app.post("/api/chat/stream")
     def api_chat_stream():
@@ -152,6 +159,25 @@ def register(app, ctx):
     @app.get("/api/chat/approvals/<int:sid>")
     def api_chat_approvals(sid):
         return jsonify(chatstore.approvals(sid=sid, status=request.args.get("status") or None))
+
+    @app.get("/api/chat/memory")
+    def api_chat_memory():
+        """What the assistant durably remembers, and what it can recall. Read-only, and the
+        owner's window into a store that otherwise only the agent can see — memory nobody can
+        inspect is memory nobody can correct."""
+        q = (request.args.get("q") or "").strip()
+        return jsonify({"facts": chatstore.facts(limit=200),
+                        "chunks": chatstore.chunk_count(),
+                        "recall": chatstore.recall(q, k=10) if q else []})
+
+    @app.get("/api/chat/mcp")
+    def api_chat_mcp():
+        """External MCP servers and whether they answered. The assistant's own catalog is at
+        /api/chat/tools; this is the other direction, and it is separate because a server
+        being down is normal and must not look like a broken tool catalog."""
+        return jsonify({"enabled": bool(settings().get("mcp_enabled")),
+                        "servers": mcpclient.status() if settings().get("mcp_enabled") else [],
+                        "key_set": bool(os.getenv("ROMCOM_MCP_KEY"))})
 
     @app.post("/api/chat/cancel")
     def api_chat_cancel():

@@ -29,7 +29,8 @@ def make_app(monkeypatch, tmp_path, chat=True, items=None):
     with db:
         for r in items or []:
             db.execute("INSERT INTO items(id,title,system,authorized,wanted,status) VALUES(?,?,?,?,?,?)",
-                       (r["id"], r.get("title", r["id"]), r.get("system"), 1, 1,
+                       (r["id"], r.get("title", r["id"]), r.get("system"),
+                        r.get("authorized", 1), r.get("wanted", 1),
                         r.get("status", "CATALOGED")))
     return create_app()
 
@@ -242,7 +243,7 @@ def pause_on_a_gated_call(c, message="mark everything owned"):
 def test_a_gated_call_pauses_the_stream_without_erroring(monkeypatch, tmp_path):
     """The pause is a normal end to a turn, not a failure: `done` still arrives, so the
     composer is re-enabled and the tab is never left waiting on nothing."""
-    c = make_client(monkeypatch, tmp_path, items=[{"id": "a", "status": "VERIFIED"}])
+    c = make_client(monkeypatch, tmp_path, items=[{"id": "a", "status": "VERIFIED", "wanted": 0, "authorized": 0}])
     FakeOllama(turns=[{"tool_calls": [{"name": "mark_all_owned", "arguments": {}}]}]).install(monkeypatch)
     r, frames = stream(c, "mark everything owned")
     names = [n for n, _ in frames]
@@ -256,7 +257,7 @@ def test_a_gated_call_pauses_the_stream_without_erroring(monkeypatch, tmp_path):
 
 def test_approving_over_http_runs_the_call_and_streams_the_continuation(monkeypatch, tmp_path):
     """The whole point of the gate, driven the way app.js drives it."""
-    c = make_client(monkeypatch, tmp_path, items=[{"id": "a", "status": "VERIFIED"}])
+    c = make_client(monkeypatch, tmp_path, items=[{"id": "a", "status": "VERIFIED", "wanted": 0, "authorized": 0}])
     FakeOllama(turns=[{"tool_calls": [{"name": "mark_all_owned", "arguments": {}}]},
                       {"tokens": ["All set."]}]).install(monkeypatch)
     sid, aid = pause_on_a_gated_call(c)
@@ -273,7 +274,7 @@ def test_approving_over_http_runs_the_call_and_streams_the_continuation(monkeypa
 
 
 def test_declining_over_http_changes_nothing(monkeypatch, tmp_path):
-    c = make_client(monkeypatch, tmp_path, items=[{"id": "a", "status": "VERIFIED"}])
+    c = make_client(monkeypatch, tmp_path, items=[{"id": "a", "status": "VERIFIED", "wanted": 0, "authorized": 0}])
     FakeOllama(turns=[{"tool_calls": [{"name": "mark_all_owned", "arguments": {}}]},
                       {"tokens": ["Left them alone."]}]).install(monkeypatch)
     _, aid = pause_on_a_gated_call(c)
@@ -287,7 +288,7 @@ def test_declining_over_http_changes_nothing(monkeypatch, tmp_path):
 def test_an_approval_cannot_be_resolved_twice_over_http(monkeypatch, tmp_path):
     """A double-click on the confirm card, or two open tabs. The second one is refused rather
     than running the gated call a second time."""
-    c = make_client(monkeypatch, tmp_path, items=[{"id": "a", "status": "VERIFIED"}])
+    c = make_client(monkeypatch, tmp_path, items=[{"id": "a", "status": "VERIFIED", "wanted": 0, "authorized": 0}])
     FakeOllama(turns=[{"tool_calls": [{"name": "mark_all_owned", "arguments": {}}]},
                       {"tokens": ["done"]}]).install(monkeypatch)
     _, aid = pause_on_a_gated_call(c)
@@ -303,7 +304,7 @@ def test_an_unknown_approval_is_a_404_not_a_500(monkeypatch, tmp_path):
 
 def test_pending_approvals_can_be_listed_so_a_reload_can_re_render_the_card(monkeypatch, tmp_path):
     """A paused turn survives a page refresh because the card is rebuilt from this route."""
-    c = make_client(monkeypatch, tmp_path, items=[{"id": "a", "status": "VERIFIED"}])
+    c = make_client(monkeypatch, tmp_path, items=[{"id": "a", "status": "VERIFIED", "wanted": 0, "authorized": 0}])
     FakeOllama(turns=[{"tool_calls": [{"name": "mark_all_owned", "arguments": {}}]}]).install(monkeypatch)
     sid, aid = pause_on_a_gated_call(c)
     rows = c.get(f"/api/chat/approvals/{sid}?status=pending").get_json()

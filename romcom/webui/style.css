@@ -187,6 +187,14 @@ input.flag { width: 16px; height: 16px; accent-color: var(--accent); }
 .picker-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 
 /* Assistant chat */
+/* What the assistant remembers and who else can reach it. Sits above the transcript because
+   it is context for reading the transcript, not a result of it. */
+.chat-brain { margin-bottom: 8px; cursor: help; }
+.chat-facts {
+  margin-bottom: 8px; padding: 10px 12px; max-height: 180px; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  white-space: pre-wrap; font-family: ui-monospace, Consolas, monospace;
+}
 .chat-log {
   background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
   padding: 14px 16px; min-height: 320px; max-height: 62vh; overflow-y: auto;

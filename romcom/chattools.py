@@ -23,6 +23,7 @@ narrows its filter or pages instead of silently believing it saw everything. Tha
 a local model will happily summarize 50 of 7,553 rows as "that's all of them."
 """
 import json
+import re
 import time
 
 from .config import load_yaml
@@ -210,6 +211,63 @@ def _facets(args, ctx):
     known = {s for meta in cfg.get("catalogs", {}).values() for s in meta.get("systems", [])}
     known |= set(cfg.get("custom", {}).get("systems", []))
     return {"systems": systems, "statuses": LIFECYCLE, "all_systems": sorted(known | set(systems))}
+
+
+# ---------------------------------------------------------------------------- memory
+#
+# Memory is written by explicit tool call rather than extracted after every turn: extraction
+# would be a second model call per turn on a local model, and the owner can only audit and
+# correct what the agent chose to record in the open.
+
+# A credential the owner pastes into chat must not become a permanent injection. This is the
+# same guard as the settings scrubber: refuse outright rather than storing and masking later,
+# because a stored secret is already in the database.
+_SECRETISH = re.compile(r"(?i)\b(api[_-]?key|apikey|password|passwd|secret|token|bearer)\b\s*[:=]?\s*\S")
+
+
+def _remember_fact(args, ctx):
+    from . import chatstore
+    key = (args.get("key") or "").strip()
+    value = (args.get("value") or "").strip()
+    if not key or not value:
+        return {"error": "both key and value are required"}
+    if _SECRETISH.search(value):
+        return {"error": "refusing to store what looks like a credential. Do not put API keys, "
+                         "passwords or tokens into memory — they belong in .env, not in a "
+                         "conversation or the database."}
+    if len(key) > 120:
+        return {"error": "key is too long; use a short stable identifier like 'snes_folder'"}
+    existed = chatstore.fact(key) is not None
+    row = chatstore.remember_fact(key, value, source=args.get("source"))
+    return {"saved": key, "updated": existed, "value": row["value"] if row else value,
+            "note": f"remembered '{key}'" + (" (replaced the previous value)" if existed else "")}
+
+
+def _recall_memory(args, ctx):
+    from . import chatstore
+    query = (args.get("query") or "").strip()
+    if not query:
+        return {"error": "query is required"}
+    k = min(int(args.get("k") or 5), 20)
+    hits = chatstore.recall(query, k=k)
+    return {"query": query, "hits": len(hits), "results": hits,
+            "note": None if hits else "nothing in memory is close enough to that — this is a "
+                                      "gap in what has been recorded, not a search failure"}
+
+
+def _list_facts(args, ctx):
+    from . import chatstore
+    rows = chatstore.facts()
+    return {"total": len(rows), "facts": rows}
+
+
+def _forget_fact(args, ctx):
+    from . import chatstore
+    key = (args.get("key") or "").strip()
+    n = chatstore.forget_fact(key)
+    if not n:
+        return {"error": f"no remembered fact with key {key!r}"}
+    return {"forgotten": key}
 
 
 def _list_items(args, ctx):
@@ -818,6 +876,35 @@ def build_registry(ctx=None):
              _obj({"values": dict(type="object",
                                   description="setting name → new value, e.g. {\"acquire_batch_max\": \"5\"}")},
                   ["values"]), _set_settings, risk="high", confirm=_set_settings_confirm),
+
+        # --- memory --------------------------------------------------------
+        Tool("remember_fact",
+             "Record something durable that should still be true in a later conversation: a "
+             "preference, a decision, a naming convention, the path to something they keep "
+             "asking about. Use a short stable key ('snes_folder') so re-remembering the same "
+             "thing updates it rather than piling up near-duplicates. Facts are injected into "
+             "every future turn, so record *conclusions*, not narration — and never record a "
+             "credential, key or password.",
+             _obj({"key": dict(_STR, description="short stable identifier, e.g. 'snes_folder'"),
+                   "value": dict(_STR, description="what to remember"),
+                   "source": dict(_STR, description="where this came from (optional)")},
+                  ["key", "value"]), _remember_fact),
+        Tool("recall_memory",
+             "Search your memory of past conversations and notes by meaning, not keyword. Use "
+             "when the owner refers to something from an earlier session ('the folder we talked "
+             "about'), or before asking them to repeat a preference.",
+             _obj({"query": dict(_STR, description="what to look for"),
+                   "k": dict(_INT, description="how many hits (default 5)")},
+                  ["query"]), _recall_memory),
+        Tool("list_facts",
+             "Everything you have recorded in durable memory. Use to check what you already "
+             "know, or to find the key of a fact that is now out of date.",
+             _obj({}), _list_facts),
+        Tool("forget_fact",
+             "Delete one durable memory by its key. Use when a remembered fact is wrong or no "
+             "longer applies — leaving it would keep injecting a falsehood into every turn.",
+             _obj({"key": dict(_STR, description="the fact's key, from list_facts")}, ["key"]),
+             _forget_fact),
     ]
     for t in tools:
         t.ctx = ctx

@@ -99,6 +99,13 @@ def cmd_cache(a):
     else:
         print(json.dumps(searchcache.stats(),indent=2))
 
+def cmd_vimm(a):
+    from . import vimm
+    print("Opening Vimm in a browser — solve any Cloudflare challenge, then it captures the session…")
+    ok=vimm.capture()
+    print("Vimm session captured — downloads can now reuse it headlessly."
+          if ok else "Capture timed out. Rerun and solve the challenge in the window that opens.")
+
 def cmd_set(a):
     db=connect(); kind,_=entity(db,a.ident); table="items" if kind=="item" else "volumes"
     allowed={"authorized","status"}
@@ -196,6 +203,7 @@ def main():
     w=s.add_parser("web"); w.add_argument("--host",default="127.0.0.1"); w.add_argument("--port",type=int,default=8927); w.add_argument("--no-browser",action="store_true"); w.set_defaults(fn=cmd_web)
     cs=s.add_parser("catalog-status"); cs.add_argument("--strict",action="store_true"); cs.set_defaults(fn=cmd_catalog_status)
     cc=s.add_parser("cache"); cc.add_argument("action",choices=["stats","clear"],nargs="?",default="stats"); cc.add_argument("--source"); cc.set_defaults(fn=cmd_cache)
+    vm=s.add_parser("vimm"); vm.add_argument("action",choices=["capture"],nargs="?",default="capture"); vm.set_defaults(fn=cmd_vimm)
     a=p.parse_args(); a.fn(a)
 
 if __name__=="__main__": main()

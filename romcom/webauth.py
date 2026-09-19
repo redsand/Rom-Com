@@ -43,10 +43,18 @@ TTL_HOURS = 24
 RENEW_BELOW_HOURS = TTL_HOURS / 2
 
 # The static shell has to load for a login form to exist at all, and the auth routes have to
-# be reachable before there is a session. Everything else — every /api/* and /mcp — is gated.
+# be reachable before there is a session. Everything else under /api/* is gated.
 PUBLIC_PATHS = {"/", "/app.js", "/style.css", "/favicon.ico",
                 "/api/auth/login", "/api/auth/status", "/api/auth/session",
                 "/api/auth/logout"}
+
+# `/mcp` is gated, but not *here*. It carries its own credential (`mcp_key_ok`, never open),
+# and the two do not overlap: an MCP client authenticates with ROMCOM_MCP_KEY, which is not a
+# UI session token, so letting this gate run first means a perfectly authorized MCP client
+# gets a 401 from the login gate and its own (correct) auth check never executes. That is
+# exactly the combination the owner asked for — login on *and* MCP reachable — so the gate
+# has to stand aside rather than be satisfied.
+SELF_GATING_PATHS = {"/mcp"}
 
 
 def _cred(name):
@@ -167,7 +175,7 @@ def install(app):
         # Unconfigured = the app behaves exactly as it did before this module existed.
         if not configured():
             return None
-        if request.path in PUBLIC_PATHS:
+        if request.path in PUBLIC_PATHS or request.path in SELF_GATING_PATHS:
             return None
         if current_user() is not None:
             return None

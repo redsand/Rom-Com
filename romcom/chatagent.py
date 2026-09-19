@@ -88,18 +88,20 @@ def system_prompt():
     return _SYSTEM.strip()
 
 
-def _assemble(sid, registry):
+def _assemble(sid, registry, query=None):
     """Build the message list for a turn: system → (memory) → (summary) → verbatim window.
 
-    Stage 2 has neither memory nor summary, so the two insertion points below are empty by
-    design; Stage 4 fills them without disturbing this ordering.
+    Order matters and is pinned by a test. Recalled memory and the rolling summary both go in
+    as `system` messages *before* the verbatim window, because they are standing context about
+    the owner and the thread — injecting them after the recent turns would make them read as
+    the newest thing said, which is exactly backwards.
     """
     from .config import settings
     msgs = [{"role": "system", "content": system_prompt()}]
-    memory = _memory_block(sid)          # Stage 4: recalled facts/chunks
+    memory = _memory_block(sid, query)
     if memory:
         msgs.append({"role": "system", "content": memory})
-    summary = _summary_block(sid)        # Stage 4: rolling summary
+    summary = _summary_block(sid)
     if summary:
         msgs.append({"role": "system", "content": summary})
     keep = int(settings().get("chat_history_max") or HISTORY_DEFAULT)
@@ -113,13 +115,58 @@ def _assemble(sid, registry):
     return msgs
 
 
-def _memory_block(sid):
-    return ""      # Stage 4
+MEMORY_BUDGET = 3000        # chars of recalled context
+MEMORY_HITS = 5
+# Not 0.35 — see the measurement recorded at `chatstore.RECALL_MIN_SCORE`. Below ~0.45 the
+# recall block fills with unrelated chunks on every turn.
+MEMORY_MIN_SCORE = 0.45
+
+
+def _memory_block(sid, query=None):
+    """Recalled facts and memory chunks relevant to this turn.
+
+    Two independent sources, because they answer different questions. **Facts** are what the
+    owner or agent deliberately recorded, and they are cheap and always relevant enough to
+    include — a handful, newest first. **Chunks** are similarity-recall over past summaries
+    and notes, which is how something said in an earlier session can resurface in this one.
+
+    Returns "" on any failure: recall is an enhancement, and a turn that dies because the
+    embedding model is down is worse than a turn without recalled context.
+    """
+    parts = []
+    try:
+        keys = chatstore.facts(limit=25)
+        if keys:
+            lines = [f"- {f['key']}: {f['value']}" for f in keys]
+            parts.append("WHAT YOU ALREADY KNOW (durable notes; update with remember_fact "
+                         "if any of this is now wrong):\n" + "\n".join(lines))
+    except Exception:
+        pass
+    try:
+        hits = chatstore.recall(query or "", k=MEMORY_HITS, min_score=MEMORY_MIN_SCORE)
+        # Don't re-inject this session's own summary — it is already in the summary block.
+        hits = [h for h in hits if not (h["kind"] == "session_summary"
+                                        and str(h["ref_id"]) == str(sid))]
+        if hits:
+            body = "\n".join(f"- ({h['kind']}) {h['text']}" for h in hits)
+            parts.append("RECALLED FROM EARLIER SESSIONS (relevant, may be outdated):\n" + body)
+    except Exception:
+        pass
+    if not parts:
+        return ""
+    text = "\n\n".join(parts)
+    if len(text) > MEMORY_BUDGET:
+        text = text[:MEMORY_BUDGET] + " …[recall truncated]"
+    return text
 
 
 def _summary_block(sid):
     row = chatstore.session(sid)
-    return (row["summary"] or "") if row else ""    # populated in Stage 4
+    summary = (row["summary"] or "").strip() if row else ""
+    if not summary:
+        return ""
+    return ("SUMMARY OF THE EARLIER PART OF THIS CONVERSATION (the recent turns below are "
+            "verbatim; this covers what came before them):\n" + summary)
 
 
 def resolve_approval(aid, approve, registry, emit, cancel=None, model=None):
@@ -182,6 +229,19 @@ def _title_from(text):
     return t[:80] or None
 
 
+def _last_user_text(sid):
+    """The most recent thing the owner asked, used as the recall query. Reading it back from
+    the history rather than threading it through means a resumed turn recalls against the
+    same question the original turn did."""
+    try:
+        for row in reversed(chatstore.history(sid)):
+            if row["role"] == "user" and (row["content"] or "").strip():
+                return row["content"]
+    except Exception:
+        pass
+    return ""
+
+
 def run_turn(sid, message, registry, emit, cancel=None, model=None):
     """Start a turn from a user message, then hand off to `_loop`.
 
@@ -192,6 +252,10 @@ def run_turn(sid, message, registry, emit, cancel=None, model=None):
     user_mid = chatstore.append(sid, "user", message)
     chatstore.touch(sid, title=_title_from(message))
     emit("start", {"session_id": sid, "user_message_id": user_mid})
+    # Compress *before* building the turn's context, not after: the summary is an input to
+    # this call, and doing it afterwards would leave the first exchange past the trigger
+    # running against a stale window. No-ops until the thread is long enough to be due.
+    chatstore.maybe_summarize(sid, model=model, emit=emit)
     return _loop(sid, registry, emit, cancel, model)
 
 
@@ -222,7 +286,7 @@ def _loop(sid, registry, emit, cancel=None, model=None):
     cancel = cancel or threading.Event()
     deadline = time.monotonic() + TURN_TIMEOUT
 
-    messages = _assemble(sid, registry)
+    messages = _assemble(sid, registry, query=_last_user_text(sid))
     tools = [t.schema() for t in registry.values()]
     prior_calls = []
     usage_total = {}

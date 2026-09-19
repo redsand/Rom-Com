@@ -66,11 +66,15 @@ class FakeOllama:
     for frames written literally, which is how the parsing tests pin odd shapes.
     """
 
-    def __init__(self, turns=None, tags=None, capabilities=None, embed_dim=768):
+    def __init__(self, turns=None, tags=None, capabilities=None, embed_dim=768, embed_fn=None):
         self.turns = list(turns or [])
         self.tags = list(tags if tags is not None else DEFAULT_TAGS)
         self.capabilities = dict(capabilities if capabilities is not None else DEFAULT_CAPS)
         self.embed_dim = embed_dim
+        # A uniform vector for every input makes recall untestable — every chunk scores
+        # identically. `embed_fn(text) -> [float]` lets a test supply a deterministic
+        # embedder whose similarities actually mean something.
+        self.embed_fn = embed_fn
         self.calls = []      # (url, body) for every /api/chat, in order
         self.gets = []
 
@@ -106,8 +110,10 @@ class FakeOllama:
         if url.endswith("/api/show"):
             return FakeResponse(body={"capabilities": self.capabilities.get(body.get("model"), [])})
         if url.endswith("/api/embed"):
-            n = len(body.get("input") or [])
-            return FakeResponse(body={"embeddings": [[0.1] * self.embed_dim for _ in range(n)]})
+            inputs = list(body.get("input") or [])
+            if self.embed_fn:
+                return FakeResponse(body={"embeddings": [self.embed_fn(t) for t in inputs]})
+            return FakeResponse(body={"embeddings": [[0.1] * self.embed_dim for _ in inputs]})
         if url.endswith("/api/chat"):
             self.calls.append((url, body))
             spec = self.turns.pop(0) if self.turns else {"tokens": ["(no scripted turn)"]}

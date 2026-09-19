@@ -46,6 +46,27 @@ v, dim, m = llmclient.embed(["hello"])
 print(f"embed         : {m} -> {dim}-dim (first={v[0][:3]})")
 
 argv = sys.argv[1:]
+
+if argv[:1] == ["--memory"]:
+    # Verify the real embedding path and cosine ranking against the live embed model, since
+    # that is the part a fake embedder cannot prove. Also prints the memory block that would
+    # actually be injected into a turn.
+    from romcom import chatstore, chatagent
+    chatstore.store_chunk("note", "The SNES collection lives in D:/roms/snes.")
+    chatstore.store_chunk("note", "Genesis artwork is kept separately in E:/art/genesis.")
+    chatstore.remember_fact("naming", "prefers No-Intro naming")
+    print(f"chunks        : {connect().execute('SELECT COUNT(*) c FROM chat_memory_chunks').fetchone()['c']}")
+    for q in ["where are my super nintendo roms?", "what naming does he prefer?"]:
+        hits = chatstore.recall(q, k=3)
+        print(f"\nrecall {q!r}")
+        for h in hits:
+            print(f"   {h['score']:.3f}  {h['text'][:70]}")
+        if not hits:
+            print("   (no hit above threshold)")
+    block = chatagent._memory_block(None, "where are my super nintendo roms?")
+    print(f"\nmemory block  : {len(block)} chars\n{block}")
+    sys.exit(0)
+
 decide = None
 if argv[:1] == ["--approve"]:
     decide, argv = True, argv[1:]

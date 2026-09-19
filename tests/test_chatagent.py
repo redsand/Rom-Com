@@ -377,3 +377,106 @@ def test_an_unknown_approval_reports_rather_than_raises(monkeypatch, tmp_path):
     rec = Recorder()
     assert chatagent.resolve_approval(999, True, r, rec) is None
     assert "no such approval" in rec.payloads("error")[0]["message"]
+
+
+# ------------------------------------------------------------------------------- memory
+
+def test_memory_and_summary_are_injected_before_the_verbatim_window(monkeypatch, tmp_path):
+    """Order is the contract: system prompt, then standing context, then the recent turns.
+    Injecting recalled memory *after* the recent messages would make it read as the newest
+    thing said, which is exactly backwards."""
+    setup_db(monkeypatch, tmp_path)
+    FakeOllama(embed_fn=lambda t: [1.0, 0.0]).install(monkeypatch)
+    chatstore.remember_fact("snes_folder", "D:/roms/snes")
+    sid = chatstore.new_session("s")
+    chatstore.append(sid, "user", "hello")
+    chatstore.append(sid, "assistant", "hi")
+    chatstore._set_summary(sid, "earlier we discussed coverage", 2)
+
+    msgs = chatagent._assemble(sid, chattools.build_registry(), query="hello")
+    roles = [m["role"] for m in msgs]
+    assert roles == ["system", "system", "system", "user", "assistant"]
+    assert "snes_folder" in msgs[1]["content"]          # durable facts
+    assert "earlier we discussed coverage" in msgs[2]["content"]    # rolling summary
+    assert msgs[3]["content"] == "hello"
+
+
+def test_a_fact_recorded_in_one_session_is_available_in_the_next(monkeypatch, tmp_path):
+    """The point of durable memory: it outlives the thread it was learned in."""
+    setup_db(monkeypatch, tmp_path)
+    sid_a = chatstore.new_session("first")
+    chatstore.remember_fact("prefer_no_intro", "keep original filenames")
+    sid_b = chatstore.new_session("second")
+    chatstore.append(sid_b, "user", "how should I name things?")
+    msgs = chatagent._assemble(sid_b, chattools.build_registry())
+    assert any("keep original filenames" in (m["content"] or "") for m in msgs)
+
+
+def test_a_note_from_an_earlier_session_can_be_recalled_by_meaning(monkeypatch, tmp_path):
+    setup_db(monkeypatch, tmp_path)
+    FakeOllama(embed_fn=lambda t: [1.0, 0.0] if "snes" in t.lower() else [0.0, 1.0]).install(monkeypatch)
+    chatstore.store_chunk("note", "the snes collection is on the D: drive", ref_id=1)
+    sid = chatstore.new_session("new thread")
+    chatstore.append(sid, "user", "where did I put my snes roms?")
+    msgs = chatagent._assemble(sid, chattools.build_registry(), query="where did I put my snes roms?")
+    assert any("D: drive" in (m["content"] or "") for m in msgs)
+
+
+def test_a_session_does_not_recall_its_own_summary_as_a_memory(monkeypatch, tmp_path):
+    """The summary block already carries it verbatim; injecting it twice wastes context and
+    makes the model think two sources agree when there is only one."""
+    setup_db(monkeypatch, tmp_path)
+    FakeOllama(embed_fn=lambda t: [1.0, 0.0]).install(monkeypatch)
+    sid = chatstore.new_session("s")
+    chatstore.append(sid, "user", "hello")
+    chatstore.store_chunk("session_summary", "hello there", ref_id=sid)
+    msgs = chatagent._assemble(sid, chattools.build_registry(), query="hello")
+    assert not any("RECALLED FROM EARLIER SESSIONS" in (m["content"] or "") for m in msgs)
+
+
+def test_an_embedding_outage_does_not_break_the_turn(monkeypatch, tmp_path):
+    """Recall is an enhancement. A turn that dies because the embedding model is down is
+    strictly worse than one with no recalled context."""
+    setup_db(monkeypatch, tmp_path)
+    FakeOllama(turns=[{"tokens": ["still works"]}],
+               embed_fn=lambda t: (_ for _ in ()).throw(RuntimeError("no embedding model"))).install(monkeypatch)
+    sid = chatstore.new_session("s")
+    rec = Recorder()
+    out = chatagent.run_turn(sid, "hello", chattools.build_registry(), rec)
+    assert out["stopped"] is None and rec.text() == "still works"
+
+
+def test_a_long_thread_summarizes_and_then_still_answers(monkeypatch, tmp_path):
+    """End to end: the summarization call happens inside the turn, and the turn it is part of
+    still completes normally — with the fresh summary as standing context."""
+    setup_db(monkeypatch, tmp_path)
+    fake = FakeOllama(turns=[{"tokens": ["we covered NES coverage"]},   # the summarizer
+                             {"tokens": ["Yes — 12 missing."]}],        # the actual answer
+                      embed_fn=lambda t: [1.0, 0.0]).install(monkeypatch)
+    sid = chatstore.new_session("long")
+    for i in range(16):
+        chatstore.append(sid, "user", f"q{i}")
+        chatstore.append(sid, "assistant", f"a{i}")
+    rec = Recorder()
+    out = chatagent.run_turn(sid, "so what is missing?", chattools.build_registry(), rec)
+    assert rec.text() == "Yes — 12 missing."
+    assert out["stopped"] is None
+    assert "summarizing" in rec.names()             # the UI is told why it is waiting
+    assert chatstore.session(sid)["summary"] == "we covered NES coverage"
+
+    # Two model calls: the summarizer, then the answering turn — and the answering turn was
+    # sent the summary as context even though it was written moments earlier in this turn.
+    assert len(fake.calls) == 2
+    sent = fake.calls[1][1]["messages"]
+    assert any("we covered NES coverage" in (m["content"] or "") for m in sent)
+
+
+def test_the_recall_query_is_the_owners_question_not_the_whole_history(monkeypatch, tmp_path):
+    """Embedding the entire thread would dilute the query into an average of everything ever
+    discussed, which recalls nothing in particular."""
+    setup_db(monkeypatch, tmp_path)
+    sid = chatstore.new_session("s")
+    chatstore.append(sid, "user", "an old question about genesis")
+    chatstore.append(sid, "assistant", "an old answer")
+    chatstore.append(sid, "user", "the newest question about SNES")
+    assert chatagent._last_user_text(sid) == "the newest question about SNES"

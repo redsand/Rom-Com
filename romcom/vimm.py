@@ -143,33 +143,110 @@ def search(query, system=None):
     return indexer.rank(searchcache.cached("vimm", f"{query}|{system or ''}", _pages), [query])
 
 
-def fetch(result, dest_dir):
-    """Resolve a picked /vault page to its file and save it — one download at a time.
+# --- Playwright: Vimm's game pages sit behind a Cloudflare challenge that serves a decoy
+# (a 404 "system vault" with no mediaId) to plain HTTP and even to headless automation. The
+# only reliable way in is a real browser whose persistent profile carries a cf_clearance
+# cookie a human solved once (see capture()). Downloads then run headless, reusing it. ---
 
-    Holds the single Vimm slot for the whole page→download exchange, so no second Vimm
-    download can start until this one finishes. GET the vault page (carrying session
-    cookies), read its hidden mediaId, then GET the download host with the page as
-    Referer; the filename comes from the response's Content-Disposition.
-    """
-    page = result["url"]
+def _playwright():
+    try:
+        from playwright.sync_api import sync_playwright
+        return sync_playwright
+    except ImportError:
+        raise RuntimeError("Vimm needs Playwright — run: pip install playwright playwright-stealth "
+                           "&& playwright install chrome, then `romcom vimm capture` once")
+
+
+def _with_page(headless, fn):
+    """Run fn(page) in a persistent, stealthed real-Chrome context. The profile dir is where
+    the captured Cloudflare clearance lives, so headless reuse looks like the same returning
+    user. Everything (including the file save) must happen before the context closes."""
+    sp = _playwright()
+    try:                        # the stealth wrapper applies the full evasion suite per page
+        from playwright_stealth import Stealth
+        cm = Stealth().use_sync(sp())
+    except ImportError:
+        cm = sp()
+    with cm as pw:
+        prof = settings()["vimm_profile_dir"]
+        Path(prof).mkdir(parents=True, exist_ok=True)
+        launch = dict(user_agent=UA, accept_downloads=True,
+                      args=["--disable-blink-features=AutomationControlled"])
+        try:                    # real Chrome is far less detectable than bundled Chromium
+            ctx = pw.chromium.launch_persistent_context(prof, channel="chrome", headless=headless, **launch)
+        except Exception:
+            ctx = pw.chromium.launch_persistent_context(prof, headless=headless, **launch)
+        try:
+            return fn(ctx.pages[0] if ctx.pages else ctx.new_page())
+        finally:
+            ctx.close()
+
+
+def _wait_cf(page, timeout):
+    """Wait out a Cloudflare 'Just a moment…' interstitial (a captured profile passes it
+    automatically). Returns when the real page has loaded or the timeout elapses."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if "just a moment" not in (page.title() or "").lower():
+            return
+        time.sleep(1)
+
+
+def capture(timeout=240):
+    """Open Vimm in a VISIBLE browser so a human can solve the Cloudflare challenge once.
+    The persistent profile keeps the clearance cookie; fetch() then reuses it headlessly.
+    Run via `romcom vimm capture`. Returns True if a real Vimm page loaded before timeout."""
     base = settings()["vimm_base"]
-    with _SLOT:
-        media = _MEDIA_ID.search(_get(page, referer=f"{base}/vault/").text)
-        if not media:
-            raise RuntimeError("no mediaId on Vimm vault page (gated or markup changed)")
-        dl = f"{settings()['vimm_dl_base']}/?mediaId={media.group(1)}"
-        with _get(dl, referer=page, stream=True) as r:
-            name = None
-            cd = r.headers.get("Content-Disposition", "")
-            m = _CD_NAME.search(cd)
-            if m:
-                name = m.group(1).strip()
-            name = (name or f"{result.get('title', 'rom')}.zip")
-            safe = name.replace("/", "-").replace("\\", "-").replace("..", "_").strip() or "rom.zip"
-            dest = Path(dest_dir)
-            dest.mkdir(parents=True, exist_ok=True)
-            path = dest / safe
-            with open(path, "wb") as f:
-                for chunk in r.iter_content(65536):
-                    f.write(chunk)
-    return path
+
+    def _fn(page):
+        page.goto(f"{base}/vault/", wait_until="domcontentloaded", timeout=60000)
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            t = (page.title() or "").lower()
+            if "vimm" in t and "just a moment" not in t:
+                time.sleep(2)   # let cookies settle
+                return True
+            time.sleep(2)
+        return False
+    return _with_page(headless=False, fn=_fn)
+
+
+def _click_download(page):
+    """Click whatever the game page uses to start the download. Vimm's exact control has
+    varied; try the most specific selectors first."""
+    for sel in ('form[action*="download"] button[type="submit"]',
+                'form[action*="download"] input[type="submit"]',
+                'button:has-text("Download")', 'a:has-text("Download")',
+                'form[method="post"] button[type="submit"]', 'button[type="submit"]'):
+        el = page.query_selector(sel)
+        if el:
+            el.click()
+            return
+    raise RuntimeError("no download control found on the Vimm game page")
+
+
+def fetch(result, dest_dir):
+    """Download a Vimm game via a headless real-Chrome session reusing the captured profile —
+    one at a time. If Vimm serves the decoy (no captured/expired session), raises so the
+    caller records a failure and the item is retried later; run `romcom vimm capture` to fix."""
+    page_url = result["url"]
+    dest = Path(dest_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+
+    def _fn(page):
+        page.goto(page_url, wait_until="domcontentloaded", timeout=60000)
+        _wait_cf(page, settings()["vimm_timeout"])
+        # The real game page carries a mediaId; the decoy (system vault) does not.
+        if not (page.query_selector('input[name="mediaId"]') or "mediaid" in (page.content() or "").lower()):
+            raise RuntimeError("Vimm served a decoy page — no captured session (run `romcom vimm capture`) or it expired")
+        with page.expect_download(timeout=int(settings()["vimm_timeout"]) * 1000) as di:
+            _click_download(page)
+        dl = di.value
+        name = dl.suggested_filename or f"{result.get('title', 'rom')}.zip"
+        safe = name.replace("/", "-").replace("\\", "-").replace("..", "_").strip() or "rom.zip"
+        out = dest / safe
+        dl.save_as(str(out))
+        return out
+
+    with _SLOT:                 # Vimm: exactly one browser download at a time
+        return _with_page(headless=True, fn=_fn)

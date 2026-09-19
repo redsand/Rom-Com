@@ -554,3 +554,105 @@ def test_every_gated_tool_states_its_own_confirmation_sentence(monkeypatch, tmp_
     for name, tool in gated.items():
         assert tool.confirm, f"{name} has no confirmation sentence"
         assert len(tool.confirm({})) > 30
+
+
+# ------------------------------------------------------------------------------- memory
+
+def embed(monkeypatch, **kw):
+    from fake_llm import FakeOllama
+    return FakeOllama(**kw).install(monkeypatch)
+
+
+def test_remember_fact_stores_a_durable_note(monkeypatch, tmp_path):
+    setup_db(monkeypatch, tmp_path)
+    out = call(reg(actx()), "remember_fact", key="snes_folder", value="D:/roms/snes",
+               source="owner said so")
+    assert out["ok"] is True
+    assert out["data"]["saved"] == "snes_folder" and out["data"]["updated"] is False
+    assert chatstore.fact("snes_folder")["value"] == "D:/roms/snes"
+
+
+def test_remember_fact_says_when_it_replaced_a_previous_value(monkeypatch, tmp_path):
+    """The model needs to know it overwrote something, or it cannot tell the owner their old
+    preference was superseded."""
+    setup_db(monkeypatch, tmp_path)
+    r = reg(actx())
+    call(r, "remember_fact", key="snes_folder", value="D:/roms/snes")
+    out = call(r, "remember_fact", key="snes_folder", value="E:/roms/snes")
+    assert out["data"]["updated"] is True and "replaced" in out["data"]["note"]
+    assert chatstore.facts() and len(chatstore.facts()) == 1
+
+
+def test_remember_fact_refuses_something_that_looks_like_a_credential(monkeypatch, tmp_path):
+    """A secret pasted into chat must not become a permanent injection into every future
+    turn. Refused at write, not masked later — a stored secret is already in the database."""
+    setup_db(monkeypatch, tmp_path)
+    for value in ["api_key: abc123", "my password = hunter2", "Bearer sk-live-xyz",
+                  "indexer token: 9f3a"]:
+        out = call(reg(actx()), "remember_fact", key="creds", value=value)
+        assert out["ok"] is False, value
+        assert "credential" in out["data"]["error"]
+    assert chatstore.facts() == []
+
+
+def test_remember_fact_requires_both_halves(monkeypatch, tmp_path):
+    setup_db(monkeypatch, tmp_path)
+    assert call(reg(actx()), "remember_fact", key="k")["ok"] is False
+    assert call(reg(actx()), "remember_fact", value="v")["ok"] is False
+    assert chatstore.facts() == []
+
+
+def test_list_facts_shows_everything_remembered(monkeypatch, tmp_path):
+    setup_db(monkeypatch, tmp_path)
+    r = reg(actx())
+    call(r, "remember_fact", key="a", value="1")
+    call(r, "remember_fact", key="b", value="2")
+    out = call(r, "list_facts")
+    assert out["data"]["total"] == 2
+    assert {f["key"] for f in out["data"]["facts"]} == {"a", "b"}
+
+
+def test_forget_fact_deletes_and_reports_an_unknown_key(monkeypatch, tmp_path):
+    setup_db(monkeypatch, tmp_path)
+    r = reg(actx())
+    call(r, "remember_fact", key="temp", value="x")
+    assert call(r, "forget_fact", key="temp")["data"]["forgotten"] == "temp"
+    assert chatstore.fact("temp") is None
+    out = call(r, "forget_fact", key="temp")
+    assert out["ok"] is False and "no remembered fact" in out["data"]["error"]
+
+
+def test_recall_memory_finds_a_note_by_meaning(monkeypatch, tmp_path):
+    setup_db(monkeypatch, tmp_path)
+    from fake_llm import FakeOllama
+    FakeOllama(embed_fn=lambda t: [1.0, 0.0] if "snes" in t.lower() else [0.0, 1.0]).install(monkeypatch)
+    chatstore.store_chunk("note", "the snes folder lives on D:")
+    out = call(reg(actx()), "recall_memory", query="where are the snes files")
+    assert out["ok"] is True and out["data"]["hits"] == 1
+    assert "snes folder" in out["data"]["results"][0]["text"]
+
+
+def test_recall_memory_says_when_memory_is_simply_empty(monkeypatch, tmp_path):
+    """An empty result must read as a gap in what was recorded, not a failed search — the
+    model should not retry the same query hoping for a different answer."""
+    setup_db(monkeypatch, tmp_path)
+    embed(monkeypatch, embed_fn=lambda t: [1.0, 0.0])
+    out = call(reg(actx()), "recall_memory", query="anything at all")
+    assert out["ok"] is True and out["data"]["hits"] == 0
+    assert "gap in what has been recorded" in out["data"]["note"]
+
+
+def test_recall_memory_requires_a_query(monkeypatch, tmp_path):
+    setup_db(monkeypatch, tmp_path)
+    out = call(reg(actx()), "recall_memory", query="  ")
+    assert out["ok"] is False and "required" in out["data"]["error"]
+
+
+def test_the_memory_tools_are_all_read_only_and_ungated(monkeypatch, tmp_path):
+    """Memory is the agent's own notebook. Prompting the owner to confirm every note would
+    make the feature unusable; the credential guard above is what keeps it safe."""
+    setup_db(monkeypatch, tmp_path)
+    r = reg(actx())
+    for name in ("remember_fact", "recall_memory", "list_facts", "forget_fact"):
+        assert r[name].risk == "low", name
+        assert r[name].confirm is None, name
