@@ -21,7 +21,11 @@ def promote(db, item_id, new_status):
     if not row: return
     old=row["status"]
     if old=="EXCLUDED": return
-    if RANK.get(new_status,0) >= RANK.get(old,0):
+    # Strictly greater: advancing to the SAME status is a no-op. This matters at scale —
+    # a re-scan of a directory of already-matched files would otherwise re-UPDATE every
+    # item (bumping updated_at) on every pass, a flood of pointless writes that bloats the
+    # WAL. Only a real status advance writes.
+    if RANK.get(new_status,0) > RANK.get(old,0):
         db.execute("UPDATE items SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",(new_status,item_id))
 
 def own(db, item_id):

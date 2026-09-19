@@ -59,6 +59,8 @@ nav { display: flex; gap: 4px; }
 .chip.job + .chip { margin-left: 16px; }
 .chip.ok   { color: var(--good-text); }
 .chip.bad  { color: var(--critical); }
+.chip.warn { color: #d08a1e; }
+#acq-health { margin-left: 8px; font-variant-numeric: tabular-nums; }
 
 main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .tabpane { display: none; }
@@ -174,7 +176,7 @@ input.flag { width: 16px; height: 16px; accent-color: var(--accent); }
 .picker-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 
 /* Toasts */
-#toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 100; }
+#toasts { position: fixed; right: 16px; top: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 100; }
 .toast {
   background: var(--surface); color: var(--ink); border: 1px solid var(--border);
   border-left: 3px solid var(--good); border-radius: 8px; padding: 10px 14px;

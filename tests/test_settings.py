@@ -47,11 +47,11 @@ def test_numeric_and_bool_coercion(monkeypatch, tmp_path):
 
 def test_parallel_default_and_coercion(monkeypatch, tmp_path):
     env_db(monkeypatch, tmp_path)
-    assert settings()["acquire_parallel"] == 3  # default: 3 downloads in flight
+    assert settings()["acquire_parallel"] == 4  # default: 4 parallel NZB search/queue workers
     env_db(monkeypatch, tmp_path, ROMCOM_ACQUIRE_PARALLEL="0")
-    assert settings()["acquire_parallel"] == 0  # 0 = unlimited
+    assert settings()["acquire_parallel"] == 0  # 0 = fall back to the pipeline default
     env_db(monkeypatch, tmp_path, ROMCOM_ACQUIRE_PARALLEL="junk")
-    assert settings()["acquire_parallel"] == 3  # bad value falls back, no crash
+    assert settings()["acquire_parallel"] == 4  # bad value falls back, no crash
 
 
 def test_watch_sweep_settings_default_and_coercion(monkeypatch, tmp_path):
@@ -62,6 +62,16 @@ def test_watch_sweep_settings_default_and_coercion(monkeypatch, tmp_path):
     s = settings()
     assert s["acquire_watch_batch"] == 50      # bad value falls back, no crash
     assert s["acquire_sweep_pause"] == 0.0     # negatives clamp to "no pause"
+
+
+def test_vimm_settings_default_and_coercion(monkeypatch, tmp_path):
+    env_db(monkeypatch, tmp_path)
+    s = settings()
+    assert s["vimm_enabled"] is False  # opt-in, off by default
+    assert s["vimm_base"] == "https://vimm.net" and s["vimm_delay"] == 20.0
+    env_db(monkeypatch, tmp_path, ROMCOM_VIMM_ENABLED="on", ROMCOM_VIMM_DELAY="junk")
+    s = settings()
+    assert s["vimm_enabled"] is True and s["vimm_delay"] == 20.0  # bad value falls back
 
 
 def test_bad_numeric_falls_back(monkeypatch, tmp_path):

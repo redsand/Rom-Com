@@ -91,6 +91,7 @@
     <div class="filters">
       <button id="acq-start" class="primary">Download approved &amp; wanted</button>
       <label class="autolabel"><input type="checkbox" id="acq-watch"> keep downloading continuously</label>
+      <span id="acq-health" class="chip" title="Watcher health — the self-healing watchdog relaunches it if it ever stops"></span>
       <span id="acq-eligible" class="count"></span>
       <span class="sub">marks made in the Library start this automatically — the button sweeps
         everything armed in one run; the toggle keeps a watcher running forever: it fills
@@ -252,9 +253,9 @@
         <span class="count" style="width:150px">Batch cap</span>
         <input id="set-acquire_batch_max" type="search" placeholder="0" spellcheck="false" style="width:90px">
         <span class="sub">max items attempted per run (0 = unlimited)</span>
-        <span class="count" style="width:150px;margin-left:24px">In flight</span>
-        <input id="set-acquire_parallel" type="search" placeholder="3" spellcheck="false" style="width:90px">
-        <span class="sub">downloads kept active at once (0 = unlimited)</span>
+        <span class="count" style="width:150px;margin-left:24px">NZB workers</span>
+        <input id="set-acquire_parallel" type="search" placeholder="4" spellcheck="false" style="width:90px">
+        <span class="sub">parallel indexer searches (0 = default 4); direct sources always run 1 at a time</span>
       </div>
       <div class="filters">
         <span class="count" style="width:150px">Idle sweep</span>
@@ -290,6 +291,33 @@
         <span class="count" style="width:150px">Timeout</span>
         <input id="set-webdl_timeout" type="search" placeholder="60" spellcheck="false" style="width:90px">
         <span class="sub">seconds per HTTP request</span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Vimm's Lair <span class="hint">vimm.net — opt-in second direct source; downloads one game at a time</span></h2>
+      <div class="filters">
+        <label class="autolabel"><input type="checkbox" id="set-vimm_enabled"> use Vimm's Lair as a fallback source</label>
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Site</span>
+        <input id="set-vimm_base" type="search" placeholder="https://vimm.net" spellcheck="false" style="flex:1">
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Download host</span>
+        <input id="set-vimm_dl_base" type="search" placeholder="https://download.vimm.net" spellcheck="false" style="flex:1">
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Request spacing</span>
+        <input id="set-vimm_delay" type="search" placeholder="20" spellcheck="false" style="width:90px">
+        <span class="sub">seconds between requests</span>
+        <span class="count" style="width:150px;margin-left:24px">Jitter</span>
+        <input id="set-vimm_jitter" type="search" placeholder="10" spellcheck="false" style="width:90px">
+        <span class="sub">+ random 0&ndash;N seconds</span>
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Timeout</span>
+        <input id="set-vimm_timeout" type="search" placeholder="120" spellcheck="false" style="width:90px">
+        <span class="sub">seconds per HTTP request (downloads are large)</span>
       </div>
     </div>
     <div class="filters">

@@ -1,5 +1,5 @@
 """Local web UI: `romcom web` serves this Flask app on 127.0.0.1."""
-import json, os, string, threading
+import json, os, string, threading, time
 from flask import Flask, jsonify, request, send_from_directory
 from pathlib import Path
 from .config import load_yaml, settings, ENV_VARS, invalidate as invalidate_settings
@@ -56,7 +56,8 @@ def create_app():
                 "download_dir", "acquire_poll", "acquire_max_wait_min", "acquire_batch_max",
                 "acquire_parallel", "acquire_watch", "acquire_interval",
                 "acquire_watch_batch", "acquire_sweep_pause",
-                "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout"}
+                "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout",
+                "vimm_enabled", "vimm_base", "vimm_dl_base", "vimm_delay", "vimm_jitter", "vimm_timeout"}
 
     def _settings_payload(db):
         s = settings()
@@ -103,10 +104,14 @@ def create_app():
                 if k:
                     msg = msg.replace(k, "***")
             return msg
+        probes = [("indexer", lambda: indexer.ping()),
+                  ("sabnzbd", lambda: sab.queue()),
+                  ("romsgames", lambda: webdl.test())]
+        if settings()["vimm_enabled"]:
+            from . import vimm
+            probes.append(("vimm", lambda: vimm.test()))
         out = {}
-        for name, fn in (("indexer", lambda: indexer.ping()),
-                         ("sabnzbd", lambda: sab.queue()),
-                         ("romsgames", lambda: webdl.test())):
+        for name, fn in probes:
             try:
                 fn()
                 out[name] = {"ok": True, "detail": ""}
@@ -216,8 +221,9 @@ def create_app():
 
     @app.get("/api/plan")
     def api_plan():
+        summ = acquirer.armed_summary()   # one events scan for both counts, not two
         return jsonify({"volumes": bulk_plan(), "items": next_individuals(50),
-                        "eligible": acquirer.eligible_count(), "cooling": acquirer.cooling_count()})
+                        "eligible": summ["eligible"], "cooling": summ["cooling"]})
 
     @app.get("/api/next")
     def api_next():
@@ -288,8 +294,32 @@ def create_app():
     def api_watch_state():
         return jsonify({"on": settings()["acquire_watch"], "running": jobs["acquire"]["running"]})
 
+    @app.get("/api/acquire/health")
+    def api_watch_health():
+        """Liveness of the always-on watcher: is the toggle on, is the thread actually
+        running, how long since its last heartbeat, and does the self-healing watchdog
+        consider it healthy. 'stale' means it's running but hasn't beat in a while (a long
+        SABnzbd wait is normal; a very old beat suggests a hang the watchdog can't kill)."""
+        j = jobs["acquire"]
+        beat = j.get("last_beat")
+        secs = round(time.monotonic() - beat, 1) if beat else None
+        watch_on = bool(settings()["acquire_watch"])
+        # Idle rest beats every ~5s and the wait phase every poll interval; allow generous
+        # slack before calling a running watcher stale.
+        stale = bool(j["running"] and secs is not None and secs > max(120.0, settings()["acquire_poll"] * 3))
+        if not watch_on:
+            state = "off"
+        elif j["running"]:
+            state = "stale" if stale else "alive"
+        else:
+            state = "recovering"  # watch on but thread down — the watchdog will relaunch it
+        return jsonify({"watch_on": watch_on, "running": j["running"], "state": state,
+                        "stale": stale, "last_beat_secs": secs, "error": j.get("error"),
+                        "current": j.get("current"), "stats": j.get("stats")})
+
     # One background job per kind at a time; state polled by the UI.
-    jobs = {k: {"running": False, "done": 0, "total": 0, "current": "", "stats": None, "result": None, "error": None}
+    jobs = {k: {"running": False, "done": 0, "total": 0, "current": "", "stats": None,
+                "result": None, "error": None, "last_beat": None}
             for k in ("import", "scan", "organize", "adopt", "acquire")}
     job_lock = threading.Lock()
 
@@ -316,7 +346,8 @@ def create_app():
                 return False
             if kind == "acquire":
                 acquirer.STOP.clear()
-            j.update(running=True, done=0, total=0, current="starting…", stats=None, result=None, error=None)
+            j.update(running=True, done=0, total=0, current="starting…", stats=None,
+                     result=None, error=None, last_beat=time.monotonic())
         db = connect()
         with db:
             cur = db.execute("INSERT INTO web_jobs(kind,params,status) VALUES(?,?,'running')",
@@ -328,7 +359,8 @@ def create_app():
             status = "done"
             try:
                 j["result"] = fn(lambda i, total, name, stats=None:
-                                 j.update(done=i, total=total, current=name, stats=stats))
+                                 j.update(done=i, total=total, current=name, stats=stats,
+                                          last_beat=time.monotonic()))
             except Exception as e:
                 j["error"] = f"{type(e).__name__}: {e}"; status = "error"
             finally:
@@ -438,6 +470,54 @@ def create_app():
 
     app.start_watcher_if_on = start_watcher_if_on
 
+    WATCHDOG_INTERVAL = 15.0  # seconds between watcher liveness checks
+
+    def _watchdog_tick():
+        """One liveness check: if the watch toggle is on but the watcher thread isn't
+        running — it crashed, or was never started — relaunch it. Does nothing while the
+        watcher is being deliberately stopped (STOP set). Returns True if it relaunched."""
+        try:
+            if settings()["acquire_watch"] and not jobs["acquire"]["running"] \
+                    and not acquirer.STOP.is_set():
+                acquirer.STOP.clear()
+                return _launch("acquire", {"watch": True})
+        except Exception:
+            pass  # the watchdog itself must never die
+        return False
+
+    def _watchdog():
+        """Keep the always-on watcher alive. Combined with auto_acquire's per-sweep error
+        recovery, this is what makes 'always healthy' true in practice: no single failure
+        can leave downloads silently stopped until someone notices."""
+        while True:
+            time.sleep(WATCHDOG_INTERVAL)
+            _watchdog_tick()
+
+    def start_watchdog():
+        threading.Thread(target=_watchdog, daemon=True).start()
+
+    CHECKPOINT_INTERVAL = 60.0  # seconds between WAL truncating checkpoints
+
+    def _checkpointer():
+        """Fold the WAL back into the db on a cadence. The parallel watcher writes
+        constantly (jobs, events, scan upserts); without a periodic truncating checkpoint
+        the WAL grows without bound (observed multi-GB) and every read slows to a crawl.
+        This bounds the WAL to roughly one interval of writes."""
+        from .db import checkpoint
+        while True:
+            time.sleep(CHECKPOINT_INTERVAL)
+            try:
+                checkpoint()
+            except Exception:
+                pass  # a busy checkpoint is fine — the next tick tries again
+
+    def start_checkpointer():
+        threading.Thread(target=_checkpointer, daemon=True).start()
+
+    app.watchdog_tick = _watchdog_tick
+    app.start_watchdog = start_watchdog
+    app.start_checkpointer = start_checkpointer
+
     # Back-compat alias used by earlier UI builds.
     @app.get("/api/import-dats/status")
     def api_import_status():
@@ -486,6 +566,12 @@ def serve(host="127.0.0.1", port=8927, open_browser=True, debug=False):
         import webbrowser
         threading.Timer(1.0, lambda: webbrowser.open(f"http://{host}:{port}/")).start()
     app = create_app()
-    app.recover_interrupted()
+    app.recover_interrupted()          # first connect() here builds any new indexes
+    from .db import connect, backfill_content
+    n = backfill_content(connect())    # one-time, batched, BEFORE the watcher starts writing
+    if n:
+        print(f"backfilled files.content for {n} row(s)")
     app.start_watcher_if_on()
+    app.start_watchdog()
+    app.start_checkpointer()
     app.run(host=host, port=port, debug=debug)

@@ -1,6 +1,6 @@
 from pathlib import Path
 import hashlib, re, zipfile, zlib
-from .db import connect
+from .db import connect, NOT_CONTENT_EXTS
 from .status import promote, own
 
 CHUNK=1024*1024
@@ -74,7 +74,7 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True):
     for i,p in enumerate(paths):
         if progress: progress(i,len(paths),p.name,_stats())
         st=p.stat()
-        prev=db.execute("SELECT bytes,mtime,crc32,md5,sha1 FROM files WHERE path=?",(str(p),)).fetchone()
+        prev=db.execute("SELECT bytes,mtime,crc32,md5,sha1,matched_item_id FROM files WHERE path=?",(str(p),)).fetchone()
         if prev and not rehash and prev["bytes"]==st.st_size and prev["mtime"]==st.st_mtime and prev["sha1"]:
             crc,md5,sha1=prev["crc32"],prev["md5"],prev["sha1"]; reused+=1
         else:
@@ -102,15 +102,22 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True):
                 verified+=1
             else:
                 promote(db,item_id,"FOUND")
+            # Only record the match trail when it's actually new/changed. Re-scanning a
+            # directory of already-matched, unchanged files must not re-insert a scan-match
+            # event per file per pass — that grew the events table into the millions and
+            # flooded the WAL. own() is a no-op write when the item is already owned.
+            newly = prev is None or prev["matched_item_id"] != item_id
             for it in [item_id]+extra:
                 own(db,it)  # having the file means we want and authorize the item
-                db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",(it,"scan-match",f"{method}: {p}"))
-        db.execute("""INSERT INTO files(path,bytes,mtime,crc32,md5,sha1,matched_item_id,match_method,scanned_at)
-          VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+                if newly:
+                    db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",(it,"scan-match",f"{method}: {p}"))
+        content=0 if p.suffix.lower().lstrip(".") in NOT_CONTENT_EXTS else 1
+        db.execute("""INSERT INTO files(path,bytes,mtime,crc32,md5,sha1,matched_item_id,match_method,content,scanned_at)
+          VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
           ON CONFLICT(path) DO UPDATE SET bytes=excluded.bytes,mtime=excluded.mtime,crc32=excluded.crc32,
           md5=excluded.md5,sha1=excluded.sha1,matched_item_id=excluded.matched_item_id,
-          match_method=excluded.match_method,scanned_at=CURRENT_TIMESTAMP""",
-          (str(p),st.st_size,st.st_mtime,crc,md5,sha1,item_id,method)); count+=1
+          match_method=excluded.match_method,content=excluded.content,scanned_at=CURRENT_TIMESTAMP""",
+          (str(p),st.st_size,st.st_mtime,crc,md5,sha1,item_id,method,content)); count+=1
         if count%200==0: db.commit()  # interrupted scans keep their progress; unchanged files resume via reuse
     db.commit()
     out={"files":count,"matched":matched,"verified":verified,"reused":reused}

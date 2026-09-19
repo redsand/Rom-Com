@@ -5,13 +5,15 @@ FOUND items are already waiting in the download directory (usually from a comple
 volume), and FAILED downloads are deliberately not retried automatically — re-queueing
 them on every toggle would hammer the indexer. Use the manual search drawer to retry.
 
-Each cycle keeps up to ROMCOM_ACQUIRE_PARALLEL downloads in flight (SABnzbd downloads
-them concurrently; 0 = queue everything, no cap): whenever a slot frees up, the next
-armed item is searched and queued, and newly completed files are scanned into the
-library while the run continues. With `ROMCOM_ACQUIRE_WATCH` on (or the web UI's
-watcher toggle), cycles repeat forever — newly armed items and expiring search
-cooldowns are picked up on every sweep, like a download manager on duty rather than
-a one-shot batch.
+Each cycle searches and queues armed items across a pool of ROMCOM_ACQUIRE_PARALLEL
+workers (default 4) — that many indexer searches in flight at once, feeding SABnzbd,
+which downloads them concurrently. Items the indexer can't satisfy are handed to a
+single background direct worker (romsgames, then Vimm) that downloads one game at a
+time without ever blocking the NZB pool — the "other provider" is a single lane, the
+NZB path is a highway. Newly completed files are scanned into the library while the run
+continues. With `ROMCOM_ACQUIRE_WATCH` on (or the web UI's watcher toggle), cycles
+repeat forever — newly armed items and expiring search cooldowns are picked up on every
+sweep, like a download manager on duty rather than a one-shot batch.
 
 Every sweep is bounded (`ROMCOM_ACQUIRE_WATCH_BATCH`, default 50 items): a watcher
 re-sweeps by itself, so grinding through a whole library in one cycle only starves the
@@ -22,14 +24,16 @@ the thousands of titles that turned up nothing and spend its budget on fresh one
 the pile is worked least-recently-tried first so a sweep never re-searches the head of
 the queue while unattempted titles wait behind it.
 """
+import queue
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from .config import settings
 from .db import connect
 from .planner import next_individuals
 from .status import MISSING
-from . import indexer, actions, webdl
+from . import indexer, actions, webdl, vimm
 from .scanner import scan
 
 MIN_SCORE = 20.0                # rank() floor: % of query tokens that must appear in the release title
@@ -42,6 +46,11 @@ COOLDOWN_EVENTS = {"acquire-skip": 60, "acquire-miss": 360}
 EVENT_KEEP_DAYS = 2             # cooldown-trail rows older than the longest window are pruned
 
 STOP = threading.Event()        # the web UI sets this to cancel the watcher promptly
+# Process-wide: exactly one direct (romsgames/vimm) download runs at a time, no matter how
+# many sweeps or workers exist. The NZB pipeline runs in parallel alongside it — the
+# "other provider" is the single-lane road; SABnzbd is the multi-lane highway.
+_DIRECT_SLOT = threading.Semaphore(1)
+DEFAULT_NZB_WORKERS = 4         # parallel indexer searches/queues when ROMCOM_ACQUIRE_PARALLEL is unset/0
 
 
 def _cooled(db):
@@ -89,6 +98,14 @@ def cooling_count():
     return _armed(connect())[1]
 
 
+def armed_summary():
+    """Both counts from a SINGLE _armed() pass. The Acquire tab needs eligible + cooling
+    together; calling the two functions above would scan the (millions-of-rows) events
+    table twice for the same answer."""
+    ready, cooling = _armed(connect())
+    return {"eligible": len(ready), "cooling": cooling}
+
+
 def _prune_events(db):
     """Cooldown rows exist only to date a skip and the longest window is hours: drop what
     nothing can still be reading, so a watcher running for weeks doesn't grow the trail
@@ -100,6 +117,21 @@ def _prune_events(db):
                        (f"-{EVENT_KEEP_DAYS} days",))
     except Exception:
         pass  # housekeeping must never take a sweep down (a busy DB is not a failure)
+
+
+def _already_fetched(db, url):
+    """True if this exact source page has already produced a file, for any item.
+
+    Source pages are shared: one generic result ("dragon ball z 4 in 1") can be the
+    top pick for several different items, and without this check each of them pays
+    the full paced fetch cost — four HTTP requests, ~150 s — to download a file that
+    is already on disk. The ledger is the record of what has been pulled, so a URL
+    with a DOWNLOADED job is a duplicate whoever asked for it.
+    """
+    if not url:
+        return False
+    return db.execute("SELECT 1 FROM jobs WHERE result_url=? AND status='DOWNLOADED' LIMIT 1",
+                      (url,)).fetchone() is not None
 
 
 def _pick(results, min_score=MIN_SCORE):
@@ -124,10 +156,10 @@ def auto_acquire(progress=None, poll_interval=None, max_wait_minutes=None, batch
     cycle terminates. `batch_max` (from ROMCOM_ACQUIRE_BATCH_MAX; 0 = unlimited)
     caps how many items one cycle will attempt (searched — queued, skipped, or
     failed), so a stray toggle can't dump the whole library into SABnzbd or hammer
-    the indexer's API. `parallel` (from ROMCOM_ACQUIRE_PARALLEL; 0 = unlimited)
-    caps how many downloads may be in flight at once. Files that land in the
-    download directory mid-cycle are scanned in right away instead of waiting
-    for the cycle to end.
+    the indexer's API. `parallel` (from ROMCOM_ACQUIRE_PARALLEL; 0 = default 4) is
+    how many indexer searches run concurrently; direct downloads always run one at a
+    time on a separate background worker. Files that land in the download directory
+    mid-cycle are scanned in right away instead of waiting for the cycle to end.
 
     With `watch` (or ROMCOM_ACQUIRE_WATCH saved on), the cycle repeats forever —
     the always-on "download manager" mode. A watching cycle is bounded by
@@ -140,6 +172,7 @@ def auto_acquire(progress=None, poll_interval=None, max_wait_minutes=None, batch
     started_at = time.monotonic()
     totals = None
     cycles = 0
+    cycle_errors = 0
     while True:
         # Re-read settings each cycle: the watcher is long-lived, and the UI can retune
         # it (or turn it off) while it runs.
@@ -150,7 +183,32 @@ def auto_acquire(progress=None, poll_interval=None, max_wait_minutes=None, batch
         slots = parallel if parallel is not None else s["acquire_parallel"]
         batch = batch_max if batch_max is not None else (
             s["acquire_watch_batch"] if watching else s["acquire_batch_max"])
-        result = _cycle(progress, poll, max_wait, batch, slots, stop)
+        try:
+            result = _cycle(progress, poll, max_wait, batch, slots, stop)
+            cycle_errors = 0
+        except Exception as ex:
+            # A one-shot run surfaces the error to its caller as before. A watching run
+            # must NEVER die on a single bad sweep (a DB hiccup, a scan blowup, a source
+            # outage): record it, rest, and come back — the whole point of an always-on
+            # download manager is that it stays on.
+            if not watching:
+                raise
+            cycle_errors += 1
+            if totals is not None:
+                totals["cycle_error"] = f"{type(ex).__name__}: {ex}"
+                totals["cycle_errors"] = cycle_errors
+            if progress:
+                progress(0, 0, f"sweep failed, recovering (#{cycle_errors}): {ex}",
+                         {k: v for k, v in (totals or {}).items() if isinstance(v, (int, float))})
+            slept = 0.0
+            rest = s["acquire_interval"]
+            while slept < rest:
+                if stop and stop.is_set():
+                    return totals or {"cycles": cycles, "cycle_errors": cycle_errors}
+                nap = min(5.0, rest - slept)
+                time.sleep(nap)
+                slept += nap
+            continue
         cycles += 1
         # Watch mode reports what the WHOLE watch did, not just its last cycle.
         if totals is None:
@@ -191,123 +249,174 @@ def auto_acquire(progress=None, poll_interval=None, max_wait_minutes=None, batch
 
 
 def _cycle(progress, poll, max_wait, batch, slots, stop):
-    """One fill → wait → import pass over the armed items. Returns the cycle's
-    counters; all state (attempted set, stats) lives and dies with the cycle."""
+    """One parallel fill → wait → import pass over the armed items.
+
+    NZB searching/queueing runs across a pool of `slots` workers (default
+    DEFAULT_NZB_WORKERS) — up to that many indexer searches in flight at once. Items the
+    indexer can't satisfy are handed to a single background direct worker (romsgames, then
+    Vimm) that downloads one game at a time without ever blocking the NZB pool. All state
+    (attempted set, stats) lives and dies with the cycle; shared state is guarded by `lock`
+    because the workers touch it concurrently, and every worker uses its own DB connection
+    (SQLite connections are single-thread)."""
     s = settings()
-    db = connect()
+    db = connect()                 # main thread only: feed, sync, refresh, import
     start = time.monotonic()
     _prune_events(db)
 
+    lock = threading.Lock()
     attempted = set()
-    processed = [0]  # items searched this cycle (queued, skipped, or failed) — capped per run
+    processed = [0]  # items attempted this cycle (queued, skipped, or failed) — capped per run
     stats = {"queued": 0, "skipped": 0, "failed": 0, "waiting": 0,
              "downloaded": 0, "download_failed": 0, "direct": 0}
     skipped_by_reason = {}
     failed_items = []
-    base_dl = db.execute("SELECT COUNT(*) c FROM jobs WHERE status='DOWNLOADED'").fetchone()["c"]
-    base_fl = db.execute("SELECT COUNT(*) c FROM jobs WHERE status='FAILED'").fetchone()["c"]
+    nzb_workers = int(slots) if slots and int(slots) > 0 else DEFAULT_NZB_WORKERS
+    # Count only SABnzbd jobs here (nzo_id set): direct downloads are journaled straight
+    # to DOWNLOADED and counted separately as stats["direct"], so scoping to nzo_id keeps
+    # the two from double-counting the same file.
+    base_dl = db.execute("SELECT COUNT(*) c FROM jobs WHERE status='DOWNLOADED' AND nzo_id IS NOT NULL").fetchone()["c"]
+    base_fl = db.execute("SELECT COUNT(*) c FROM jobs WHERE status='FAILED' AND nzo_id IS NOT NULL").fetchone()["c"]
 
-    def _skip(item, reason, miss=False):
+    def _emit(msg):
+        """Surface a step to the progress channel with a consistent stats snapshot."""
+        if progress:
+            with lock:
+                snap = dict(stats)
+            progress(processed[0], processed[0] + max(1, snap["waiting"]), msg, snap)
+
+    def _skip(item, reason, wdb, miss=False):
         """Record a skip and start its cooldown. `miss` marks the reasons that mean "the
-        sources don't have this" (as opposed to "not right now"), which cool for hours."""
-        stats["skipped"] += 1
-        skipped_by_reason[reason] = skipped_by_reason.get(reason, 0) + 1
-        # The cooldown trail: a watching loop must not re-search this every sweep.
+        sources don't have this" (vs "not right now"), which cool for hours."""
+        with lock:
+            stats["skipped"] += 1
+            skipped_by_reason[reason] = skipped_by_reason.get(reason, 0) + 1
         try:
-            with db:
-                db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
-                           (item["id"], "acquire-miss" if miss else "acquire-skip", reason))
+            with wdb:
+                wdb.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
+                            (item["id"], "acquire-miss" if miss else "acquire-skip", reason))
         except Exception:
             pass
-        if progress:
-            progress(processed[0], processed[0] + max(1, stats["waiting"]),
-                     f"skipped: {item['title']}", dict(stats))
+        _emit(f"skipped: {item['title']}")
 
     def _fail(item, reason):
-        stats["failed"] += 1
-        if len(failed_items) < 50:
-            failed_items.append({"id": item["id"], "title": item["title"], "reason": reason})
-        if progress:
-            progress(processed[0], processed[0] + max(1, stats["waiting"]),
-                     f"failed: {item['title']}", dict(stats))
+        with lock:
+            stats["failed"] += 1
+            if len(failed_items) < 50:
+                failed_items.append({"id": item["id"], "title": item["title"], "reason": reason})
+        _emit(f"failed: {item['title']}")
 
     def _refresh():
-        stats["waiting"] = _pending(db)
-        dl = db.execute("SELECT COUNT(*) c FROM jobs WHERE status='DOWNLOADED'").fetchone()["c"]
-        fl = db.execute("SELECT COUNT(*) c FROM jobs WHERE status='FAILED'").fetchone()["c"]
-        stats["downloaded"] = max(0, dl - base_dl)
-        stats["download_failed"] = max(0, fl - base_fl)
+        w = _pending(db)
+        dl = db.execute("SELECT COUNT(*) c FROM jobs WHERE status='DOWNLOADED' AND nzo_id IS NOT NULL").fetchone()["c"]
+        fl = db.execute("SELECT COUNT(*) c FROM jobs WHERE status='FAILED' AND nzo_id IS NOT NULL").fetchone()["c"]
+        with lock:
+            stats["waiting"] = w
+            stats["downloaded"] = max(0, dl - base_dl)
+            stats["download_failed"] = max(0, fl - base_fl)
 
-    def attempt(c):
-        """Search one armed item and hand it to SABnzbd (or the direct source)."""
-        attempted.add(c["id"])
-        processed[0] += 1
+    # --- the single background direct worker: one game at a time, off the NZB path ---
+    direct_q = queue.Queue()
+    DONE = object()
 
-        def _say(msg):
-            """Surface every step — a paced direct download can take minutes, and
-            skips would otherwise leave the job's stats blank the whole run."""
-            if progress:
-                progress(processed[0], processed[0] + max(1, stats["waiting"]), msg, dict(stats))
+    def _direct_worker():
+        wdb = connect()
+        while True:
+            c = direct_q.get()
+            try:
+                if c is DONE:
+                    return
+                if stop and stop.is_set():
+                    continue
+                sources = [("romsgames", webdl)]
+                if s["vimm_enabled"]:
+                    sources.append(("vimm", vimm))
+                picked, had_error = None, False
+                for sname, mod in sources:
+                    _emit(f"{sname} search: {c['title']}")
+                    try:
+                        cand = _pick(mod.search(c["title"], c["system"]))
+                    except Exception:
+                        had_error = True; continue
+                    if cand:
+                        picked = (sname, mod, cand); break
+                if picked is None:
+                    _skip(c, "no usable result anywhere (indexer or direct)", wdb, miss=not had_error)
+                    continue
+                sname, mod, direct = picked
+                if _already_fetched(wdb, direct.get("url")):
+                    _skip(c, f"already downloaded from {direct['url']}", wdb, miss=True)
+                    continue
+                _emit(f"{sname} download: {c['title']}")
+                try:
+                    with _DIRECT_SLOT:   # process-wide: exactly one direct download at a time
+                        path = mod.fetch(direct, s["download_dir"])
+                except Exception as ex:
+                    _fail(c, f"{sname} download failed: {ex}"); continue
+                with wdb:
+                    wdb.execute("UPDATE items SET status='DOWNLOADED' WHERE id=?", (c["id"],))
+                try:
+                    actions.journal_direct(wdb, c["id"], sname, direct, path)
+                except Exception:
+                    pass  # the file is on disk; a ledger hiccup must not fail the item
+                with lock:
+                    stats["direct"] += 1
+                _emit(c["title"])
+            finally:
+                direct_q.task_done()
 
-        def _step():
-            _refresh()
-            _say(c["title"])
+    direct_thread = threading.Thread(target=_direct_worker, daemon=True)
+    direct_thread.start()
 
-        _say(f"search: {c['title']}")
+    # --- NZB search + queue, run concurrently across the worker pool ---
+    def _nzb_attempt(c):
+        wdb = connect()             # each worker its own connection
+        _emit(f"search: {c['title']}")
         try:
-            results, e = indexer.search_entity(db, "item", c["id"])
+            results, e = indexer.search_entity(wdb, "item", c["id"])
         except Exception as ex:
-            _skip(c, f"search failed: {ex}"); return
+            # The indexer is down or erroring — the direct sources (romsgames, Vimm) may
+            # still have the ROM, so fall through to them instead of giving up on the item.
+            if s["download_dir"]:
+                direct_q.put(c)
+            else:
+                _skip(c, f"indexer search failed, no download dir for the direct fallback: {ex}", wdb)
+            return
         top = _pick(results)
         if top is None:
-            # The NZB indexer had nothing usable — fall back to the direct-download
-            # source (romsgames.net) before giving up on this item.
             if not s["download_dir"]:
-                _skip(c, "no usable indexer result, and no ROMCOM_DOWNLOAD_DIR for the direct fallback"); return
-            _say(f"direct search: {c['title']}")
-            try:
-                direct = _pick(webdl.search(c["title"], c["system"]))
-            except Exception as ex:
-                _skip(c, f"direct search failed: {ex}"); return
-            if direct is None:
-                _skip(c, "no usable result anywhere (indexer or direct)", miss=True); return
-            _say(f"direct download: {c['title']}")
-            try:
-                webdl.fetch(direct, s["download_dir"])
-            except Exception as ex:
-                _fail(c, f"direct download failed: {ex}"); return
-            with db:
-                db.execute("UPDATE items SET status='DOWNLOADED' WHERE id=?", (c["id"],))
-            stats["direct"] += 1
-            _step()
+                _skip(c, "no usable indexer result, and no ROMCOM_DOWNLOAD_DIR for the direct fallback", wdb); return
+            direct_q.put(c)          # hand off to the single direct worker; don't block the pool
             return
         try:
-            nzo = actions.queue_result(db, "item", e, top)
+            nzo = actions.queue_result(wdb, "item", e, top)
         except Exception as ex:
             _fail(c, f"SABnzbd error: {ex}"); return
         if nzo is None:
-            # queue_result journaled a job SABnzbd can never report on — mark it dead
-            # instead of leaving an unresolvable row that would hang the wait phase.
-            with db:
-                db.execute("UPDATE items SET status='FAILED' WHERE id=?", (c["id"],))
+            with wdb:
+                wdb.execute("UPDATE items SET status='FAILED' WHERE id=?", (c["id"],))
             _fail(c, "SABnzbd returned no nzo id"); return
-        stats["queued"] += 1
-        _step()
+        with lock:
+            stats["queued"] += 1
+        _emit(c["title"])
 
-    def fill():
-        """Attempt armed items never tried this cycle until the download slots are
-        full (or nothing eligible remains / the run cap is hit). Slots free up as
-        SABnzbd finishes, so the loop keeps queueing the next item all cycle long.
-        Called every loop turn, so items armed mid-run join on the next pass."""
-        todo = [c for c in eligible() if c["id"] not in attempted]
-        for c in todo:
+    def _claim(limit):
+        """Atomically take up to `limit` armed, never-attempted items (respecting the batch
+        cap). Short-circuits once the cap is hit so the heavy eligibility query is skipped."""
+        with lock:
             if batch and processed[0] >= batch:
-                return
-            if slots and _pending(db) >= slots:
-                return
-            if stop and stop.is_set():
-                return
-            attempt(c)
+                return []
+        picked = []
+        for c in eligible(db):
+            with lock:
+                if c["id"] in attempted:
+                    continue
+                if batch and processed[0] >= batch:
+                    break
+                attempted.add(c["id"]); processed[0] += 1
+                picked.append(c)
+            if len(picked) >= limit:
+                break
+        return picked
 
     ddir = s["download_dir"]
     ddir_ok = bool(ddir) and Path(ddir).exists()
@@ -315,55 +424,67 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
 
     def import_new():
         """Scan the download directory when files have landed since the last pass.
-        Unchanged files are resumed via the files table, so re-scans are cheap;
-        totals (files/matched/…) come from the latest pass, while 'adopted'
+        Unchanged files are resumed via the files table, so re-scans are cheap; 'adopted'
         accumulates across passes (each pass only adopts files new to it)."""
         nonlocal imported
-        done_now = stats["downloaded"] + stats["direct"]
+        with lock:
+            done_now = stats["downloaded"] + stats["direct"]
         if not ddir_ok or done_now == 0 or imported["last"] == done_now:
             return
         imported["last"] = done_now
 
         def prog(i, total, name, scan_stats=None):
-            if progress: progress(i, total, f"scan: {name}", dict(stats) | (scan_stats or {}))
+            if progress: progress(i, total, f"scan: {name}", _snapshot() | (scan_stats or {}))
         r = scan(ddir, name_match=True, adopt=True, progress=prog)
         imported["adopted"] += r.get("adopted", 0)
-        # Pin to the completion count at scan start: anything that finished DURING
-        # the scan is a different count and triggers another (cheap, resumed) pass.
         imported["last_result"] = r
         if "adopted" in r:
             r = dict(r); r["adopted"] = imported["adopted"]
             imported["last_result"] = r
 
-    # The rolling loop: fill every free download slot, wait a tick for SABnzbd,
-    # import whatever finished, and repeat — until nothing is in flight and
-    # nothing armed is left unattempted.
+    def _snapshot():
+        with lock:
+            return dict(stats)
+
+    # The rolling loop: feed a round of armed items across the NZB pool, sync + import what
+    # SABnzbd finished, and keep going until nothing is left to feed, nothing is downloading,
+    # and the direct worker's queue is drained. The direct worker runs the whole time.
     note = None
     sync_failures = 0
-    while True:
-        fill()
-        _refresh()
-        if stats["waiting"] == 0:
-            break
-        import_new()
-        done = stats["downloaded"] + stats["download_failed"]
-        if progress:
-            progress(done, done + stats["waiting"],
-                     f"waiting for {stats['waiting']} download(s)…", dict(stats))
-        time.sleep(poll)
-        try:
-            actions.sync(db); sync_failures = 0
-        except Exception:
-            sync_failures += 1
-            if sync_failures >= SYNC_FAILURE_LIMIT:
-                note = f"gave up waiting after {SYNC_FAILURE_LIMIT} failed syncs"; break
-        if stop and stop.is_set():
-            note = "cancelled"; break
-        if time.monotonic() - start > max_wait:
-            _refresh()
-            note = f"wait cap reached; {stats['waiting']} download(s) still pending"; break
+    with ThreadPoolExecutor(max_workers=nzb_workers) as pool:
+        while True:
+            if stop and stop.is_set():
+                note = "cancelled"; break
+            round_items = _claim(nzb_workers * 4)
+            if round_items:
+                list(pool.map(_nzb_attempt, round_items))
+            try:
+                actions.sync(db); sync_failures = 0
+            except Exception:
+                sync_failures += 1
+                if sync_failures >= SYNC_FAILURE_LIMIT:
+                    note = f"gave up waiting after {SYNC_FAILURE_LIMIT} failed syncs"; break
+            _refresh(); import_new()
+            with lock:
+                waiting = stats["waiting"]
+            directs_pending = direct_q.unfinished_tasks
+            if not round_items and waiting == 0 and directs_pending == 0:
+                break
+            if not round_items:
+                # Waiting phase: nothing new to feed, but SABnzbd and/or the direct worker
+                # are still going — show progress and poll for completions.
+                snap = _snapshot()
+                _emit(f"{snap['queued']} queued · {waiting} downloading · "
+                      f"{directs_pending} direct pending · {snap['downloaded']} done")
+                if time.monotonic() - start > max_wait:
+                    note = f"wait cap reached; {waiting} download(s) still pending"; break
+                time.sleep(poll)
 
-    # Final import of whatever completed since the last pass.
+    # Tell the direct worker to stop after its current item. The process-wide slot keeps any
+    # straggler (a long paced download) from overlapping the next sweep's direct download.
+    direct_q.put(DONE)
+    direct_thread.join(timeout=poll if poll else 1.0)
+
     try: actions.sync(db)
     except Exception: pass
     _refresh()

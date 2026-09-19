@@ -28,6 +28,55 @@ def make_client(monkeypatch, tmp_path, rows):
     return app.test_client(), started, release, calls
 
 
+def test_watch_health_and_watchdog_relaunch(monkeypatch, tmp_path):
+    """Health reflects the watcher's real state, and the watchdog relaunches it when the
+    toggle is on but no thread is running — the self-heal that keeps downloads flowing."""
+    from romcom import acquirer
+    from romcom.config import invalidate
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
+    db = connect()
+    started, release = threading.Event(), threading.Event()
+
+    def stub(progress=None, **kwargs):
+        started.set(); release.wait(timeout=30); return {}
+    monkeypatch.setattr("romcom.acquirer.auto_acquire", stub)
+    acquirer.STOP.clear()
+    app = create_app()
+    c = app.test_client()
+    try:
+        assert c.get("/api/acquire/health").get_json()["state"] == "off"
+        with db:  # arm the always-on watcher, but nothing is running yet
+            db.execute("INSERT INTO app_settings(key,value) VALUES('acquire_watch','true')")
+        invalidate()
+        h = c.get("/api/acquire/health").get_json()
+        assert h["watch_on"] is True and h["running"] is False and h["state"] == "recovering"
+        assert app.watchdog_tick() is True         # the watchdog notices and relaunches
+        assert started.wait(2)
+        assert c.get("/api/acquire/health").get_json()["state"] in ("alive", "stale")
+    finally:
+        release.set()
+        acquirer.STOP.clear()
+
+
+def test_watchdog_leaves_stopped_watcher_alone(monkeypatch, tmp_path):
+    """When the user turns the watcher off (STOP set), the watchdog must not fight them
+    and relaunch it, even if the persisted toggle hasn't flipped yet."""
+    from romcom import acquirer
+    from romcom.config import invalidate
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
+    db = connect()
+    monkeypatch.setattr("romcom.acquirer.auto_acquire", lambda progress=None, **k: {})
+    app = create_app()
+    try:
+        with db:
+            db.execute("INSERT INTO app_settings(key,value) VALUES('acquire_watch','true')")
+        invalidate()
+        acquirer.STOP.set()                        # user is stopping it
+        assert app.watchdog_tick() is False        # so the watchdog stands down
+    finally:
+        acquirer.STOP.clear()
+
+
 def test_toggle_arms_auto_acquire(monkeypatch, tmp_path):
     c, started, release, _ = make_client(monkeypatch, tmp_path, [{"id": "i1", "title": "Game"}])
     try:

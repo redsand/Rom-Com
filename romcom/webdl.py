@@ -43,7 +43,6 @@ SYSTEM_SLUGS = {
 
 _PAGE_LINK = re.compile(r'href="/([a-z0-9-]+?)-rom-([a-z0-9-]+)/"')
 _MEDIA_ID = re.compile(r'data-media-id="(\d+)"')
-_PARENTHESES = re.compile(r"\s*[(\[][^)\]]*[)\]]")
 
 _LOCK = threading.Lock()
 _LAST = [0.0]  # monotonic timestamp of the last request — shared across threads
@@ -88,11 +87,16 @@ def search(query, system=None):
 
     Returns indexer-style results (title/url/score) so the acquirer's pick logic
     applies unchanged; the url is the ROM page, not the file. No-Intro/Redump
-    titles carry "(USA)"-style suffixes the site's search chokes on — they're
-    stripped before querying (the parenthetical is region/revision metadata, not
-    part of what the page is titled).
+    titles carry "(USA)"-style suffixes the site's search chokes on — those are
+    cleaned off before querying, while identity-bearing groups are kept as bare
+    words (see indexer.clean_query; stripping them wholesale searches for a
+    generic prefix that many unrelated pages also match).
+
+    The results are ranked against the ORIGINAL query, not the cleaned one, so the
+    region/revision words still count against a candidate: a page that lacks them
+    is a worse match than one that has them.
     """
-    clean = _PARENTHESES.sub("", query).strip() or query
+    clean = indexer.clean_query(query)
     base = settings()["webdl_base"]
     html = _request("GET", f"{base}/search/?q={quote(clean)}").text
     allowed = SYSTEM_SLUGS.get((system or "").lower())

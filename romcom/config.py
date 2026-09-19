@@ -36,6 +36,12 @@ ENV_VARS = {
     "webdl_delay": "ROMCOM_WEBDL_DELAY",
     "webdl_jitter": "ROMCOM_WEBDL_JITTER",
     "webdl_timeout": "ROMCOM_WEBDL_TIMEOUT",
+    "vimm_enabled": "ROMCOM_VIMM_ENABLED",
+    "vimm_base": "ROMCOM_VIMM_BASE",
+    "vimm_dl_base": "ROMCOM_VIMM_DL_BASE",
+    "vimm_delay": "ROMCOM_VIMM_DELAY",
+    "vimm_jitter": "ROMCOM_VIMM_JITTER",
+    "vimm_timeout": "ROMCOM_VIMM_TIMEOUT",
 }
 
 def _env_settings():
@@ -51,7 +57,7 @@ def _env_settings():
         "acquire_poll": os.getenv("ROMCOM_ACQUIRE_POLL", "30"),
         "acquire_max_wait_min": os.getenv("ROMCOM_ACQUIRE_MAX_WAIT_MIN", "240"),
         "acquire_batch_max": os.getenv("ROMCOM_ACQUIRE_BATCH_MAX", "0"),
-        "acquire_parallel": os.getenv("ROMCOM_ACQUIRE_PARALLEL", "3"),
+        "acquire_parallel": os.getenv("ROMCOM_ACQUIRE_PARALLEL", "4"),
         "acquire_watch": os.getenv("ROMCOM_ACQUIRE_WATCH", "false"),
         "acquire_interval": os.getenv("ROMCOM_ACQUIRE_INTERVAL", "300"),
         "acquire_watch_batch": os.getenv("ROMCOM_ACQUIRE_WATCH_BATCH", "50"),
@@ -60,6 +66,12 @@ def _env_settings():
         "webdl_delay": os.getenv("ROMCOM_WEBDL_DELAY", "30"),
         "webdl_jitter": os.getenv("ROMCOM_WEBDL_JITTER", "15"),
         "webdl_timeout": os.getenv("ROMCOM_WEBDL_TIMEOUT", "60"),
+        "vimm_enabled": os.getenv("ROMCOM_VIMM_ENABLED", "false"),
+        "vimm_base": (os.getenv("ROMCOM_VIMM_BASE") or "https://vimm.net").rstrip("/"),
+        "vimm_dl_base": (os.getenv("ROMCOM_VIMM_DL_BASE") or "https://download.vimm.net").rstrip("/"),
+        "vimm_delay": os.getenv("ROMCOM_VIMM_DELAY", "20"),
+        "vimm_jitter": os.getenv("ROMCOM_VIMM_JITTER", "10"),
+        "vimm_timeout": os.getenv("ROMCOM_VIMM_TIMEOUT", "120"),
     }
 
 def _overrides(db_path):
@@ -90,7 +102,7 @@ def settings():
     try: s["acquire_batch_max"] = int(s["acquire_batch_max"])
     except (TypeError, ValueError): s["acquire_batch_max"] = 0
     try: s["acquire_parallel"] = max(0, int(s["acquire_parallel"]))
-    except (TypeError, ValueError): s["acquire_parallel"] = 3
+    except (TypeError, ValueError): s["acquire_parallel"] = 4
     s["acquire_watch"] = str(s["acquire_watch"]).strip().lower() in ("1", "true", "yes", "on")
     try: s["acquire_interval"] = max(0.0, float(s["acquire_interval"]))
     except (TypeError, ValueError): s["acquire_interval"] = 300.0
@@ -98,9 +110,11 @@ def settings():
     except (TypeError, ValueError): s["acquire_watch_batch"] = 50
     try: s["acquire_sweep_pause"] = max(0.0, float(s["acquire_sweep_pause"]))
     except (TypeError, ValueError): s["acquire_sweep_pause"] = 15.0
-    for k, dflt in (("webdl_delay", 30.0), ("webdl_jitter", 15.0), ("webdl_timeout", 60.0)):
+    for k, dflt in (("webdl_delay", 30.0), ("webdl_jitter", 15.0), ("webdl_timeout", 60.0),
+                    ("vimm_delay", 20.0), ("vimm_jitter", 10.0), ("vimm_timeout", 120.0)):
         try: s[k] = float(s[k])
         except (TypeError, ValueError): s[k] = dflt
+    s["vimm_enabled"] = str(s["vimm_enabled"]).strip().lower() in ("1", "true", "yes", "on")
     s["sab_verify_ssl"] = str(s["sab_verify_ssl"]).strip().lower() not in ("0", "false", "no", "off")
     return s
 

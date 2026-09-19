@@ -44,8 +44,72 @@ def search(query,limit=50):
 def _tokens(s):
     return set(re.findall(r"[a-z0-9]+",s.lower()))
 
+# Parentheticals that describe *which release of the same game* rather than *which game*:
+# a site search chokes on the parentheses themselves, and the words don't help it find
+# anything the bare title wouldn't. Status tags — (Demo), (Proto), (Beta), (Unl),
+# (Pirate), (Aftermarket) — are deliberately NOT in this list: they name a different
+# artifact, so dropping them would search for the retail ROM and then hand a Demo item
+# that file, marked DOWNLOADED.
+_REGIONS = ("usa|europe|japan|asia|world|korea|china|taiwan|hong kong|brazil|australia|"
+            "canada|france|germany|italy|spain|netherlands|belgium|sweden|norway|denmark|"
+            "finland|russia|poland|portugal|mexico|argentina|india|singapore|ireland|"
+            "switzerland|austria|uk")
+_LANGS = ("en|ja|jp|fr|de|es|it|nl|pt|sv|no|da|fi|ru|ko|zh|pl|cs|el|tr|hu|ar|he|ca|eu|gl|ro|nb")
+_NOISE_PARENS = re.compile(
+    r"\s*[(\[]\s*(?:"
+    rf"(?:{_REGIONS})(?:\s*,\s*(?:{_REGIONS}))*"
+    rf"|(?:{_LANGS})(?:\s*,\s*(?:{_LANGS}))*"
+    r"|rev\s*[a-z0-9]+|v\d+(?:\.\d+)*|\d{4}(?:-\d{2}-\d{2})?"
+    r")\s*[)\]]",
+    re.I)
+_BRACKETS = re.compile(r"[()\[\]]")
+
+
+def clean_query(query):
+    """The title reduced to what the *site search* can actually match on.
+
+    Region/language/revision groups are dropped outright. Groups that survive (a
+    multicart's board code, a "(Demo)" status) are unwrapped to bare words rather than
+    deleted, because deleting them collapses an item to the generic prefix that every
+    neighbouring page also matches: searching item "4-in-1 (SN 406) (Asia) (En)
+    (Pirate)" as plain "4-in-1" is how three different items each downloaded the same
+    Dragon Ball Z multicart (see rank() for the other half of that fix).
+    """
+    q = _NOISE_PARENS.sub(" ", query)
+    q = _BRACKETS.sub(" ", q)
+    return re.sub(r"\s+", " ", q).strip() or query
+
+
+_YEAR = re.compile(r"(?:19|20)\d{2}")
+
+
+def _required(qtokens):
+    """Query tokens a title must contain to be that title at all.
+
+    A number is the whole identity of a multicart — "16-in-1" and "4 in 1" are
+    different products sharing every other word — so digit-bearing tokens are
+    mandatory rather than merely scoreable. Years are exempt: "1997 Super HIK
+    16-in-1" is routinely titled "Super HIK 16-in-1" on a site, and requiring the
+    leading year would refuse the very page we want.
+    """
+    return {t for t in qtokens if any(c.isdigit() for c in t) and not _YEAR.fullmatch(t)}
+
+
 def rank(results,queries,kind="item",min_bytes=None,max_bytes=None):
+    """Score results against the query. Both halves of the match are required.
+
+    `recall` is how much of the query a title covers; `precision` is how much of the
+    title the query accounts for. Multiplying them (rather than scoring recall alone)
+    is what rejects the near-misses a recall-only score waves through: against query
+    "4 in 1 (SN 406) (Asia) (En) (Pirate)" the unrelated "Dragon Ball Z 4 in 1" hits
+    3 of 8 query tokens for a recall of 37.5 — above MIN_SCORE — but those 3 are only
+    half of its own 6 tokens, so it scores 18.8 and is refused. Measured against the
+    real ledger of bad direct fetches, recall-only accepted 23 of 23 wrong files and
+    recall*precision accepts 12; adding _required() leaves 7, all of them plausible
+    matches of the number they were asked for.
+    """
     qtokens=set().union(*(_tokens(q) for q in queries)) if queries else set()
+    required=_required(qtokens)
     ranked=[]
     for r in results:
         if not r.get("url"): continue
@@ -53,8 +117,11 @@ def rank(results,queries,kind="item",min_bytes=None,max_bytes=None):
         if min_bytes and size<min_bytes: continue
         if max_bytes and size>max_bytes: continue
         rt=_tokens(r["title"])
-        overlap=len(qtokens & rt)/max(1,len(qtokens))
-        score=overlap*100
+        if required and not required <= rt: continue
+        hit=len(qtokens & rt)
+        recall=hit/max(1,len(qtokens))
+        precision=hit/max(1,len(rt))
+        score=recall*precision*100
         if kind=="volume":
             score+=sum(12 for w in ("collection","complete","archive","volume","pack","set") if w in rt)
         ranked.append(dict(r,score=score))

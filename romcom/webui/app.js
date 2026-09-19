@@ -237,46 +237,21 @@ $("#lib-table").addEventListener("change", async e => {
   } catch (err) { toast(err.message, true); loadLibrary(); }
 });
 
-/* ---------- Search drawer & acquire ---------- */
+/* ---------- Search: a quick indexer probe reported as a fading toast ---------- */
 document.addEventListener("click", e => {
   const b = e.target.closest(".act-search");
-  if (b) openSearch(b.dataset.id, b.dataset.title);
+  if (b) quickSearch(b.dataset.id, b.dataset.title);
 });
 
-async function openSearch(ident, title) {
-  $("#drawer").hidden = false;
-  $("#drawer-title").textContent = `Search: ${title}`;
-  $("#drawer-body").textContent = "Searching the indexer…";
+async function quickSearch(ident, title) {
+  toast(`Searching: ${title}…`);
   try {
     const d = await api(`/api/search/${encodeURIComponent(ident)}`);
-    if (!d.results.length) { $("#drawer-body").innerHTML = `<p class="sub">No results found on the indexer.</p>`; return; }
-    $("#drawer-body").innerHTML = `<div class="tablewrap"><table>
-      <thead><tr><th class="r">Score</th><th class="r">Size</th><th>Release</th><th></th></tr></thead>
-      <tbody>${d.results.map((x, i) => `<tr>
-        <td class="r">${x.score.toFixed(1)}</td>
-        <td class="r">${fmtBytes(x.size)}</td>
-        <td>${esc(x.title)}</td>
-        <td><button class="small primary act-grab" data-i="${i}">Grab</button></td>
-      </tr>`).join("")}</tbody></table></div>`;
-    $("#drawer-body").onclick = async ev => {
-      const g = ev.target.closest(".act-grab");
-      if (!g) return;
-      g.disabled = true; g.textContent = "Queueing…";
-      const x = d.results[Number(g.dataset.i)];
-      try {
-        const r = await post("/api/acquire", {ident, url: x.url, title: x.title, size: x.size});
-        toast(`Queued: ${r.queued}`);
-        g.textContent = "Queued ✓";
-        loadActivity(); if (loaded.library) loadLibrary();
-      } catch (err) { toast(err.message, true); g.disabled = false; g.textContent = "Grab"; }
-    };
-  } catch (e) {
-    $("#drawer-body").innerHTML = `<p class="sub">${esc(e.message)}</p>`;
-  }
+    if (!d.results.length) { toast(`${title}: no indexer results`, true); return; }
+    const top = d.results[0];
+    toast(`${title}: ${d.results.length} result(s) — best "${top.title}" (score ${top.score.toFixed(0)}, ${fmtBytes(top.size)})`);
+  } catch (e) { toast(`Search failed: ${e.message}`, true); }
 }
-$("#drawer-close").addEventListener("click", () => { $("#drawer").hidden = true; });
-$("#drawer").addEventListener("click", e => { if (e.target.id === "drawer") $("#drawer").hidden = true; });
-document.addEventListener("keydown", e => { if (e.key === "Escape") $("#drawer").hidden = true; });
 
 /* ---------- Acquire ---------- */
 const picks = { offset: 0, limit: 50, total: 0 };
@@ -329,8 +304,32 @@ async function loadAcquire() {
     loadPicks();
     const w = await api("/api/acquire/watch");
     $("#acq-watch").checked = !!w.on;
+    refreshWatchHealth();
   } catch (e) { toast("Plan failed: " + e.message, true); }
 }
+
+/* Watcher liveness pill — reflects the self-healing watchdog's view of the thread. */
+async function refreshWatchHealth() {
+  const el = $("#acq-health");
+  if (!el) return;
+  try {
+    const h = await api("/api/acquire/health");
+    const map = {
+      off:        ["", ""],
+      alive:      ["ok",   `● downloading — active ${h.last_beat_secs != null ? h.last_beat_secs + "s ago" : ""}`],
+      stale:      ["warn", `● watcher quiet ${h.last_beat_secs != null ? h.last_beat_secs + "s" : ""} — check SABnzbd/sources`],
+      recovering: ["warn", "● watcher down — watchdog relaunching…"],
+    };
+    const [cls, text] = map[h.state] || ["", ""];
+    el.textContent = text;
+    el.className = "chip" + (cls ? " " + cls : "");
+    el.title = h.error ? "Last error: " + h.error
+                       : "Watcher health — the self-healing watchdog relaunches it if it ever stops";
+  } catch (_) { /* health is best-effort; never block the tab on it */ }
+}
+setInterval(() => {
+  if (!document.hidden && $("#tab-acquire") && $("#tab-acquire").classList.contains("active")) refreshWatchHealth();
+}, 10000);
 
 let picksDebounce;
 $("#next-q").addEventListener("input", () => { clearTimeout(picksDebounce); picksDebounce = setTimeout(() => loadPicks(), 300); });
@@ -365,7 +364,7 @@ async function loadActivity() {
   try {
     const jobs = await api("/api/jobs");
     $("#jobs-table tbody").innerHTML = jobs.length ? jobs.map(j => `<tr>
-      <td><div>${esc(j.entity_title)}</div><div class="sub">${esc(j.entity_type)} · ${esc(j.nzo_id || "no nzo id")}</div></td>
+      <td><div>${esc(j.entity_title)}</div><div class="sub">${esc(j.entity_type)} · ${esc(j.source || "sab")} · ${esc(j.nzo_id || "direct")}</div></td>
       <td class="sub">${esc(j.result_title || "")}</td>
       <td class="r">${fmtBytes(j.bytes)}</td>
       <td>${badge(j.status || "UNKNOWN")}</td>
@@ -621,7 +620,8 @@ const SET_KEYS = ["nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "s
                   "download_dir", "acquire_poll", "acquire_max_wait_min", "acquire_batch_max",
                   "acquire_parallel", "acquire_watch", "acquire_interval",
                   "acquire_watch_batch", "acquire_sweep_pause",
-                  "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout"];
+                  "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout",
+                  "vimm_enabled", "vimm_base", "vimm_dl_base", "vimm_delay", "vimm_jitter", "vimm_timeout"];
 
 const SRC_LABEL = { ui: "saved in UI", env: "from .env", default: "default" };
 

@@ -16,11 +16,28 @@ def queue_result(db, kind, e, result):
     table = "items" if kind == "item" else "volumes"
     with db:
         db.execute(f"UPDATE {table} SET status='QUEUED' WHERE id=?", (e["id"],))
-        db.execute("""INSERT INTO jobs(entity_type,entity_id,nzo_id,result_title,result_url,bytes,status,queued_at)
-          VALUES(?,?,?,?,?,?,'QUEUED',?)""",
+        db.execute("""INSERT INTO jobs(entity_type,entity_id,nzo_id,result_title,result_url,bytes,status,source,queued_at)
+          VALUES(?,?,?,?,?,?,'QUEUED','sab',?)""",
           (kind, e["id"], nzo, result["title"], result["url"], result.get("size") or 0,
            datetime.now().isoformat(timespec="seconds")))
     return nzo
+
+def journal_direct(db, entity_id, source, result, path=None):
+    """Record a completed direct download (romsgames, vimm, …) in the same jobs ledger
+    SABnzbd downloads land in, so the Activity feed represents every acquisition, not
+    just the ones that went through SABnzbd. Direct jobs carry no nzo_id (there is no
+    SABnzbd job to poll) and a source tag naming where the file came from."""
+    from pathlib import Path
+    size = result.get("size") or 0
+    if path:
+        try: size = Path(path).stat().st_size
+        except OSError: pass
+    now = datetime.now().isoformat(timespec="seconds")
+    with db:
+        db.execute("""INSERT INTO jobs(entity_type,entity_id,nzo_id,result_title,result_url,
+            bytes,status,source,queued_at,completed_at)
+          VALUES('item',?,NULL,?,?,?,'DOWNLOADED',?,?,?)""",
+          (entity_id, result.get("title") or entity_id, result.get("url"), size, source, now, now))
 
 def sync(db=None):
     """Pull queue/history state from SABnzbd into jobs and entity statuses."""
