@@ -64,21 +64,20 @@ def test_search_without_system_map_keeps_all(monkeypatch, tmp_path):
     assert {r["url"].rsplit("/", 1)[-1] for r in results} == {"1652", "587"}
 
 
-def test_fetch_streams_file_with_content_disposition_name(monkeypatch, tmp_path):
+def test_fetch_runs_the_browser_flow_and_returns_saved_path(monkeypatch, tmp_path):
+    """fetch() drives the download through the (Playwright) browser layer and returns the
+    saved path, holding and releasing the single Vimm slot. The browser flow itself is
+    integration-tested on a real machine after `romcom vimm capture`."""
     vimm_env(monkeypatch, tmp_path)
-    dest = tmp_path / "games"
+    dest = tmp_path / "games"; saved = dest / "Super Mario World (USA).zip"
 
-    def fake_get(url, referer=None, stream=False):
-        if url.endswith("/vault/1652"):
-            return FakeResp(text='<input type="hidden" name="mediaId" value="67006">')
-        assert "mediaId=67006" in url and "dl.vimm.example" in url
-        return FakeResp(chunks=[b"PK\x03\x04", b"data"],
-                        headers={"Content-Disposition": 'attachment; filename="Super Mario World (USA).zip"'})
-    monkeypatch.setattr(vimm, "_get", fake_get)
+    def fake_with_page(headless, fn):
+        dest.mkdir(parents=True, exist_ok=True); saved.write_bytes(b"PK\x03\x04data")
+        return saved
+    monkeypatch.setattr(vimm, "_with_page", fake_with_page)
 
     path = vimm.fetch({"title": "Super Mario World", "url": "https://vimm.example/vault/1652"}, dest)
-    assert path.read_bytes() == b"PK\x03\x04data"
-    assert path.name == "Super Mario World (USA).zip"
+    assert path == saved and path.read_bytes() == b"PK\x03\x04data"
     assert vimm._SLOT._value == 1                    # the single slot was released
 
 
@@ -86,12 +85,7 @@ def test_fetch_serializes_one_at_a_time(monkeypatch, tmp_path):
     """Vimm's defining constraint: while one fetch holds the slot, a second blocks until
     the first finishes — even though it's a different thread."""
     vimm_env(monkeypatch, tmp_path)
-
-    def fake_get(url, referer=None, stream=False):
-        if url.endswith("/vault/1652"):
-            return FakeResp(text='name="mediaId" value="1"')
-        return FakeResp(chunks=[b"x"], headers={})
-    monkeypatch.setattr(vimm, "_get", fake_get)
+    monkeypatch.setattr(vimm, "_with_page", lambda headless, fn: tmp_path / "x.zip")
 
     vimm._SLOT.acquire()          # pretend a download is already in flight
     done = threading.Event()
@@ -105,6 +99,5 @@ def test_fetch_serializes_one_at_a_time(monkeypatch, tmp_path):
         vimm._SLOT.release()       # the in-flight download finishes
         assert done.wait(2)        # now the second one runs
     finally:
-        # leave the module semaphore back at 1 for other tests
         if vimm._SLOT._value == 0:
             vimm._SLOT.release()
