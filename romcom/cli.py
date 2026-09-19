@@ -99,6 +99,13 @@ def cmd_cache(a):
     else:
         print(json.dumps(searchcache.stats(),indent=2))
 
+def cmd_reconcile(a):
+    from .reconcile import reconcile, reacquire_mismatches
+    if a.reacquire:
+        print(f"Re-armed {reacquire_mismatches(a.system)} mismatch item(s) as MISSING for re-acquisition")
+    else:
+        print(json.dumps(reconcile(),indent=2))
+
 def cmd_vimm(a):
     from . import vimm
     print("Opening Vimm in a browser — solve any Cloudflare challenge, then it captures the session…")
@@ -204,6 +211,7 @@ def main():
     cs=s.add_parser("catalog-status"); cs.add_argument("--strict",action="store_true"); cs.set_defaults(fn=cmd_catalog_status)
     cc=s.add_parser("cache"); cc.add_argument("action",choices=["stats","clear"],nargs="?",default="stats"); cc.add_argument("--source"); cc.set_defaults(fn=cmd_cache)
     vm=s.add_parser("vimm"); vm.add_argument("action",choices=["capture"],nargs="?",default="capture"); vm.set_defaults(fn=cmd_vimm)
+    rc=s.add_parser("reconcile"); rc.add_argument("--reacquire",action="store_true"); rc.add_argument("--system"); rc.set_defaults(fn=cmd_reconcile)
     a=p.parse_args(); a.fn(a)
 
 if __name__=="__main__": main()
