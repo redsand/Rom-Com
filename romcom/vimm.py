@@ -182,13 +182,47 @@ def _with_page(headless, fn):
             ctx.close()
 
 
+# Cloudflare fronts Vimm two different ways and only one of them touches the title. The
+# full-page interstitial sets "Just a moment..."; Turnstile is a widget inside an otherwise
+# normal page, leaving the title alone and the game content simply absent. Checking the title
+# alone therefore sees nothing, which is how a live challenge came to be reported as an
+# expired session and sent two people hunting for a login problem that did not exist.
+_TURNSTILE = 'input[name="cf-turnstile-response"]'
+_CHALLENGE_PHRASES = ("just a moment", "checking if you are human", "verify you are human",
+                      "needs to review the security of your connection")
+
+
+def _challenge(page):
+    """Name the Cloudflare challenge currently on the page, or None if it is clear."""
+    try:
+        el = page.query_selector(_TURNSTILE)
+        # A solved widget writes its token into the input; an empty one is still pending.
+        if el is not None and not (el.get_attribute("value") or "").strip():
+            return "a Cloudflare Turnstile challenge"
+    except Exception:
+        pass
+    for probe in (lambda: page.title(), lambda: page.inner_text("body")):
+        try:
+            text = (probe() or "").lower()
+        except Exception:
+            continue
+        for phrase in _CHALLENGE_PHRASES:
+            if phrase in text:
+                return "a Cloudflare challenge"
+    return None
+
+
 def _wait_cf(page, timeout):
-    """Wait out a Cloudflare 'Just a moment…' interstitial (a captured profile passes it
-    automatically). Returns when the real page has loaded or the timeout elapses."""
+    """Wait out any Cloudflare challenge. Returns None once the page is clear, or the name of
+    the challenge still standing when the timeout elapsed — the caller needs to tell those
+    apart to report the real reason it got nothing."""
     end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        if "just a moment" not in (page.title() or "").lower():
-            return
+    while True:
+        found = _challenge(page)
+        if found is None:
+            return None
+        if time.monotonic() >= end:
+            return found
         time.sleep(1)
 
 
@@ -235,9 +269,15 @@ def fetch(result, dest_dir):
 
     def _fn(page):
         page.goto(page_url, wait_until="domcontentloaded", timeout=60000)
-        _wait_cf(page, settings()["vimm_timeout"])
+        blocked = _wait_cf(page, settings()["vimm_timeout"])
         # The real game page carries a mediaId; the decoy (system vault) does not.
         if not (page.query_selector('input[name="mediaId"]') or "mediaid" in (page.content() or "").lower()):
+            if blocked:
+                raise RuntimeError(
+                    f"{blocked} is still blocking {page_url} after "
+                    f"{settings()['vimm_timeout']:.0f}s. Vimm challenges each game page, so a "
+                    "profile captured once does not carry you past it and this source cannot "
+                    "run unattended while that holds.")
             raise RuntimeError("Vimm served a decoy page — no captured session (run `romcom vimm capture`) or it expired")
         with page.expect_download(timeout=int(settings()["vimm_timeout"]) * 1000) as di:
             _click_download(page)
