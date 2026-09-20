@@ -60,7 +60,9 @@ def test_detect_system():
     cases = {
         "Sony - PlayStation": "ps1",
         "Sony - PlayStation 2": "ps2",
-        "Sony - PlayStation 3": None,
+        "Sony - PlayStation 3": "ps3",   # was a skip; the library already holds 4,503 of them
+        "Sony - PlayStation 4": None,
+        "Sony - PlayStation 5": None,
         "Sony - PlayStation - BIOS Images": None,
         "Nintendo - Super Nintendo Entertainment System": "snes",
         "Nintendo - Nintendo Entertainment System (Headered)": "nes",
@@ -107,3 +109,18 @@ def test_import_dats_folder(tmp_path, monkeypatch):
     r2 = import_dats(dats)
     assert r2["items"] == 1
     assert db.execute("SELECT COUNT(*) c FROM items WHERE system='ps1'").fetchone()["c"] == 1
+
+
+def test_playstation_3_is_detected_and_4_and_5_are_still_skipped():
+    """ps3 sat in the "recognized but unsupported" skip rule beside ps4/ps5, so a ps3 dat
+    never auto-detected a system and the 4,503 rows in the library only got in through an
+    explicit override in the import UI. The rule has to keep skipping 4 and 5, and must not
+    let "PlayStation 3" fall through to the generic PlayStation -> ps1 rule below it."""
+    from romcom.catalog import detect_system
+    assert detect_system(["Sony - PlayStation 3", "Sony - PlayStation 3 - Discs (4503)"]) == "ps3"
+    assert detect_system(["Sony - PlayStation 4"]) is None
+    assert detect_system(["Sony - PlayStation 5"]) is None
+    assert detect_system(["Sony - PlayStation 2"]) == "ps2"
+    assert detect_system(["Sony - PlayStation"]) == "ps1"
+    assert detect_system(["Sony - PlayStation Portable"]) == "psp"
+    assert detect_system(["Sony - PlayStation Vita"]) == "vita"

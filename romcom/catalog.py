@@ -200,7 +200,7 @@ _SYSTEM_RULES=[
  (r"\b3ds\b","3ds"),(r"nintendo dsi",None),(r"nintendo ds|\bnds\b","nds"),
  (r"playstation vita|ps vita","vita"),
  (r"playstation portable|\bpsp\b","psp"),
- (r"playstation [345]",None),
+ (r"playstation [45]",None),(r"playstation 3|\bps3\b","ps3"),   # ps3 is supported; 4 and 5 are still skips
  (r"playstation 2|\bps2\b","ps2"),
  (r"playstation|\bps1\b|\bpsx\b","ps1"),
  (r"sega cd|mega cd","segacd"),(r"\b32x\b","32x"),
