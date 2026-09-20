@@ -12,3 +12,4 @@ DAT/
 logs/
 romcom-web*.log
 backups/
+.vimm-profile/
