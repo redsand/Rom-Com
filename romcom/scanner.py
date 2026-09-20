@@ -132,6 +132,9 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
         a=adopt_unmatched(root=root,progress=prog)
         out|={"adopted":a["adopted"],"adopt_skipped":a["skipped"],
               "adopted_by_system":a["by_system"],"skipped_exts":a["skipped_exts"]}
+    # After matching, some files have moved from an adopted item onto a real catalog entry.
+    # Sweep whatever that left behind, so ghosts cannot accumulate across scans.
+    out["pruned_ghosts"]=prune_adopted_ghosts(db)
     return out
 
 # Extensions that pin down a system on their own; ambiguous ones (.bin/.iso/.cue/.zip) rely on folder names.
@@ -158,6 +161,27 @@ def _detect_file_system(p,known,detect_system):
     ext=EXT_SYSTEM.get(p.suffix.lower())
     if ext: return ext
     return detect_system(list(reversed(p.parent.parts))[:4])
+
+
+def prune_adopted_ghosts(db=None):
+    """Delete adopted items that no longer own a file, and report how many went.
+
+    An item with catalog_source='local' exists for one reason: to represent a file that
+    matched no catalog. Once it owns no file it represents nothing. They accumulate because
+    adoption and cataloging race across runs -- adopt a loose file now, import the dat that
+    describes it later, and the next scan re-points that file at the real catalog entry and
+    leaves the adopted item behind. 65,768 had built up that way, all arcade, all still
+    FOUND, and they were 97% of the library's FOUND total: a permanent gap that could never
+    close, because a FOUND item with no file can never be verified against anything.
+
+    EXCLUDED rows are left alone. Exclusion is a deliberate decision by the owner and
+    deleting the row would let the next scan re-adopt the same file.
+    """
+    db = db or connect()
+    with db:
+        n = db.execute("""DELETE FROM items WHERE catalog_source='local' AND status<>'EXCLUDED'
+              AND NOT EXISTS (SELECT 1 FROM files f WHERE f.matched_item_id = items.id)""").rowcount
+    return n
 
 def adopt_unmatched(root=None,progress=None):
     """Create catalog entries (source 'local') for scanned files that matched nothing, so
