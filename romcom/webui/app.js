@@ -133,7 +133,8 @@ async function loadDashboard() {
       <div class="check ${r.loaded ? "ok" : "bad"}">
         <span class="mark">${r.loaded ? "✓" : "✕"}</span>
         <span class="n">${esc(r.source)}</span>
-        <span class="d">${esc(r.system)} — ${r.loaded ? r.count + " items" : "not imported"}</span></div>`).join("")
+        <span class="d">${esc(r.system)} — ${r.loaded ? r.count + " items" : "not imported"}${
+          r.declared && r.declared !== "catalogs" ? ` · ${esc(r.declared)}` : ""}</span></div>`).join("")
       : `<span class="sub">No enabled catalogs in catalogs.yaml</span>`;
   }).catch(e => { $("#catalog-list").textContent = e.message; });
 

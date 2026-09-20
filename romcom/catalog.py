@@ -129,11 +129,38 @@ def parse_dat(data):
     if data.startswith(b"<"): return _parse_xml(data)
     return _parse_cm(data.decode("utf-8",errors="replace"))
 
+# Patch DATs describe transformations of a ROM, not the ROM itself, and several circulate
+# alongside real catalogs for the same system. Importing one gives you thousands of entries
+# that are undownloadable by name and duplicate games already in the catalog under their real
+# titles -- 5,040 of them arrived this way on nds/gba from a DAT naming each patch
+# "<release no> - <source CRC> to <target CRC>", in both directions.
+#
+# Both rules below are deliberately anchored to the whole title rather than searched for
+# anywhere in it, because the cost of a false positive is a real game silently missing from
+# the catalog. " to " appears in plenty of genuine titles ("Back to Earth 3D"); what no real
+# title does is consist solely of two 8-digit hex checksums joined by it.
+_PATCH_DELTA=re.compile(r"^(?:\d+\s*[-–]\s*)?[0-9A-Fa-f]{8}\s+to\s+[0-9A-Fa-f]{8}$")
+_PATCH_EXTS=(".ips",".bps",".ups",".xdelta",".vcdiff",".ppf",".aps",".rup")
+
+def is_patch_entry(title,external=None):
+    """True when a catalog entry describes a patch rather than a game.
+
+    Checked against the external name as well as the title: a DAT may carry a decorative
+    description while the entry name keeps the patch form, and either is disqualifying."""
+    for v in (title,external):
+        v=(v or "").strip()
+        if not v: continue
+        if _PATCH_DELTA.match(v): return True
+        if v.lower().endswith(_PATCH_EXTS): return True
+    return False
+
 def _import_games(db,games,system,source,wanted):
-    count=0; hash_count=0
+    count=0; hash_count=0; patch_count=0
     with db:
         for g in games:
             external=g["external"]; key=f"{system}/{external}"
+            if is_patch_entry(g["title"],external):
+                patch_count+=1; continue
             row=db.execute("SELECT id FROM items WHERE catalog_source=? AND external_id=?",(source,key)).fetchone()
             if row:
                 item_id=row["id"]
@@ -149,7 +176,7 @@ def _import_games(db,games,system,source,wanted):
                 if db.execute("INSERT OR IGNORE INTO file_hashes(item_id,algorithm,digest) VALUES(?,?,?)",(item_id,alg,digest)).rowcount:
                     hash_count+=1
             count+=1
-    return {"items":count,"hashes":hash_count}
+    return {"items":count,"hashes":hash_count,"patches":patch_count}
 
 def import_dat(path,system,source="dat",wanted=True):
     db=connect()
@@ -271,7 +298,7 @@ def import_dats(path,system=None,source=None,wanted=False,progress=None):
         files=[root]
     else:
         raise FileNotFoundError(f"no such file or directory: {path}")
-    report={"files":len(files),"dats":0,"items":0,"hashes":0,"scummvm_matched":0,
+    report={"files":len(files),"dats":0,"items":0,"hashes":0,"scummvm_matched":0,"patches":0,
             "imported":[],"skipped":[],"errors":[]}
     db=connect()
     for i,f in enumerate(files):
@@ -302,6 +329,7 @@ def import_dats(path,system=None,source=None,wanted=False,progress=None):
                 src=source or detect_source(header,f)
                 r=_import_games(db,games,sys_slug,src,wanted)
                 report["items"]+=r["items"]; report["hashes"]+=r["hashes"]
+                report["patches"]+=r.get("patches",0)
                 report["imported"].append(entry|{"system":sys_slug,"source":src}|r)
     if progress: progress(len(files),len(files),"done")
     return report
