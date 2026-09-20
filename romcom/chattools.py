@@ -270,6 +270,72 @@ def _forget_fact(args, ctx):
     return {"forgotten": key}
 
 
+def _near(value, legal, n=6):
+    """Legal values resembling `value`, best first, ignoring case and punctuation.
+
+    Exists because a bare `{"total": 0}` is a dead end: the caller cannot tell "this filter
+    genuinely matches nothing" from "you spelled the system wrong", so it guesses again. Every
+    wrong guess cost a full model round-trip — the "download all the DS games" turn burned its
+    entire iteration budget on `system="Nintendo DS"` against a database that stores `nds`.
+
+    Initials count as a match in their own right, not just a substring: the whole system
+    vocabulary is abbreviations of console names, so "Game Boy Advance" -> `gba` and
+    "Nintendo DS" -> `nds` are exact once you take one letter per word. No substring test finds
+    "nds" inside "nintendods" — the 'd' and 's' are not adjacent there."""
+    raw = (value or "").lower()
+    want = re.sub(r"[^a-z0-9]", "", raw)
+    if not want:
+        return []
+    words = re.findall(r"[a-z0-9]+", raw)
+    # Two spellings of "the initials". The strict one takes one letter per word, which gives
+    # "gba" for "Game Boy Advance" — but only "nd" for "Nintendo DS", because its second word
+    # is already the abbreviation. The generous one keeps short words whole to cover that.
+    keys = {want,
+            "".join(w[0] for w in words),
+            "".join(w if len(w) <= 3 else w[0] for w in words)}
+    keys.discard("")
+    out = []
+    for v in legal:
+        have = re.sub(r"[^a-z0-9]", "", str(v).lower())
+        if not have:
+            continue
+        if have in keys:
+            out.append((0, v))
+        elif have.startswith(want) or want.startswith(have) or want in have or have in want:
+            out.append((1, v))
+    return [v for _, v in sorted(out)[:n]]
+
+
+def _empty_hint(args):
+    """Why a zero-row `list_items` happened, phrased so one more call can fix it.
+
+    A wrong filter value and an honestly empty result need opposite responses — correct the
+    name, or widen the filter — and the count alone cannot tell them apart. Saying which it is
+    is the difference between the agent converging and the agent flailing."""
+    db = connect()
+    systems = sorted(r["system"] for r in db.execute(
+        "SELECT DISTINCT system FROM items WHERE system IS NOT NULL"))
+    out = {}
+    wrong = False
+    for key, legal in (("system", systems), ("status", list(LIFECYCLE))):
+        asked = args.get(key)
+        if not asked or asked in legal:
+            continue
+        wrong = True
+        near = _near(asked, legal)
+        # `problem`, not `error`: a nested "error" key reads like a failed tool call, and this
+        # is a successful call that honestly found nothing.
+        out[key] = ({"asked_for": asked, "did_you_mean": near} if near else
+                    {"asked_for": asked, "problem": f"{asked!r} is not a legal {key}. Call facets "
+                                                    f"for the exact values."})
+    out["note"] = ("filters matched no rows because a filter value is not a legal one — the name "
+                   "is wrong, not the library. Retry with a listed value." if wrong else
+                   "filters matched no rows and every value given is legal, so this is a real "
+                   "empty result. Change or drop a filter — repeating this call returns the same "
+                   "nothing.")
+    return out
+
+
 def _list_items(args, ctx):
     """Same filter semantics as the Library tab (`_item_filter` in web.py) so the assistant
     and the UI can never disagree about what "missing on NES" means."""
@@ -279,8 +345,11 @@ def _list_items(args, ctx):
     limit, offset = _limit(args), max(0, int(args.get("offset") or 0))
     rows = db.execute(q + " ORDER BY system,series,series_number,title LIMIT ? OFFSET ?",
                       p + [limit, offset]).fetchall()
-    return {"total": total, "returned": len(rows), "offset": offset,
-            "view": args.get("view") or "all", "items": [dict(r) for r in rows]}
+    out = {"total": total, "returned": len(rows), "offset": offset,
+           "view": args.get("view") or "all", "items": [dict(r) for r in rows]}
+    if not total:
+        out["hint"] = _empty_hint(args)
+    return out
 
 
 def _get_item(args, ctx):
@@ -720,9 +789,13 @@ def build_registry(ctx=None):
         Tool("list_items",
              "List catalog items with filters, paging and a total count. Same filters as the "
              "Library tab. Use for 'show me NES items', 'which titles are missing', 'what's "
-             "marked FAILED'. Always read `total` — it may exceed what was returned.",
+             "marked FAILED'. Always read `total` — it may exceed what was returned. If `total` "
+             "is 0, read `hint` before calling again: it says whether a filter value was wrong "
+             "and what the legal ones are, so a miss costs one correction instead of a guess.",
              _obj({"q": dict(_STR, description="substring of title, series or id"),
-                   "system": dict(_STR, description="exact system name, e.g. 'Nintendo Entertainment System'"),
+                   "system": dict(_STR, description="exact system value as `facets` reports it — a "
+                                                    "short slug like 'nds', 'nes', 'gba', never a "
+                                                    "full console name"),
                    "series": dict(_STR, description="exact series name"),
                    "status": dict(_STR, description="one lifecycle status, e.g. MISSING, DOWNLOADED"),
                    "view": dict(_STR, enum=["all", "missing", "wanted", "satisfied"],

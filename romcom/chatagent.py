@@ -52,7 +52,10 @@ HOW TO WORK
 - For any question about counts or coverage, call a tool. Start with `library_summary` or
   `list_items`.
 - Before filtering by a system or status, call `facets` so you use the exact spelling rather
-  than a guess.
+  than a guess. Systems are short slugs (`nds`, `nes`, `gba`), not full console names.
+- A list tool that returns `total: 0` tells you why in `hint`. Read it and change the call
+  accordingly. Never re-issue a call that already returned nothing — the answer will be the
+  same nothing, and you have a limited number of steps.
 - Every list tool returns `total` as well as the rows returned, and may say `truncated` or
   carry a `note`. If `total` is larger than what you received, say so and page or narrow the
   filter — never present a partial list as complete.

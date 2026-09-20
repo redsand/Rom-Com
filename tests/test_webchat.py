@@ -66,8 +66,14 @@ def test_the_stream_is_unbuffered_event_stream(monkeypatch, tmp_path):
     """If this ever buffers, the tab shows nothing until the whole turn finishes — which for
     a tool-heavy local turn is most of a minute. Asserted on the Response object itself: the
     test client's wrapper rebuffers the body, so anything read off *it* says nothing about
-    what the view returned. (`Response.buffered` no longer exists in Werkzeug 3;
-    `is_streamed` + `direct_passthrough` is the equivalent and stricter check.)"""
+    what the view returned. (`Response.buffered` no longer exists in Werkzeug 3; `is_streamed`
+    is the equivalent check.)
+
+    `direct_passthrough` must stay *off*. It sounds like the stronger guarantee, but it hands
+    the raw iterable to the WSGI server unencoded while the headers still promise chunked
+    framing — and the frames are `str`, which WSGI rejects. The server then wrote nothing,
+    closed the connection, and the tab reported a fetch-level network error on a 200. Werkzeug
+    encoding the generator costs no buffering and is what actually reaches the browser."""
     app = make_app(monkeypatch, tmp_path)
     FakeOllama(turns=[{"tokens": ["hi"]}]).install(monkeypatch)
     with app.test_request_context("/api/chat/stream", method="POST", json={"message": "hello"}):
@@ -75,7 +81,7 @@ def test_the_stream_is_unbuffered_event_stream(monkeypatch, tmp_path):
         try:
             assert resp.mimetype == "text/event-stream"
             assert resp.is_streamed is True
-            assert resp.direct_passthrough is True     # handed to the server untouched
+            assert resp.direct_passthrough is False    # see the docstring: off, deliberately
             assert resp.headers["X-Accel-Buffering"] == "no"
             assert resp.headers["Cache-Control"] == "no-cache"
         finally:

@@ -101,6 +101,42 @@ def test_list_items_search_matches_title_series_and_id(monkeypatch, tmp_path):
     assert call(reg(), "list_items", series="Mario")["data"]["total"] == 1
 
 
+def test_list_items_explains_a_wrong_system_rather_than_returning_a_bare_zero(monkeypatch, tmp_path):
+    """Pins the flail: asked for `Nintendo DS` against a library that stores `nds`, the agent
+    got `{"total": 0}` — indistinguishable from "you own nothing" — and spent its entire step
+    budget re-guessing. The hint turns a miss into one correction."""
+    setup_db(monkeypatch, tmp_path, items=[{"id": "a", "system": "nds"}, {"id": "b", "system": "nes"}])
+    d = call(reg(), "list_items", system="Nintendo DS")["data"]
+    assert d["total"] == 0
+    assert d["hint"]["system"]["asked_for"] == "Nintendo DS"
+    assert d["hint"]["system"]["did_you_mean"] == ["nds"]      # not "nes": the substring test
+    assert "Retry" in d["hint"]["note"]
+
+
+def test_list_items_suggests_a_status_correction(monkeypatch, tmp_path):
+    setup_db(monkeypatch, tmp_path, items=[{"id": "a", "status": "VERIFIED"}])
+    d = call(reg(), "list_items", status="verified")["data"]   # the legal value is uppercase
+    assert d["total"] == 0
+    assert d["hint"]["status"]["did_you_mean"] == ["VERIFIED"]
+
+
+def test_list_items_says_when_an_empty_result_is_genuinely_empty(monkeypatch, tmp_path):
+    """The other half of the distinction. Legal filters that happen to match nothing must not
+    read as a spelling problem, or the agent "fixes" a name that was already right."""
+    setup_db(monkeypatch, tmp_path, items=[{"id": "a", "system": "nds", "status": "VERIFIED"}])
+    d = call(reg(), "list_items", system="nds", status="MISSING")["data"]
+    assert d["total"] == 0
+    assert "system" not in d["hint"] and "status" not in d["hint"]
+    assert "real empty result" in d["hint"]["note"]
+
+
+def test_list_items_omits_the_hint_entirely_when_there_are_rows(monkeypatch, tmp_path):
+    """No hint on the happy path: it would be noise in every result the agent actually uses."""
+    setup_db(monkeypatch, tmp_path, items=[{"id": "a", "system": "nds"}])
+    d = call(reg(), "list_items", system="nds")["data"]
+    assert d["total"] == 1 and "hint" not in d
+
+
 def test_get_item_returns_files_aliases_and_events(monkeypatch, tmp_path):
     db = setup_db(monkeypatch, tmp_path,
                   items=[{"id": "smb", "title": "Super Mario Bros.", "system": NES, "status": "VERIFIED"}],

@@ -94,10 +94,17 @@ def _sse(sid, work):
             _release(sid)
 
     resp = Response(gen(), mimetype="text/event-stream")
-    resp.direct_passthrough = True   # hand the generator to the WSGI server untouched
+    # Deliberately NOT `direct_passthrough`. That flag hands the raw iterable to the WSGI
+    # server without encoding or framing it, while the headers still advertise
+    # `Transfer-Encoding: chunked`. Frames are `str`, so the server received str where WSGI
+    # requires bytes: it wrote nothing, closed the connection, and the browser saw a 200 with
+    # a zero-byte chunked body — surfacing as "NetworkError when attempting to fetch
+    # resource" rather than as anything resembling a server error. Letting Werkzeug encode
+    # and chunk the generator is also what keeps the stream unbuffered, so nothing is lost.
     resp.headers["Cache-Control"] = "no-cache"
     resp.headers["X-Accel-Buffering"] = "no"   # defeat any proxy buffering
-    resp.headers["Connection"] = "keep-alive"
+    # `Connection` is hop-by-hop and belongs to the server, not the app; setting it here
+    # fought with the server's own value and produced two of them.
     return resp
 
 
