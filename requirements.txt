@@ -3,5 +3,8 @@ PyYAML>=6.0
 python-dotenv>=1.0
 beautifulsoup4>=4.12
 flask>=3.0
-playwright>=1.40
+# Pinned to the version Vimm was built and verified against. vimm.py launches with
+# channel="chrome" (the real installed Chrome), so no bundled browser download is
+# needed -- but the driver protocol does move between releases, so do not float this.
+playwright==1.56.0
 playwright-stealth>=1.0

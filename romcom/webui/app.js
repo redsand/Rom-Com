@@ -1086,9 +1086,13 @@ async function loadChatSessions() {
     return;
   }
   sel.disabled = false;
-  sel.innerHTML = rows.map(s =>
+  // Option 0 is always the placeholder, and it is what stays selected while `chatSession` is
+  // null. Without it the browser selects the newest conversation by itself, so the dropdown
+  // named a thread that had never been opened while every control reading `chatSession` —
+  // Delete, Stop — still saw nothing. Delete then returned silently and looked broken.
+  sel.innerHTML = '<option value="">— new conversation —</option>' + rows.map(s =>
     `<option value="${s.id}">${esc((s.title || "untitled").slice(0, 60))} · ${s.messages}</option>`).join("");
-  if (chatSession) sel.value = String(chatSession);
+  sel.value = chatSession ? String(chatSession) : "";
 }
 
 async function openChatSession(sid) {
@@ -1134,8 +1138,7 @@ function newChat() {
   chatEmpty();
   $("#chat-usage").textContent = "";
   $("#chat-hint").textContent = DEFAULT_HINT;
-  const sel = $("#chat-sessions");
-  if (sel.options.length) sel.selectedIndex = 0;
+  $("#chat-sessions").value = "";   // the placeholder, so the list agrees with the transcript
 }
 
 // Called once from startApp(), not from a tab click. Everything here renders into the panel,
@@ -1224,6 +1227,7 @@ $("#chat-model").addEventListener("change", e => { chatModel = e.target.value; }
 
 $("#chat-sessions").addEventListener("change", e => {
   if (chatBusy) { toast("a turn is still running — stop it first", true); return; }
+  if (!e.target.value) { newChat(); return; }      // the placeholder
   openChatSession(e.target.value).catch(err => toast(err.message, true));
 });
 
@@ -1233,10 +1237,14 @@ $("#chat-new").addEventListener("click", () => {
 });
 
 $("#chat-delete").addEventListener("click", async () => {
-  if (!chatSession) { newChat(); return; }
   if (chatBusy) { toast("a turn is still running — stop it first", true); return; }
+  // Falls back to the dropdown rather than trusting `chatSession` alone. The two are kept in
+  // sync above, but a delete button that quietly does nothing is indistinguishable from a
+  // broken one, so read what is on screen and refuse out loud if it is nothing.
+  const sid = chatSession || $("#chat-sessions").value;
+  if (!sid) { toast("no conversation selected — pick one to delete"); return; }
   try {
-    await api(`/api/chat/session/${chatSession}`, {method: "DELETE"});
+    await api(`/api/chat/session/${sid}`, {method: "DELETE"});
     newChat();
     await loadChatSessions();
   } catch (err) { toast(err.message, true); }
