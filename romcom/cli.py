@@ -92,6 +92,13 @@ def cmd_web(a):
     from .web import serve
     serve(host=a.host,port=a.port,open_browser=not a.no_browser)
 
+def cmd_dedupe(a):
+    from . import dedupe
+    r=dedupe.dedupe(dry_run=not a.apply)
+    print(json.dumps({k:v for k,v in r.items() if k!="pairs"},indent=2))
+    if not a.apply and r["removed"]:
+        print(f'{r["removed"]} row(s) would be merged away; re-run with --apply')
+
 def cmd_cache(a):
     from . import searchcache
     if a.action=="clear":
@@ -207,6 +214,7 @@ def main():
     ec=s.add_parser("export-csv"); ec.add_argument("path"); ec.set_defaults(fn=cmd_export_csv)
     ic=s.add_parser("import-csv"); ic.add_argument("path"); ic.set_defaults(fn=cmd_import_csv)
     dr=s.add_parser("doctor"); dr.add_argument("--no-sab",action="store_true"); dr.set_defaults(fn=cmd_doctor)
+    dd=s.add_parser("dedupe"); dd.add_argument("--apply",action="store_true"); dd.set_defaults(fn=cmd_dedupe)
     w=s.add_parser("web"); w.add_argument("--host",default="127.0.0.1"); w.add_argument("--port",type=int,default=8927); w.add_argument("--no-browser",action="store_true"); w.set_defaults(fn=cmd_web)
     cs=s.add_parser("catalog-status"); cs.add_argument("--strict",action="store_true"); cs.set_defaults(fn=cmd_catalog_status)
     cc=s.add_parser("cache"); cc.add_argument("action",choices=["stats","clear"],nargs="?",default="stats"); cc.add_argument("--source"); cc.set_defaults(fn=cmd_cache)
