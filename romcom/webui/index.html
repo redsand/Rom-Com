@@ -17,7 +17,6 @@
     <button class="tab" data-tab="activity">Activity</button>
     <button class="tab" data-tab="import">Files</button>
     <button class="tab" data-tab="settings">Settings</button>
-    <button class="tab" data-tab="assistant">Assistant</button>
   </nav>
   <div id="job-chip" class="chip job" title="Background jobs — click for details" hidden></div>
   <div id="health-chip" class="chip" title="Connection health">checking&hellip;</div>
@@ -333,6 +332,23 @@
       </div>
     </div>
     <div class="card">
+      <h2>Internet Archive <span class="hint">archive.org — opt-in third direct source (the surviving r-roms mirror)</span></h2>
+      <div class="filters">
+        <label class="autolabel"><input type="checkbox" id="set-archive_enabled"> use archive.org as a fallback source</label>
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Site</span>
+        <input id="set-archive_base" type="search" placeholder="https://archive.org" spellcheck="false" style="flex:1">
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Request spacing</span>
+        <input id="set-archive_delay" type="search" placeholder="2" spellcheck="false" style="width:90px">
+        <span class="sub">seconds between requests (open host — just politeness)</span>
+        <span class="count" style="width:150px;margin-left:24px">Timeout</span>
+        <input id="set-archive_timeout" type="search" placeholder="60" spellcheck="false" style="width:90px">
+      </div>
+    </div>
+    <div class="card">
       <h2>LLM disambiguation <span class="hint">Ollama — salvages good matches the strict ranker rejects (opt-in)</span></h2>
       <div class="filters">
         <label class="autolabel"><input type="checkbox" id="set-llm_enabled"> use a local LLM to review ambiguous matches</label>
@@ -367,42 +383,61 @@
     </div>
   </section>
 
-  <!-- Assistant -->
-  <section id="tab-assistant" class="tabpane">
-    <div id="chat-off" class="card" hidden>
-      <h2>Assistant is off</h2>
-      <p class="sub">Set <code>ROMCOM_CHAT_ENABLED=true</code> in <code>.env</code> (or tick it on the
-        Settings tab) and restart to turn it on. It talks to the Ollama server at
-        <code>ROMCOM_LLM_BASE</code> and needs a locally installed model that supports tool calling.</p>
-    </div>
-
-    <div id="chat-main" hidden>
-      <div class="filters">
-        <button id="chat-new" class="ghost">New chat</button>
-        <select id="chat-sessions" title="Previous conversations"></select>
-        <button id="chat-delete" class="ghost">Delete</button>
-        <span style="flex:1"></span>
-        <select id="chat-model" title="Model — 'auto' picks the first installed model that supports tools"></select>
-        <select id="chat-tools" title="Tools the assistant can call"></select>
-        <span id="chat-usage" class="count"></span>
-      </div>
-      <div id="chat-brain" class="sub chat-brain" hidden></div>
-      <div id="chat-facts" class="sub chat-facts" hidden></div>
-      <div id="chat-log" class="chat-log"></div>
-      <form id="chat-form" class="chat-composer">
-        <textarea id="chat-input" rows="2" spellcheck="false"
-          placeholder="Ask about the library — or tell it what to do. Enter sends, Shift+Enter adds a line."></textarea>
-        <div class="chat-buttons">
-          <button id="chat-send" class="primary" type="submit">Send</button>
-          <button id="chat-stop" class="ghost" type="button" hidden>Stop</button>
-        </div>
-      </form>
-      <p class="sub" id="chat-hint">It reads the library with real queries and cites what it used.
-        Anything that would move files, mark things in bulk, or change source settings stops for
-        your confirmation first.</p>
-    </div>
-  </section>
 </main>
+
+<!-- The assistant. It is a floating panel rather than a tab because its whole value is acting
+     on whatever you already have open — parking it behind a tab meant describing the thing on
+     screen instead of pointing at it. Every id below is unchanged from the tab it replaced, so
+     the existing chat JS drives it untouched.
+     The button stays visible even when the feature is switched off: the panel it opens is where
+     the "Assistant is off, here's the flag" explanation lives, and a bubble that vanishes when
+     the config is wrong is indistinguishable from a broken build. -->
+<button id="chat-bubble" class="chat-bubble" type="button"
+        title="Ask the assistant about the library" aria-controls="chat-panel">
+  <span aria-hidden="true">✦</span>
+  <b id="chat-badge" class="chat-badge" hidden></b>
+</button>
+
+<aside id="chat-panel" class="chat-panel" hidden aria-label="Assistant">
+  <div class="filters chat-head">
+    <strong>Assistant</strong>
+    <span style="flex:1"></span>
+    <span id="chat-usage" class="count"></span>
+    <button id="chat-close" class="ghost" type="button" title="Close (Esc)">Close</button>
+  </div>
+
+  <div id="chat-off" class="card" hidden>
+    <h2>Assistant is off</h2>
+    <p class="sub">Set <code>ROMCOM_CHAT_ENABLED=true</code> in <code>.env</code> (or tick it on the
+      Settings tab) and restart to turn it on. It talks to the Ollama server at
+      <code>ROMCOM_LLM_BASE</code> and needs a locally installed model that supports tool calling.</p>
+  </div>
+
+  <div id="chat-main" hidden>
+    <div class="filters">
+      <button id="chat-new" class="ghost">New chat</button>
+      <select id="chat-sessions" title="Previous conversations"></select>
+      <button id="chat-delete" class="ghost">Delete</button>
+      <span style="flex:1"></span>
+      <select id="chat-model" title="Model — 'auto' picks the first installed model that supports tools"></select>
+      <select id="chat-tools" title="Tools the assistant can call"></select>
+    </div>
+    <div id="chat-brain" class="sub chat-brain" hidden></div>
+    <div id="chat-facts" class="sub chat-facts" hidden></div>
+    <div id="chat-log" class="chat-log"></div>
+    <form id="chat-form" class="chat-composer">
+      <textarea id="chat-input" rows="2" spellcheck="false"
+        placeholder="Ask about the library — or tell it what to do. Enter sends, Shift+Enter adds a line."></textarea>
+      <div class="chat-buttons">
+        <button id="chat-send" class="primary" type="submit">Send</button>
+        <button id="chat-stop" class="ghost" type="button" hidden>Stop</button>
+      </div>
+    </form>
+    <p class="sub" id="chat-hint">It reads the library with real queries and cites what it used.
+      Anything that would move files, mark things in bulk, or change source settings stops for
+      your confirmation first.</p>
+  </div>
+</aside>
 
 <!-- Search results drawer -->
 <div id="drawer" class="drawer" hidden>

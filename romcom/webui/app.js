@@ -81,7 +81,7 @@ const post = (path, body) => api(path, {
 });
 
 /* ---------- Tabs ---------- */
-const loaders = { dashboard: loadDashboard, library: loadLibrary, acquire: loadAcquire, activity: loadActivity, import: loadImport, settings: loadSettings, assistant: loadAssistant };
+const loaders = { dashboard: loadDashboard, library: loadLibrary, acquire: loadAcquire, activity: loadActivity, import: loadImport, settings: loadSettings };
 const loaded = {};
 
 function showTab(name) {
@@ -674,6 +674,7 @@ const SET_KEYS = ["nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "s
                   "acquire_watch_batch", "acquire_sweep_pause",
                   "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout",
                   "vimm_enabled", "vimm_base", "vimm_dl_base", "vimm_delay", "vimm_jitter", "vimm_timeout",
+                  "archive_enabled", "archive_base", "archive_delay", "archive_timeout",
                   "search_cache_ttl", "llm_enabled", "llm_base", "llm_model", "llm_timeout"];
 
 const SRC_LABEL = { ui: "saved in UI", env: "from .env", default: "default" };
@@ -840,6 +841,47 @@ let chatModel = "";         // "" = auto
 let chatTools = [];
 const DEFAULT_HINT = $("#chat-hint").textContent;
 
+/* ---------- The chat widget ---------- */
+// The assistant is a floating panel rather than a tab, so it has no loader entry: `initChat`
+// runs once from `startApp()` and the bubble is there on every page after that. Opening and
+// closing is pure DOM. The transcript is never torn down, only hidden, which matters because
+// a streaming turn keeps writing into #chat-log after the panel is closed — the reply is
+// waiting when you reopen it. Closing mid-turn does not cancel; that is what Stop is for.
+let chatUnread = 0;
+
+const chatOpen = () => !$("#chat-panel").hidden;
+
+function chatSetOpen(open) {
+  $("#chat-panel").hidden = !open;
+  if (!open) return;
+  chatUnread = 0;
+  $("#chat-badge").hidden = true;
+  chatScroll();
+  $("#chat-input").focus();
+}
+
+// Something wants an answer: a finished turn, a failure, or a confirmation card. Signalled
+// only while the panel is shut — an approval you are already looking at needs no badge.
+function chatAttention() {
+  if (chatOpen()) return;
+  chatUnread += 1;
+  const badge = $("#chat-badge");
+  badge.textContent = chatUnread;
+  badge.hidden = false;
+}
+
+function initChatWidget() {
+  $("#chat-bubble").addEventListener("click", () => chatSetOpen(!chatOpen()));
+  $("#chat-close").addEventListener("click", () => chatSetOpen(false));
+  document.addEventListener("keydown", e => {
+    if (e.key !== "Escape" || !chatOpen()) return;
+    // A modal on top owns Escape; collapsing the panel underneath it as well would be a
+    // surprising second thing to happen from one keypress.
+    if ($$(".modal").some(m => !m.hidden)) return;
+    chatSetOpen(false);
+  });
+}
+
 function chatScroll() {
   const log = $("#chat-log");
   log.scrollTop = log.scrollHeight;
@@ -944,6 +986,7 @@ function chatEventHandler(bot) {
       fillToolCall(bot, d.name, d.ok, d.data === undefined ? d.error : d.data, d.truncated);
     } else if (ev === "approval_required") {
       addConfirmCard(bot, d);
+      chatAttention();          // a gated call is waiting on the owner, not just idle output
     } else if (ev === "summarizing") {
       // Compressing the older part of a long thread. It is a second model call before the
       // first token, so without saying so the tab looks hung for as long as it takes.
@@ -952,6 +995,7 @@ function chatEventHandler(bot) {
       bot.el.classList.add("err");
       bot.body.textContent += (bot.body.textContent ? "\n" : "") + (d.message || "the turn failed");
       chatScroll();
+      chatAttention();
     } else if (ev === "done") {
       bot.ended = true;
       const u = d.usage || {};
@@ -964,6 +1008,7 @@ function chatEventHandler(bot) {
       // is an unexplained blank.
       if (!bot.body.textContent.trim() && d.stopped) bot.body.textContent = d.stopped;
       chatScroll();
+      chatAttention();
     }
   };
 }
@@ -1093,7 +1138,9 @@ function newChat() {
   if (sel.options.length) sel.selectedIndex = 0;
 }
 
-async function loadAssistant() {
+// Called once from startApp(), not from a tab click. Everything here renders into the panel,
+// which exists on every page whether or not it is open — so this is safe to run while hidden.
+async function initChat() {
   let st;
   try { st = await api("/api/chat/status"); }
   catch (err) { $("#chat-off").hidden = false; $("#chat-main").hidden = true; toast(err.message, true); return; }
@@ -1257,8 +1304,13 @@ function startApp() {
   started = true;
   initFacets();
   showTab(location.hash.slice(1) || "dashboard");
+  initChatWidget();
+  initChat();       // the bubble is on every page, so the chat is not a tab loader
   loadImport();     // reattach to any running background jobs regardless of the open tab
   pollJobChip();
+  // #assistant used to be a tab. It is not one any more, so it falls through to the dashboard
+  // above (showTab's unknown-name guard) — open the panel instead of 404ing an old bookmark.
+  if (location.hash.slice(1) === "assistant") chatSetOpen(true);
 }
 
 // Ask whether a login is configured before making any gated call, so an unprotected app

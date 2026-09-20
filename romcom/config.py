@@ -44,6 +44,10 @@ ENV_VARS = {
     "vimm_jitter": "ROMCOM_VIMM_JITTER",
     "vimm_timeout": "ROMCOM_VIMM_TIMEOUT",
     "vimm_profile_dir": "ROMCOM_VIMM_PROFILE_DIR",
+    "archive_enabled": "ROMCOM_ARCHIVE_ENABLED",
+    "archive_base": "ROMCOM_ARCHIVE_BASE",
+    "archive_delay": "ROMCOM_ARCHIVE_DELAY",
+    "archive_timeout": "ROMCOM_ARCHIVE_TIMEOUT",
     "search_cache_ttl": "ROMCOM_SEARCH_CACHE_TTL",
     "llm_enabled": "ROMCOM_LLM_ENABLED",
     "llm_base": "ROMCOM_LLM_BASE",
@@ -93,6 +97,10 @@ def _env_settings():
         "vimm_jitter": os.getenv("ROMCOM_VIMM_JITTER", "10"),
         "vimm_timeout": os.getenv("ROMCOM_VIMM_TIMEOUT", "120"),
         "vimm_profile_dir": (os.getenv("ROMCOM_VIMM_PROFILE_DIR") or str(ROOT / ".vimm-profile")),
+        "archive_enabled": os.getenv("ROMCOM_ARCHIVE_ENABLED", "false"),
+        "archive_base": (os.getenv("ROMCOM_ARCHIVE_BASE") or "https://archive.org").rstrip("/"),
+        "archive_delay": os.getenv("ROMCOM_ARCHIVE_DELAY", "2"),
+        "archive_timeout": os.getenv("ROMCOM_ARCHIVE_TIMEOUT", "60"),
         "search_cache_ttl": os.getenv("ROMCOM_SEARCH_CACHE_TTL", "360"),
         "llm_enabled": os.getenv("ROMCOM_LLM_ENABLED", "false"),
         "llm_base": (os.getenv("ROMCOM_LLM_BASE") or "http://localhost:11434").rstrip("/"),
@@ -153,6 +161,10 @@ def settings():
         try: s[k] = float(s[k])
         except (TypeError, ValueError): s[k] = dflt
     s["vimm_enabled"] = str(s["vimm_enabled"]).strip().lower() in ("1", "true", "yes", "on")
+    s["archive_enabled"] = str(s["archive_enabled"]).strip().lower() in ("1", "true", "yes", "on")
+    for k, dflt in (("archive_delay", 2.0), ("archive_timeout", 60.0)):
+        try: s[k] = max(0.0, float(s[k]))
+        except (TypeError, ValueError): s[k] = dflt
     try: s["search_cache_ttl"] = max(0.0, float(s["search_cache_ttl"]))
     except (TypeError, ValueError): s["search_cache_ttl"] = 360.0
     s["llm_enabled"] = str(s["llm_enabled"]).strip().lower() in ("1", "true", "yes", "on")

@@ -33,7 +33,7 @@ from .config import settings
 from .db import connect
 from .planner import next_individuals
 from .status import MISSING
-from . import indexer, actions, webdl, vimm, llm
+from . import indexer, actions, webdl, vimm, llm, archive
 from .scanner import scan
 
 MIN_SCORE = 20.0                # rank() floor: % of query tokens that must appear in the release title
@@ -331,6 +331,8 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                 sources = [("romsgames", webdl)]
                 if s["vimm_enabled"]:
                     sources.append(("vimm", vimm))
+                if s["archive_enabled"]:
+                    sources.append(("archive", archive))
                 picked, had_error = None, False
                 for sname, mod in sources:
                     _emit(f"{sname} search: {c['title']}")
