@@ -9,3 +9,5 @@ __pycache__/
 .DS_Store
 reports/
 DAT/
+logs/
+romcom-web*.log

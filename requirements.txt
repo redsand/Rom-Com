@@ -2,3 +2,6 @@ requests>=2.32
 PyYAML>=6.0
 python-dotenv>=1.0
 beautifulsoup4>=4.12
+flask>=3.0
+playwright>=1.40
+playwright-stealth>=1.0
