@@ -635,6 +635,40 @@ def create_app():
 
     return app
 
+# One chat turn occupies a worker thread for as long as it runs -- tool-heavy turns are
+# tens of seconds, and a turn paused on an approval card holds its thread until answered.
+# Waitress defaults to 4, which a single open assistant panel plus the dashboard's
+# once-a-second job polling can exhaust, and an exhausted pool looks exactly like a hung
+# server. Threads are cheap here; starving the poller is not.
+SERVE_THREADS = 16
+# Default is 120s, measured from the last byte. An SSE stream waiting on an approval sends
+# nothing meanwhile, so the default would drop precisely the connection the owner is
+# looking at.
+SERVE_CHANNEL_TIMEOUT = 1800
+
+
+class _AccessLog:
+    """Request logging, which waitress does not do and werkzeug did.
+
+    Not cosmetic: the werkzeug access log is what identified the dead chat stream -- it
+    showed the browser's polling arriving while no /api/chat/stream request ever did, which
+    located the fault in the client rather than the agent. Losing that would be a real
+    regression, so the same one-line-per-request format is kept."""
+
+    def __init__(self, app):
+        self.app = app
+
+    def __call__(self, environ, start_response):
+        def _start(status, headers, exc_info=None):
+            q = environ.get("QUERY_STRING")
+            print(f'{environ.get("REMOTE_ADDR", "-")} - - '
+                  f'[{time.strftime("%d/%b/%Y %H:%M:%S")}] '
+                  f'"{environ.get("REQUEST_METHOD", "-")} {environ.get("PATH_INFO", "-")}'
+                  f'{"?" + q if q else ""}" {str(status).split(" ")[0]} -', flush=True)
+            return start_response(status, headers, exc_info)
+        return self.app(environ, _start)
+
+
 def serve(host="127.0.0.1", port=8927, open_browser=True, debug=False):
     if open_browser:
         import webbrowser
@@ -648,4 +682,16 @@ def serve(host="127.0.0.1", port=8927, open_browser=True, debug=False):
     app.start_watcher_if_on()
     app.start_watchdog()
     app.start_checkpointer()
-    app.run(host=host, port=port, debug=debug)
+    # Werkzeug's server is for development and says so on every boot; this runs as a service
+    # from boot. Waitress is kept optional so a checkout without it still starts, and debug
+    # still means werkzeug because waitress has no reloader or debugger.
+    try:
+        from waitress import serve as waitress_serve
+    except ImportError:
+        waitress_serve = None
+    if waitress_serve and not debug:
+        print(f" * Rom-Com on http://{host}:{port} (waitress, {SERVE_THREADS} threads)", flush=True)
+        waitress_serve(_AccessLog(app), host=host, port=port, threads=SERVE_THREADS,
+                       channel_timeout=SERVE_CHANNEL_TIMEOUT, ident="Rom-Com")
+    else:
+        app.run(host=host, port=port, debug=debug)

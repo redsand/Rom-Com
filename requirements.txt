@@ -8,3 +8,6 @@ flask>=3.0
 # needed -- but the driver protocol does move between releases, so do not float this.
 playwright==1.56.0
 playwright-stealth>=1.0
+# Production WSGI server for the boot service. Optional at runtime -- serve() falls
+# back to werkzeug when it is absent -- but required for the service to be sane.
+waitress>=3.0
