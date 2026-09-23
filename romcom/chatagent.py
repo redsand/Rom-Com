@@ -24,7 +24,9 @@ from . import chattools, chatstore, llmclient
 MAX_ITERATIONS = 8
 TURN_TIMEOUT = 120.0        # seconds of wall clock for the whole turn
 STUCK_REPEAT = 3            # identical consecutive calls before we stop
-HISTORY_DEFAULT = 20
+HISTORY_DEFAULT = 8         # exchanges kept verbatim, not rows — see _window()
+HISTORY_BUDGET = 24000      # chars of verbatim window before tool payloads get trimmed
+TOOL_KEEP = 500             # chars kept from an older tool result when trimming
 
 _SYSTEM = """You are the assistant built into Rom-Com, a personal ROM library manager. \
 You are not a chat toy: you have tools that read the real library and you are expected to \
@@ -107,15 +109,49 @@ def _assemble(sid, registry, query=None):
     summary = _summary_block(sid)
     if summary:
         msgs.append({"role": "system", "content": summary})
-    keep = int(settings().get("chat_history_max") or HISTORY_DEFAULT)
-    rows = [r for r in chatstore.history(sid, limit=keep) if r["role"] != "system"]
-    # Start the window on a user turn. Taking the last N messages can land mid-exchange,
-    # leaving a dangling answer with no question — which reads to the model as if it had
-    # said that unprompted.
-    while rows and rows[0]["role"] != "user":
-        rows.pop(0)
-    msgs += chatstore.to_messages(rows)
+    msgs += chatstore.to_messages(_window(sid))
     return msgs
+
+
+def _window(sid):
+    """The verbatim tail of the thread, measured in exchanges rather than rows.
+
+    A row count is the wrong unit. One tool-heavy turn writes 15-25 tool-result rows, so a
+    20-row window did not span a single exchange: the loop that trimmed back to a user turn
+    then discarded everything up to the newest question, and the model entered the turn
+    having forgotten the conversation. Measured on the real database, sessions of 126 and 32
+    messages both came out with a *zero-row* window.
+
+    So: keep the last `chat_history_max` exchanges whole, then fit them to a character
+    budget by trimming tool payloads oldest-first. Tool output is bulky and reconstructible;
+    what the owner and the assistant actually said is neither, and is never dropped.
+    """
+    from .config import settings
+    turns = int(settings().get("chat_history_max") or HISTORY_DEFAULT)
+    rows = [dict(r) for r in chatstore.history(sid) if r["role"] != "system"]
+    starts = [i for i, r in enumerate(rows) if r["role"] == "user"]
+    if starts:
+        rows = rows[starts[-turns] if len(starts) >= turns else starts[0]:]
+
+    size = lambda: sum(len(r.get("content") or "") for r in rows)
+    if size() > HISTORY_BUDGET:
+        # Never trim the newest exchange: it is the one being answered.
+        last_user = max((i for i, r in enumerate(rows) if r["role"] == "user"), default=0)
+        for r in rows[:last_user]:
+            if r["role"] == "tool" and len(r.get("content") or "") > TOOL_KEEP:
+                r["content"] = r["content"][:TOOL_KEEP] + " …[trimmed]"
+                if size() <= HISTORY_BUDGET:
+                    break
+        # Trimming tool output is not always enough — a long thread is mostly prose, and
+        # prose is never truncated mid-sentence here. Drop whole oldest exchanges instead,
+        # which is honest: the model sees fewer turns rather than mangled ones. The rolling
+        # summary already covers what falls off. Always keep the last two exchanges.
+        while size() > HISTORY_BUDGET:
+            heads = [i for i, r in enumerate(rows) if r["role"] == "user"]
+            if len(heads) < 3:
+                break
+            rows = rows[heads[1]:]
+    return rows
 
 
 MEMORY_BUDGET = 3000        # chars of recalled context

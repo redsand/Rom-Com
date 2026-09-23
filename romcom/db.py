@@ -99,6 +99,16 @@ CREATE TABLE IF NOT EXISTS chat_memory_chunks (
  model TEXT NOT NULL, norm REAL NOT NULL,
  created_at TEXT DEFAULT CURRENT_TIMESTAMP, last_accessed TEXT
 );
+-- Text that should become a memory chunk but could not be embedded yet, because the
+-- embedding model was unreachable at the moment it was produced. Without this the chunk was
+-- dropped by a bare `except: pass` while the summary watermark had already advanced, so that
+-- slice of conversation could never become recallable memory again -- a silent, permanent
+-- hole in long-term memory whenever Ollama happened to be down.
+CREATE TABLE IF NOT EXISTS chat_memory_pending (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, ref_id TEXT,
+ text TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
+ created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS chat_approvals (
  id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER,
  tool TEXT NOT NULL, arguments TEXT NOT NULL, summary TEXT,

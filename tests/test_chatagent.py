@@ -113,7 +113,11 @@ def test_an_existing_session_continues_rather_than_starting_a_new_one(monkeypatc
 
 def test_history_is_capped_to_the_configured_window(monkeypatch, tmp_path):
     """Old turns fall out of the verbatim window; without the cap a long thread would exceed
-    the local model's context on every single request."""
+    the local model's context on every single request.
+
+    The cap counts *exchanges*, not stored rows. As rows it was unusable: one tool-heavy turn
+    writes 15-25 tool results, so the window never spanned a single exchange and the model
+    entered each turn having forgotten the conversation."""
     setup_db(monkeypatch, tmp_path)
     monkeypatch.setenv("ROMCOM_CHAT_HISTORY_MAX", "4")
     from romcom.config import invalidate
@@ -125,9 +129,9 @@ def test_history_is_capped_to_the_configured_window(monkeypatch, tmp_path):
     fake = FakeOllama(turns=[{"tokens": ["ok"]}]).install(monkeypatch)
     chatagent.run_turn(sid, "latest", chattools.build_registry(), Recorder())
     sent = [m["content"] for m in fake.calls[0][1]["messages"] if m["role"] != "system"]
-    # The window is the last 4 stored messages — which lands mid-exchange at a8 — so it is
-    # trimmed forward to the nearest user turn rather than opening on a dangling answer.
-    assert sent == ["q9", "a9", "latest"]
+    # Four exchanges back from "latest" is q7, and the window opens on that question rather
+    # than on a dangling answer.
+    assert sent == ["q7", "a7", "q8", "a8", "q9", "a9", "latest"]
 
 
 # -------------------------------------------------------------------------- guardrails

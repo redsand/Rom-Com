@@ -409,6 +409,61 @@ def store_chunk(kind, text, ref_id=None):
     return cur.lastrowid
 
 
+def store_chunk_durable(kind, text, ref_id=None):
+    """store_chunk, but a model outage defers the work instead of destroying it.
+
+    The caller that matters is summarization, which advances its watermark as soon as the
+    summary text is saved. If embedding then failed, the old code swallowed the exception and
+    the batch was never revisited, so that stretch of conversation silently became
+    unrecallable forever. Queuing the text means the only cost of an outage is a delay.
+
+    Returns the chunk id, or None when the text was queued for a later attempt.
+    """
+    try:
+        return store_chunk(kind, text, ref_id=ref_id)
+    except Exception as e:
+        text = (text or "").strip()
+        if not text:
+            return None
+        db = connect()
+        with db:
+            db.execute("INSERT INTO chat_memory_pending(kind,ref_id,text,last_error)"
+                       " VALUES(?,?,?,?)",
+                       (kind, None if ref_id is None else str(ref_id)[:120], text[:8000],
+                        f"{type(e).__name__}: {e}"[:500]))
+        return None
+
+
+def flush_pending_chunks(limit=25):
+    """Embed whatever was queued while the model was down. Returns how many were stored.
+
+    Cheap when the queue is empty, which is the normal case, so it is safe to call on every
+    turn. Stops at the first failure rather than grinding through the whole backlog: if one
+    embedding call fails the model is down and the rest will fail identically.
+    """
+    db = connect()
+    rows = db.execute("SELECT id,kind,ref_id,text FROM chat_memory_pending"
+                      " ORDER BY id LIMIT ?", (int(limit),)).fetchall()
+    stored = 0
+    for r in rows:
+        try:
+            store_chunk(r["kind"], r["text"], ref_id=r["ref_id"])
+        except Exception as e:
+            with db:
+                db.execute("UPDATE chat_memory_pending SET attempts=attempts+1, last_error=?"
+                           " WHERE id=?", (f"{type(e).__name__}: {e}"[:500], r["id"]))
+            break
+        with db:
+            db.execute("DELETE FROM chat_memory_pending WHERE id=?", (r["id"],))
+        stored += 1
+    return stored
+
+
+def pending_chunks():
+    """How many memory writes are waiting on the embedding model (for doctor/status)."""
+    return connect().execute("SELECT COUNT(*) c FROM chat_memory_pending").fetchone()["c"]
+
+
 def remember_chunks(kind, texts, ref_id=None):
     """Bulk form for summarizer output. One embedding call, one transaction."""
     texts = [t for t in (texts or []) if (t or "").strip()]
@@ -549,6 +604,11 @@ def maybe_summarize(sid, model=None, emit=None):
         if emit:
             emit(name, payload)
     try:
+        # Retry anything a previous outage deferred. Cheap when the queue is empty.
+        try:
+            flush_pending_chunks()
+        except Exception:
+            pass
         pending = _unsummarized(sid)
         if len(pending) < SUMMARY_TRIGGER:
             return None
@@ -579,10 +639,9 @@ def maybe_summarize(sid, model=None, emit=None):
         _set_summary(sid, text, batch[-1]["id"])
         # The summary is also recalled across sessions — "what did we decide about the SNES
         # folder" should work from a new thread.
-        try:
-            store_chunk("session_summary", f"Session {sid}: {text}", ref_id=sid)
-        except Exception:
-            pass
+        # Durable: the watermark has already moved, so losing this chunk would lose that
+        # stretch of conversation from long-term memory permanently.
+        store_chunk_durable("session_summary", f"Session {sid}: {text}", ref_id=sid)
         return text
     except Exception as e:
         say("error", {"message": f"summarization skipped: {type(e).__name__}: {e}"})
