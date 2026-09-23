@@ -34,7 +34,26 @@ from .db import connect
 from .planner import next_individuals
 from .status import MISSING
 from . import indexer, actions, webdl, vimm, llm, archive
+import sqlite3
 from .scanner import scan
+
+
+def _retry_write(db, sql, params, attempts=4, delay=2.0):
+    """Run a write, riding out a transient `database is locked`.
+
+    busy_timeout already covers ordinary contention; this covers what it does not -- one
+    long write transaction elsewhere in the process holding the lock for longer than the
+    timeout. Re-raises once the attempts are spent, so a real failure stays a failure."""
+    for i in range(attempts):
+        try:
+            with db:
+                db.execute(sql, params)
+            return True
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e).lower() or i == attempts - 1:
+                raise
+            time.sleep(delay * (i + 1))
+    return False
 
 MIN_SCORE = 20.0                # rank() floor: % of query tokens that must appear in the release title
 QUEUEABLE = MISSING             # the only statuses worth searching for
@@ -367,8 +386,11 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                     with lock:
                         direct_inflight.discard(url)   # failed — let it be retried later
                     _fail(c, f"{sname} download failed: {ex}"); continue
-                with wdb:
-                    wdb.execute("UPDATE items SET status='DOWNLOADED' WHERE id=?", (c["id"],))
+                # The file is already on disk here. Losing this write to a transient lock
+                # means the item is fetched all over again on a later sweep, so it is worth
+                # retrying past a long-running writer: a bulk catalog edit can hold the
+                # write lock for longer than busy_timeout on its own.
+                _retry_write(wdb, "UPDATE items SET status='DOWNLOADED' WHERE id=?", (c["id"],))
                 try:
                     actions.journal_direct(wdb, c["id"], sname, direct, path)
                 except Exception:
@@ -377,6 +399,16 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                     stats["direct"] += 1
                     direct_inflight.discard(url)        # the ledger now covers this url
                 _emit(c["title"])
+            except Exception as ex:
+                # Without this the thread dies. It happened: three workers were killed by
+                # a `database is locked` on the status write and nothing reported it --
+                # the sweep just stopped making progress with items still queued, which
+                # looks like a stall rather than a crash. One lost item is recoverable on
+                # the next sweep; a lost worker is not.
+                try:
+                    _fail(c, f"direct worker error: {type(ex).__name__}: {ex}")
+                except Exception:
+                    pass
             finally:
                 direct_q.task_done()
 

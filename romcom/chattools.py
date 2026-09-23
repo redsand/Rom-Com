@@ -596,7 +596,9 @@ def _acquire_item(args, ctx):
 
 def _launch_job(ctx, kind, params):
     if not ctx.launch_job(kind, params):
-        return {"error": f"a {kind} job is already running — check job_status before retrying"}
+        article = "an" if kind[:1].lower() in "aeiou" else "a"
+        return {"error": f"{article} {kind} job is already running — check job_status"
+                         " before retrying"}
     return {"started": kind, "params": params}
 
 

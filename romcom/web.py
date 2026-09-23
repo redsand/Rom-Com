@@ -528,15 +528,40 @@ def create_app():
 
     WATCHDOG_INTERVAL = 15.0  # seconds between watcher liveness checks
 
+    # Deliberately generous. A single large transfer can run for minutes without an
+    # emit, so this must be far longer than any plausible quiet stretch -- it is a
+    # wedge detector, not a progress meter.
+    WATCHDOG_STALL_SECS = 900
+
     def _watchdog_tick():
-        """One liveness check: if the watch toggle is on but the watcher thread isn't
-        running — it crashed, or was never started — relaunch it. Does nothing while the
-        watcher is being deliberately stopped (STOP set). Returns True if it relaunched."""
+        """One liveness check: if the watch toggle is on but the watcher is not actually
+        working -- it crashed, was never started, or is wedged -- relaunch it. Does
+        nothing while the watcher is being deliberately stopped (STOP set). Returns True
+        if it relaunched.
+
+        Checking `running` alone was not enough. When the direct-download workers died,
+        the coordinating thread stayed blocked waiting on a queue nothing would ever
+        drain, so the job remained `running: true` with a frozen heartbeat forever. The
+        watchdog never fired, and because every start path refuses while a job claims to
+        be running, acquisition could not be restarted either -- the assistant tried five
+        times and was told "a acquire job is already running" each time. A stall has to
+        count as death, or one hang costs a service restart.
+        """
         try:
-            if settings()["acquire_watch"] and not jobs["acquire"]["running"] \
-                    and not acquirer.STOP.is_set():
-                acquirer.STOP.clear()
-                return _launch("acquire", {"watch": True})
+            if not settings()["acquire_watch"] or acquirer.STOP.is_set():
+                return False
+            j = jobs["acquire"]
+            if j["running"]:
+                beat = j.get("last_beat")
+                if beat is None or (time.monotonic() - beat) < WATCHDOG_STALL_SECS:
+                    return False
+                # Wedged. Release the claim so the relaunch below is allowed to proceed;
+                # the stuck thread is a daemon and cannot block shutdown.
+                j["running"] = False
+                j["error"] = (f"watchdog: no progress for {WATCHDOG_STALL_SECS}s -- "
+                              "treated as stalled and restarted")
+            acquirer.STOP.clear()
+            return _launch("acquire", {"watch": True})
         except Exception:
             pass  # the watchdog itself must never die
         return False
@@ -570,6 +595,7 @@ def create_app():
     def start_checkpointer():
         threading.Thread(target=_checkpointer, daemon=True).start()
 
+    app.jobs = jobs          # test seam: lets a test freeze a heartbeat
     app.watchdog_tick = _watchdog_tick
     app.start_watchdog = start_watchdog
     app.start_checkpointer = start_checkpointer

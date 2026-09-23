@@ -22,6 +22,7 @@ against a live 0.34.0 daemon rather than assumed:
 The final frame carries `eval_count` / `prompt_eval_count` / `total_duration`, which is where
 the token-usage readout comes from — no extra request needed.
 """
+import time
 import json
 import threading
 import time
@@ -152,6 +153,25 @@ def _finalize_tool_calls(state):
     return out
 
 
+# Upstream hiccups worth one more try. Matched on the message text because Ollama relays
+# a cloud provider's failure as an error string rather than a status code once the NDJSON
+# stream has started.
+_TRANSIENT_MARKERS = ("internal server error", "service unavailable", "bad gateway",
+                      "gateway timeout", "temporarily unavailable", "overloaded",
+                      "connection reset", "connection aborted", "timed out",
+                      "502", "503", "504")
+_TRANSIENT_ATTEMPTS = 3
+_TRANSIENT_BACKOFF = 1.5
+
+
+def _transient(exc):
+    """True for an upstream failure worth retrying rather than surfacing."""
+    if isinstance(exc, _ContextOverflow):
+        return False
+    m = str(exc).lower()
+    return any(t in m for t in _TRANSIENT_MARKERS)
+
+
 def chat(messages, tools=None, on_event=None, model=None, stream=True,
          temperature=None, timeout=None, prune_on_overflow=True):
     """One turn against Ollama.
@@ -170,15 +190,34 @@ def chat(messages, tools=None, on_event=None, model=None, stream=True,
     if temperature is not None:
         body["options"] = {"temperature": temperature}
 
-    try:
-        return _run(body, on_event, timeout)
-    except _ContextOverflow:
-        if not prune_on_overflow:
-            raise
-        # One retry, with tool payloads reduced to stubs. Losing old tool output beats
-        # losing the whole conversation.
-        body["messages"] = prune(messages, aggressive=True)
-        return _run(body, on_event, timeout)
+    # A transient upstream failure must not end the turn. Cloud-hosted models return
+    # things like "Internal Server Error (ref: ...)" mid-stream, and that reached the UI
+    # as a dead turn carrying an opaque reference number and no way forward.
+    #
+    # Retried only while nothing has been emitted yet: once tokens have reached the
+    # browser, running the turn again would append a second answer to the first.
+    for attempt in range(_TRANSIENT_ATTEMPTS):
+        emitted = []
+
+        def watch(name, payload, _e=emitted):
+            if name in ("token", "thinking", "tool_call"):
+                _e.append(1)
+            if on_event:
+                on_event(name, payload)
+
+        try:
+            return _run(body, watch, timeout)
+        except _ContextOverflow:
+            if not prune_on_overflow:
+                raise
+            # One retry, with tool payloads reduced to stubs. Losing old tool output
+            # beats losing the whole conversation.
+            body["messages"] = prune(messages, aggressive=True)
+            return _run(body, watch, timeout)
+        except Exception as e:
+            if emitted or attempt == _TRANSIENT_ATTEMPTS - 1 or not _transient(e):
+                raise
+            time.sleep(_TRANSIENT_BACKOFF * (attempt + 1))
 
 
 class _ContextOverflow(RuntimeError):

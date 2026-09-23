@@ -132,8 +132,13 @@ def test_an_old_tool_result_is_dropped_entirely_on_overflow(monkeypatch, tmp_pat
 
 
 def test_a_non_overflow_error_is_not_retried(monkeypatch, tmp_path):
+    """The overflow path prunes and retries; nothing else takes that path.
+
+    The example here used to be "connection reset", which is now deliberately retried as
+    a transient upstream failure — so it no longer tests what this is about. A missing
+    model is permanent: retrying it only makes the user wait longer for the same error."""
     setup_env(monkeypatch, tmp_path)
-    fake = FakeOllama(turns=[{"status": 500, "error": "connection reset"}]).install(monkeypatch)
+    fake = FakeOllama(turns=[{"status": 500, "error": "model 'nope' not found"}]).install(monkeypatch)
     with pytest.raises(RuntimeError):
         llmclient.chat([{"role": "user", "content": "x"}])
     assert len(fake.calls) == 1

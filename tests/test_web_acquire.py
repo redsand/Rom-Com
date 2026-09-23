@@ -1,3 +1,4 @@
+import time
 import threading
 from romcom.db import connect
 from romcom.web import create_app
@@ -277,3 +278,48 @@ def test_next_picks_filter_and_paging(monkeypatch, tmp_path):
 
     d = c.get("/api/next?system=nes").get_json()
     assert d["total"] == 6 and all(i["system"] == "nes" for i in d["items"])
+
+
+def test_watchdog_restarts_a_wedged_watcher(monkeypatch, tmp_path):
+    """A stall has to count as death.
+
+    When the direct-download workers died, the coordinating thread stayed blocked on a queue
+    nothing would ever drain, so the job sat at `running: true` with a frozen heartbeat.
+    Checking `running` alone, the watchdog never fired — and because every start path
+    refuses while a job claims to be running, acquisition could not be restarted either. The
+    assistant tried five times and was told "a acquire job is already running" each time.
+    """
+    from romcom import acquirer
+    from romcom.config import invalidate
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "wedge.db"))
+    db = connect()
+    started, release = threading.Event(), threading.Event()
+
+    def stub(progress=None, **kwargs):
+        started.set(); release.wait(timeout=30); return {}
+    monkeypatch.setattr("romcom.acquirer.auto_acquire", stub)
+    acquirer.STOP.clear()
+    app = create_app()
+    c = app.test_client()
+    try:
+        with db:
+            db.execute("INSERT INTO app_settings(key,value) VALUES('acquire_watch','true')")
+        invalidate()
+        assert app.watchdog_tick() is True        # first launch
+        assert started.wait(2)
+        started.clear()
+
+        health = c.get("/api/acquire/health").get_json()
+        assert health["running"] is True
+        # A live job with a recent heartbeat must be left strictly alone.
+        assert app.watchdog_tick() is False
+
+        # Now freeze the heartbeat, exactly as a wedged sweep does.
+        # Freeze the heartbeat, exactly as a wedged sweep does: the thread is alive and
+        # the flag still says running, but no progress will ever be reported again.
+        app.jobs["acquire"]["last_beat"] = time.monotonic() - 100000
+        assert app.watchdog_tick() is True        # recognised as dead and relaunched
+        assert started.wait(2)
+    finally:
+        release.set()
+        acquirer.STOP.clear()
