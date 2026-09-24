@@ -183,6 +183,30 @@ def cmd_adopt(a):
     from .scanner import adopt_unmatched
     print(json.dumps(adopt_unmatched(root=a.root),indent=2))
 
+def cmd_cores(a):
+    from . import cores
+    if a.install:
+        r = cores.install(systems=a.system or None, all_systems=a.all,
+                          progress=lambda c, s: print(f"  downloading {c} ({s})..."))
+        print(f'installed {r["installed"]} core(s) into {r["dest"]}')
+        for f in r["failed"]:
+            print(f'  FAILED {f["core"]}: {f["error"]}')
+        return
+    st = cores.status()
+    print(f'RetroArch cores folder: {st["cores_dir"]}')
+    print(f'{st["missing_count"]} core(s) missing, blocking {st["games_blocked"]:,} games')
+    print()
+    for r in st["rows"]:
+        mark = "installed" if r["installed"] else "MISSING"
+        print(f'  {r["system"]:<13} {r["games"]:>7,} games  {mark:<10} {str(r["name"] or "-")}')
+        if r["why"]:
+            print(f'      {r["confidence"]}: {r["why"]}')
+        if r["alternative"]:
+            print(f'      alternative: {r["alternative"]}')
+    if st["missing_count"]:
+        print()
+        print("  install them all with:  python -m romcom cores --install")
+
 def cmd_agent(a):
     from . import player
     def ev(name, payload):
@@ -238,6 +262,11 @@ def main():
     aa=s.add_parser("auto-acquire"); aa.add_argument("--poll",type=float,default=None); aa.add_argument("--max-wait",type=float,dest="max_wait",default=None); aa.add_argument("--max-batch",type=int,dest="max_batch",default=None); aa.add_argument("--parallel",type=int,default=None); aa.add_argument("--watch",action="store_true"); aa.set_defaults(fn=cmd_auto_acquire)
     wd=s.add_parser("webdl"); wd.add_argument("ident"); wd.add_argument("--result",type=int); wd.add_argument("--out"); wd.set_defaults(fn=cmd_webdl)
     sc=s.add_parser("scan"); sc.add_argument("path"); sc.add_argument("--no-name-match",action="store_true"); sc.add_argument("--no-adopt",action="store_true"); sc.add_argument("--no-recursive",action="store_true"); sc.set_defaults(fn=cmd_scan)
+    cr=s.add_parser("cores", help="which libretro cores this library needs, and fetch them")
+    cr.add_argument("--install", action="store_true", help="download the missing ones")
+    cr.add_argument("--all", action="store_true", help="every system, not just those with files")
+    cr.add_argument("--system", action="append", help="limit to these systems")
+    cr.set_defaults(fn=cmd_cores)
     ag=s.add_parser("agent", help="run the launch agent in your session (needed for the web Play button)")
     ag.add_argument("--interval", type=float, default=1.0)
     ag.set_defaults(fn=cmd_agent)

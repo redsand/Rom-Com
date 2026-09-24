@@ -28,7 +28,7 @@ emulators:
   gb:      'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/gambatte_libretro.dll" "{rom}"'
   gbc:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/gambatte_libretro.dll" "{rom}"'
   gba:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/mgba_libretro.dll" "{rom}"'
-  nds:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/melonds_libretro.dll" "{rom}"'
+  nds:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/melondsds_libretro.dll" "{rom}"'
   virtualboy: 'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/mednafen_vb_libretro.dll" "{rom}"'
   gamecube: 'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/dolphin_libretro.dll" "{rom}"'
   wii:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/dolphin_libretro.dll" "{rom}"'
