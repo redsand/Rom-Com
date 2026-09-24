@@ -139,13 +139,36 @@ def test_history_is_capped_to_the_configured_window(monkeypatch, tmp_path):
 def test_the_iteration_cap_stops_a_runaway_tool_loop(monkeypatch, tmp_path):
     setup_db(monkeypatch, tmp_path)
     # Distinct arguments each time, so the stuck guard is NOT what stops this — the cap is.
+    # The first 7 rounds run tools; the 8th is the tool-less final round (see below).
     FakeOllama(turns=[{"tool_calls": [{"name": "ping", "arguments": {"n": i}}]}
-                      for i in range(chatagent.MAX_ITERATIONS + 3)]).install(monkeypatch)
+                      for i in range(chatagent.MAX_ITERATIONS)]).install(monkeypatch)
     rec = Recorder()
     out = chatagent.run_turn(None, "loop forever", ping_registry(), rec)
-    assert out["stopped"] and "without a final answer" in out["stopped"]
-    assert rec.names().count("tool_start") == chatagent.MAX_ITERATIONS
+    assert out["stopped"] and "final round" in out["stopped"]
+    assert rec.names().count("tool_start") == chatagent.MAX_ITERATIONS - 1
     assert rec.names()[-1] == "done"          # a terminal event still arrives
+
+
+def test_the_final_round_has_no_tools_so_a_loop_still_concludes(monkeypatch, tmp_path):
+    """The failure this whole change exists for: the owner's real session 17 asked "top 5
+    games" and got 100 tool calls and not one word of answer, because the cap ended the
+    turn instead of forcing a conclusion. The last round must be a synthesis round: the
+    model is offered no tools and can only write an answer."""
+    setup_db(monkeypatch, tmp_path)
+    fake = FakeOllama(
+        [{"tool_calls": [{"name": "ping", "arguments": {"n": i}}]}
+         for i in range(chatagent.MAX_ITERATIONS - 1)] +
+        [{"tokens": ["Here is my answer from what I gathered."]}]
+    ).install(monkeypatch)
+    rec = Recorder()
+    out = chatagent.run_turn(None, "loop then conclude", ping_registry(), rec)
+    assert out["stopped"] is None
+    assert out["content"] == "Here is my answer from what I gathered."
+    # The last model call advertised no tools and carried the nudge.
+    assert fake.tool_names_sent(fake.calls.__len__() - 1) == []
+    last_messages = fake.calls[-1][1]["messages"]
+    assert any(m.get("role") == "system" and "final step" in (m.get("content") or "").lower()
+              for m in last_messages)
 
 
 def test_the_same_call_with_the_same_arguments_three_times_stops_the_turn(monkeypatch, tmp_path):

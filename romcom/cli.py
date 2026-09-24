@@ -303,7 +303,29 @@ def cmd_organize(a):
     from .organizer import organize
     print(json.dumps(organize(a.dest, systems=a.system or None,
                              wanted_only=a.wanted_only, keep_only=a.keep_only, sources=a.source or None,
+                             rating_min=int(settings().get("export_rating_min", 0) or 0),
                              dry_run=a.dry_run), indent=2))
+
+def cmd_recommend(a):
+    from . import recommend
+    rows = recommend.top(system=a.system, n=a.n, include_played=a.include_played)
+    if not rows:
+        print("nothing in hand to recommend — sync community scores or acquire some games first")
+        return
+    for i, r in enumerate(rows, 1):
+        tag = f"  [{r['system']}]" if r["system"] else ""
+        year = f" ({r['year']})" if r["year"] else ""
+        print(f"{i:2}. {r['title']}{year}{tag}  - {r['how']} (rank {r['rank']})")
+
+def cmd_community(a):
+    from . import community
+    if a.action == "test":
+        print(json.dumps(community.test(), indent=2)); return
+    if a.action == "status":
+        print(json.dumps(community.status(), indent=2)); return
+    report = community.sync(systems=a.system or None,
+                            progress=lambda done, total, slug: print(f"[{done}/{total}] {slug}"))
+    print(json.dumps(report, indent=2))
 
 def main():
     p=argparse.ArgumentParser(prog="romcom"); s=p.add_subparsers(dest="cmd",required=True)
@@ -364,6 +386,15 @@ def main():
     og.add_argument("--keep-only",action="store_true",help="only items marked keep")
     og.add_argument("--dry-run",action="store_true",help="report what would be copied, copy nothing")
     og.set_defaults(fn=cmd_organize)
+    rec=s.add_parser("recommend", help="the n best games to play next, in hand now")
+    rec.add_argument("--system", help="one system, or omit for the whole shelf")
+    rec.add_argument("--n", type=int, default=5)
+    rec.add_argument("--include-played", action="store_true", help="let already-played games back in")
+    rec.set_defaults(fn=cmd_recommend)
+    cm=s.add_parser("community", help="crowd scores from public pools (RAWG ratings, RetroAchievements popularity)")
+    cm.add_argument("action", choices=["sync","status","test"], nargs="?", default="status")
+    cm.add_argument("--system", action="append", help="limit a sync to these systems")
+    cm.set_defaults(fn=cmd_community)
     ad=s.add_parser("adopt"); ad.add_argument("--root"); ad.set_defaults(fn=cmd_adopt)
     d=s.add_parser("import-dat"); d.add_argument("path"); d.add_argument("--system",required=True); d.add_argument("--source",default="dat"); d.add_argument("--catalog-only",action="store_true"); d.set_defaults(fn=cmd_import_dat)
     ds=s.add_parser("import-dats"); ds.add_argument("path"); ds.add_argument("--system"); ds.add_argument("--source"); ds.add_argument("--wanted",action="store_true"); ds.add_argument("--json",action="store_true"); ds.set_defaults(fn=cmd_import_dats)

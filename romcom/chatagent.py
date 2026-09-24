@@ -28,6 +28,12 @@ HISTORY_DEFAULT = 8         # exchanges kept verbatim, not rows — see _window(
 HISTORY_BUDGET = 24000      # chars of verbatim window before tool payloads get trimmed
 TOOL_KEEP = 500             # chars kept from an older tool result when trimming
 
+# Pinned onto the message list on the final round, when no tools are offered (see _loop).
+FINAL_NUDGE = ("You have no more tool calls available — this is your final step. "
+               "Answer the owner now, in plain sentences, from what you have already "
+               "gathered. Lead with the answer. If the tools did not yield it, say so "
+               "plainly and name what you would try next.")
+
 _SYSTEM = """You are the assistant built into Rom-Com, a personal ROM library manager. \
 You are not a chat toy: you have tools that read the real library and you are expected to \
 use them. Answer from tool output, never from memory of similar questions.
@@ -55,6 +61,9 @@ HOW TO WORK
   `list_items`.
 - Before filtering by a system or status, call `facets` so you use the exact spelling rather
   than a guess. Systems are short slugs (`nds`, `nes`, `gba`), not full console names.
+- For "what should I play / recommend me games / what's good", call `recommend` — it ranks
+  the library by the owner's ratings and public community scores in one call. Do not
+  assemble a top-N yourself by searching franchise names one at a time.
 - A list tool that returns `total: 0` tells you why in `hint`. Read it and change the call
   accordingly. Never re-issue a call that already returned nothing — the answer will be the
   same nothing, and you have a limited number of steps.
@@ -68,6 +77,14 @@ HOW TO WORK
   information, not a dead end.
 - Never invent an item id, title, or number. If you don't know, look it up.
 - Be concise and concrete. Lead with the answer, then the supporting numbers. No preamble.
+
+REMEMBERING
+- The owner's ratings of games live in the library (the `rating` field), not in memory —
+  read them with tools when taste matters.
+- When the owner states a durable preference — a favourite system, what they like or
+  dislike, a rule about how the library should be run — call `remember_fact` with it
+  right then, with a short key like "favourite_system". Facts are how you keep these
+  between sessions. A one-off detail is not a fact; a preference or rule is.
 
 ACTING
 You can change the library, not just read it. Most writes run immediately: marking one item
@@ -345,9 +362,29 @@ def _loop(sid, registry, emit, cancel=None, model=None):
             if remaining <= 0:
                 stopped = f"turn timed out after {int(TURN_TIMEOUT)}s"
                 break
+            final_round = _iteration == MAX_ITERATIONS - 1
 
             def on_event(name, text):
                 emit("token" if name == "token" else "thinking", {"text": text})
+
+            if final_round:
+                # The old failure mode: a tool-happy local model burns every round on
+                # searches, the cap fires, and the owner gets "stopped after 8 tool
+                # rounds without a final answer" — which is exactly how a session ended
+                # up with 100 tool calls and not one word of answer to "top 5 games".
+                # The last round is therefore never offered tools: the model can only
+                # write the conclusion, so every turn ends in an answer.
+                messages.append({"role": "system", "content": FINAL_NUDGE})
+                turn = llmclient.chat(messages, tools=[], on_event=on_event, model=model,
+                                      timeout=min(remaining, TURN_TIMEOUT))
+                for k, v in (turn.get("usage") or {}).items():
+                    if isinstance(v, (int, float)):
+                        usage_total[k] = usage_total.get(k, 0) + v
+                content += turn.get("content") or ""
+                thinking += turn.get("thinking") or ""
+                if not content.strip():
+                    stopped = "the model produced no answer on the final round"
+                break
 
             turn = llmclient.chat(messages, tools=tools, on_event=on_event, model=model,
                                   timeout=min(remaining, TURN_TIMEOUT))
@@ -398,8 +435,8 @@ def _loop(sid, registry, emit, cancel=None, model=None):
                 messages.append({"role": "tool", "content": text, "tool_name": call["name"]})
             if stopped or paused:
                 break
-        else:
-            stopped = f"stopped after {MAX_ITERATIONS} tool rounds without a final answer"
+        # No for/else any more: the final round guarantees a break, so a turn can no
+        # longer end at the cap with nothing said.
     except Exception as e:
         stopped = f"{type(e).__name__}: {e}"
 

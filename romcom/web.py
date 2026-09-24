@@ -18,7 +18,7 @@ from . import (indexer, actions, acquirer, sab, webdl, webauth, chattools, webch
 
 STATIC = Path(__file__).resolve().parent / "webui"
 
-ITEM_FIELDS = {"authorized", "status", "wanted", "preferred_runtime", "notes", "play_status", "system", "region", "language", "keep"}
+ITEM_FIELDS = {"authorized", "status", "wanted", "preferred_runtime", "notes", "play_status", "system", "region", "language", "keep", "rating"}
 
 # Statuses that mean the file is in hand for a one-file-per-game system.
 IN_HAND = ("FOUND", "DOWNLOADED", "VERIFIED", "NORMALIZED", "INSTALLED", "TESTED")
@@ -86,7 +86,10 @@ def create_app():
                 "archive_enabled", "archive_base", "archive_delay", "archive_timeout",
                 "search_cache_ttl", "llm_enabled", "llm_base", "llm_model", "llm_timeout",
                 "chat_enabled", "chat_model", "chat_embed_model", "chat_history_max",
-                "mcp_enabled", "mcp_servers_path"}
+                "mcp_enabled", "mcp_servers_path",
+                "export_wanted_only", "export_curated_only", "export_rating_min",
+                "rawg_enabled", "rawg_delay", "rawg_jitter", "rawg_timeout", "rawg_budget",
+                "ra_enabled", "ra_delay", "ra_timeout"}
 
     def _settings_payload(db):
         s = settings()
@@ -145,6 +148,16 @@ def create_app():
         if settings()["llm_enabled"]:
             from . import llm
             probes.append(("ollama", lambda: llm.test()))
+        if settings()["rawg_enabled"] or settings()["ra_enabled"]:
+            from . import community
+            # community.test() reports per-provider ok-flags instead of raising; the
+            # probe protocol here is raise-on-failure, so convert.
+            def _community_probe():
+                res = community.test()
+                bad = [f"{k}: {v['detail']}" for k, v in res.items() if not v["ok"]]
+                if bad:
+                    raise Exception("; ".join(bad) or "no provider responded")
+            probes.append(("community", _community_probe))
         out = {}
         for name, fn in probes:
             try:
@@ -165,7 +178,27 @@ def create_app():
         cfg = load_yaml("catalogs.yaml")
         known = {s for meta in cfg.get("catalogs", {}).values() for s in meta.get("systems", [])}
         known |= set(cfg.get("custom", {}).get("systems", []))
-        return jsonify({"systems": systems, "statuses": LIFECYCLE, "all_systems": sorted(known | set(systems))})
+        # Counts per system, so the "All systems" combo is a menu of real choices rather
+        # than blind labels. The count follows the requested view (the same conditions
+        # _item_filter applies), because the number the owner cares about depends on the
+        # question: "what do I have" wants in-hand games, "what am I hunting" wants the
+        # missing ones. Counting the whole catalog regardless of view showed 54,878
+        # arcade entries next to a library that actually has 10,432 — a menu that lies.
+        view = request.args.get("view", "all")
+        cond = ""
+        if view == "wanted":
+            cond = " AND wanted=1"
+        elif view == "missing":
+            cond = f" AND wanted=1 AND status IN {MISSING}"
+        elif view == "satisfied":
+            cond = f" AND status IN {SATISFIED}"
+        counts = {r["system"]: {"total": r["total"], "satisfied": r["satisfied"]}
+                  for r in db.execute(f"""SELECT system, COUNT(*) total,
+                      SUM(CASE WHEN status IN {SATISFIED} THEN 1 ELSE 0 END) satisfied
+                      FROM items WHERE system IS NOT NULL AND COALESCE(is_device,0)=0{cond}
+                      GROUP BY system""")}
+        return jsonify({"systems": systems, "statuses": LIFECYCLE, "all_systems": sorted(known | set(systems)),
+                        "system_counts": counts})
 
     def _item_filter(args):
         # MAME device/bios sets are catalogued because their roms are hard dependencies
@@ -186,7 +219,42 @@ def create_app():
             q += " AND wanted=1"
         elif view == "satisfied":
             q += f" AND status IN {SATISFIED}"
+        # The audition workflow's views: with no crowd scores yet the whole library is
+        # "unranked", and the owner needs a way to see only what has an opinion —
+        # theirs or the crowd's — instead of paging past thousands of NULLs.
+        elif view == "rated":
+            q += " AND rating IS NOT NULL"
+        elif view == "crowd":
+            q += " AND community_score IS NOT NULL"
         return q, p
+
+    # Whitelisted ORDER BYs. Unknown values fall back to the default; SQL here is
+    # only ever assembled from this table, never from the request. `natural` is the
+    # direction that answers the question the column implies (crowd desc = best first,
+    # year desc = newest first); `?dir=asc|desc` flips it — the library's clickable
+    # headers toggle that. NULLS LAST on every single-column sort: the owner's
+    # complaint was "it shows me the unranked games", and COALESCE(x,0) only hides them
+    # in one direction — ascending put every unrated row on top. NULLS LAST keeps the
+    # rows with no opinion at the bottom whichever way the column is flipped.
+    _SORTS = {
+        "default":   ("system,series,series_number,title", "asc"),
+        "system":    ("system,series,series_number,title", "asc"),
+        "title":     ("title", "asc"),
+        "year":      ("year", "desc"),
+        "community": ("community_score", "desc"),
+        "rating":    ("rating", "desc"),
+        "recent":    ("last_played", "desc"),
+    }
+
+    def _order_by(args):
+        frag, natural = _SORTS.get(args.get("sort"), _SORTS["default"])
+        d = args.get("dir") if args.get("dir") in ("asc", "desc") else natural
+        if frag == _SORTS["default"][0]:
+            # The composite default: only the leading column flips, the inner sort
+            # inside each system stays stable.
+            return f"system {'DESC' if d == 'desc' else ''},series,series_number,title".replace(
+                "system ,", "system,")
+        return f"{frag} {'DESC' if d == 'desc' else 'ASC'} NULLS LAST, title"
 
     @app.get("/api/items")
     def api_items():
@@ -195,7 +263,7 @@ def create_app():
         total = db.execute(f"SELECT COUNT(*) c FROM ({q})", p).fetchone()["c"]
         limit = min(int(request.args.get("limit", 200)), 1000)
         offset = int(request.args.get("offset", 0))
-        q += " ORDER BY system,series,series_number,title LIMIT ? OFFSET ?"; p += [limit, offset]
+        q += f" ORDER BY {_order_by(request.args)} LIMIT ? OFFSET ?"; p += [limit, offset]
         # can_play is computed here so the browser never has to know the arcade rule.
         items = [dict(r) | {"can_play": can_play(r)} for r in db.execute(q, p)]
         return jsonify({"total": total, "items": items})
@@ -211,6 +279,14 @@ def create_app():
         allowed = ITEM_FIELDS if kind == "item" else VOLUME_FIELDS
         if field not in allowed:
             return jsonify({"error": f"field must be one of: {', '.join(sorted(allowed))}"}), 400
+        if field == "rating":
+            # Validated 1-10 (or cleared) through the same path the CLI uses, so a typo'd
+            # 11 can never reach the column and every verdict leaves an event row.
+            from . import player
+            try:
+                return jsonify(player.set_rating(ident, value))
+            except ValueError as ex:
+                return jsonify({"error": str(ex)}), 400
         if field in ("authorized", "wanted", "keep"):
             value = 1 if str(value).lower() in ("1", "true", "yes", "on") else 0
         table = "items" if kind == "item" else "volumes"
@@ -365,7 +441,7 @@ def create_app():
     # One background job per kind at a time; state polled by the UI.
     jobs = {k: {"running": False, "done": 0, "total": 0, "current": "", "stats": None,
                 "result": None, "error": None, "last_beat": None}
-            for k in ("import", "scan", "organize", "adopt", "acquire")}
+            for k in ("import", "scan", "organize", "adopt", "acquire", "community")}
     job_lock = threading.Lock()
 
     def _job_fn(kind, params):
@@ -378,10 +454,20 @@ def create_app():
                                      adopt=params.get("adopt", True),
                                      recursive=params.get("recursive", True), progress=prog)
         if kind == "organize":
-            return lambda prog: organize(params["path"], systems=params.get("systems") or None, progress=prog)
+            # The curation gate reads its threshold from settings, not the request, so a
+            # stale browser tab can't silently export the whole library with an old default.
+            s = settings()
+            return lambda prog: organize(params["path"], systems=params.get("systems") or None,
+                                          progress=prog,
+                                          wanted_only=bool(s["export_wanted_only"]),
+                                          keep_only=bool(s["export_curated_only"]),
+                                          rating_min=s["export_rating_min"])
         if kind == "acquire":
             return lambda prog: acquirer.auto_acquire(progress=prog, watch=bool(params.get("watch")),
                                                       stop=acquirer.STOP)
+        if kind == "community":
+            from . import community
+            return lambda prog: community.sync(systems=params.get("systems") or None, progress=prog)
         return lambda prog: adopt_unmatched(root=params.get("path") or None, progress=prog)
 
     def _launch(kind, params):
@@ -592,6 +678,17 @@ def create_app():
     def api_adopt():
         body = request.get_json(force=True, silent=True) or {}
         return start_job("adopt", {"path": (body.get("path") or "").strip()})
+
+    @app.post("/api/community/sync")
+    def api_community_sync():
+        """Pull crowd scores in the background; progress via /api/job/community/status."""
+        body = request.get_json(force=True, silent=True) or {}
+        return start_job("community", {"systems": [s for s in (body.get("systems") or []) if s]})
+
+    @app.get("/api/community/status")
+    def api_community_status():
+        from . import community
+        return jsonify(community.status())
 
     @app.get("/api/job/<kind>/status")
     def api_job_status(kind):

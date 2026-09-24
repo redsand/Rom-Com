@@ -297,3 +297,7 @@ details .label { color: var(--muted); padding: 6px 12px 0; font-size: 11px; text
   box-shadow: 0 4px 14px rgba(0,0,0,.15); max-width: 360px; font-size: 13px;
 }
 .toast.err { border-left-color: var(--critical); }
+
+/* Sortable library headers: click to sort, click again to flip. */
+#lib-table th[data-sort] { cursor: pointer; user-select: none; }
+#lib-table th[data-sort]:hover { color: var(--ink); }

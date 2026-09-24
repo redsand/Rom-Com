@@ -93,6 +93,53 @@ def test_unkeep_reverses_it(monkeypatch, tmp_path):
     assert row["keep"] == 0 and row["play_status"] == "SKIP"
 
 
+# ------------------------------------------------------------- rating (1-10)
+
+def test_a_rating_records_the_verdict_and_its_event(monkeypatch, tmp_path):
+    """The gap the owner named: "i cant mark what i like as a game to rank it". The
+    rating is the graded version of keep — it feeds recommendations and the export
+    threshold without an all-or-nothing flag."""
+    db, _ = setup(monkeypatch, tmp_path, {"snes": '{rom}'})
+    r = player.set_rating("snes-ct", 8, db=db)
+    assert r["rating"] == 8
+    assert db.execute("SELECT rating FROM items WHERE id='snes-ct'").fetchone()["rating"] == 8
+    assert "8" in db.execute("SELECT detail FROM events WHERE event='rated'"
+                             ).fetchone()["detail"]
+
+
+def test_rating_rejects_everything_outside_one_to_ten(monkeypatch, tmp_path):
+    """0 would be a verdict someone never made; 11 is noise; "high" is a chat model."""
+    db, _ = setup(monkeypatch, tmp_path, {"snes": '{rom}'})
+    for bad in (0, 11, -3, "high", 2.5, True):
+        with pytest.raises(ValueError):
+            player.set_rating("snes-ct", bad, db=db)
+    assert db.execute("SELECT rating FROM items").fetchone()["rating"] is None
+
+
+def test_clearing_the_rating_restores_never_auditioned(monkeypatch, tmp_path):
+    """NULL is "never auditioned", not zero — 0 would itself be a rating."""
+    db, _ = setup(monkeypatch, tmp_path, {"snes": '{rom}'})
+    player.set_rating("snes-ct", 5, db=db)
+    player.set_rating("snes-ct", None, db=db)
+    assert db.execute("SELECT rating FROM items").fetchone()["rating"] is None
+    assert db.execute("SELECT COUNT(*) c FROM events WHERE event='unrated'"
+                      ).fetchone()["c"] == 1
+
+
+def test_a_good_rating_exports_without_keep(monkeypatch, tmp_path):
+    """The export gate is keep OR rating>=threshold, so a game the owner loved earns a
+    slot on the card even when nobody clicked Keep."""
+    from romcom.organizer import organize
+    db, rom = setup(monkeypatch, tmp_path, {"snes": '{rom}'})
+    player.set_rating("snes-ct", 8, db=db)
+    r = organize(str(tmp_path / "card"), keep_only=True, rating_min=7, dry_run=True)
+    assert r["would_copy"] == 2          # the rom + its manual, i.e. this item
+    # and one star short of the threshold keeps it off the card
+    player.set_rating("snes-ct", 6, db=db)
+    r2 = organize(str(tmp_path / "card2"), keep_only=True, rating_min=7, dry_run=True)
+    assert r2["would_copy"] == 0
+
+
 def test_kept_reports_the_size_of_the_export(monkeypatch, tmp_path):
     """The number that decides whether it fits on the card."""
     db, _ = setup(monkeypatch, tmp_path, {"snes": '{rom}'})

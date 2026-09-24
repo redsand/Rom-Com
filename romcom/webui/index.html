@@ -57,9 +57,19 @@
         <option value="wanted">Wanted</option>
         <option value="missing" selected>Missing (wanted, nothing on disk)</option>
         <option value="satisfied">Satisfied</option>
+        <option value="rated">Rated by me</option>
+        <option value="crowd">Crowd-scored</option>
       </select>
       <select id="f-system"><option value="">All systems</option></select>
       <select id="f-status"><option value="">All statuses</option></select>
+      <select id="f-sort" title="Sort order">
+        <option value="system">Sort: system</option>
+        <option value="title">Sort: title</option>
+        <option value="year">Sort: year</option>
+        <option value="community">Sort: crowd score</option>
+        <option value="rating">Sort: my rating</option>
+        <option value="recent">Sort: recently played</option>
+      </select>
       <span id="lib-count" class="count"></span>
       <span style="flex:1"></span>
       <select id="bulk-action">
@@ -77,7 +87,12 @@
     <div class="tablewrap">
       <table id="lib-table">
         <thead><tr>
-          <th>Title</th><th>System</th><th>Year</th><th>Status</th>
+          <th data-sort="title" data-label="Title">Title</th>
+          <th data-sort="system" data-label="System">System</th>
+          <th data-sort="year" data-label="Year">Year</th>
+          <th>Status</th>
+          <th class="c" data-sort="community" data-label="Crowd" title="Crowd score 0-100 from public pools (romcom community sync)">Crowd</th>
+          <th class="c" data-sort="rating" data-label="Rating" title="Your 1-10 verdict after playing — drives export alongside Keep">Rating</th>
           <th class="c">Authorized</th><th class="c">Wanted</th><th class="c" title="Marked for export to the card">Keep</th><th></th>
         </tr></thead>
         <tbody></tbody>
@@ -196,7 +211,8 @@
         <button id="org-start" class="primary">Export</button>
       </div>
       <p class="sub">Copies every scanned-and-matched file into a per-system folder layout. Nothing is moved
-        or deleted; files already present at the destination are skipped, so re-running just tops up.</p>
+        or deleted; files already present at the destination are skipped, so re-running just tops up.
+        Curation gates apply (wanted-only / kept &amp; rated ≥ min rating) — see Settings → Export curation.</p>
       <div id="org-progress" hidden>
         <div class="meter big"><i id="org-bar" style="width:0%"></i></div>
         <div class="sub" id="org-current"></div>
@@ -366,6 +382,54 @@
         <input id="set-llm_timeout" type="search" placeholder="60" spellcheck="false" style="width:90px">
         <span class="sub">seconds per request</span>
       </div>
+    </div>
+    <div class="card">
+      <h2>Export curation <span class="hint">what earns a slot on the card</span></h2>
+      <div class="filters">
+        <label class="autolabel"><input type="checkbox" id="set-export_wanted_only"> export only items marked wanted</label>
+        <label class="autolabel"><input type="checkbox" id="set-export_curated_only"> export only kept &amp; rated games</label>
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Min rating</span>
+        <input id="set-export_rating_min" type="search" placeholder="0" spellcheck="false" style="width:90px">
+        <span class="sub">1-10; with "kept &amp; rated" on, a rating at or above this exports even without Keep. 0 = ignore.</span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Community scores <span class="hint">crowd rankings from free public pools — rate games, then stop playing at random</span></h2>
+      <div class="filters">
+        <label class="autolabel"><input type="checkbox" id="set-rawg_enabled"> RAWG ratings</label>
+        <label class="autolabel"><input type="checkbox" id="set-ra_enabled"> RetroAchievements popularity</label>
+        <span class="sub">keys live in .env: RAWG_API_KEY, RA_USERNAME, RA_API_KEY</span>
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">RAWG pacing</span>
+        <input id="set-rawg_delay" type="search" placeholder="1.5" spellcheck="false" style="width:90px">
+        <span class="sub">s between requests</span>
+        <span class="count" style="width:60px">jitter</span>
+        <input id="set-rawg_jitter" type="search" placeholder="0.8" spellcheck="false" style="width:90px">
+        <span class="count" style="width:60px">timeout</span>
+        <input id="set-rawg_timeout" type="search" placeholder="30" spellcheck="false" style="width:90px">
+        <span class="count" style="width:60px">budget</span>
+        <input id="set-rawg_budget" type="search" placeholder="400" spellcheck="false" style="width:90px">
+        <span class="sub">requests/day (free tier: 20k/month)</span>
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">RA pacing</span>
+        <input id="set-ra_delay" type="search" placeholder="1.0" spellcheck="false" style="width:90px">
+        <span class="sub">s between requests</span>
+        <span class="count" style="width:60px">timeout</span>
+        <input id="set-ra_timeout" type="search" placeholder="30" spellcheck="false" style="width:90px">
+      </div>
+      <div class="filters">
+        <button id="community-sync" class="ghost">Sync scores now</button>
+        <span id="community-status" class="sub">coverage: not loaded</span>
+      </div>
+      <div id="community-progress" hidden>
+        <div class="meter big"><i id="community-bar" style="width:0%"></i></div>
+        <div class="sub" id="community-current"></div>
+      </div>
+      <div id="community-result"></div>
     </div>
     <div class="filters">
       <button id="set-save" class="primary">Save settings</button>

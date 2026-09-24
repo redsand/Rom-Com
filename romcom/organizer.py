@@ -45,7 +45,7 @@ def _safe(name):
 
 
 def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
-             dry_run=False, keep_only=False):
+             dry_run=False, keep_only=False, rating_min=None):
     """Copy files matched to a catalog item into <dest>/<system>/<filename>.
 
     Files are copied (never moved); an existing target of the same size is skipped,
@@ -57,6 +57,10 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     curating a library and then deploying a subset of it. Off by default so existing callers
     keep their behaviour.
 
+    `keep_only` restricts the export to items marked keep. `rating_min` widens that gate to
+    "keep OR rated at least N", because keep alone is all-or-nothing: an owner who rates a
+    game 8 should not have to also remember a second checkbox. 0/None disables it.
+
     `sources` restricts by `catalog_source`. Arcade is the case that needs it: a flat MAME
     dump leaves hundreds of loose chip files adopted as `local` items with names like
     `115b101`, and copying those to a card is pure noise next to the catalogued sets.
@@ -65,10 +69,16 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     touching the destination — worth doing before writing to a card.
     """
     db = connect()
+    rating_min = int(rating_min or 0)
+    # The threshold only widens the keep gate while it is on: the third `?` is the
+    # on/off switch, so 0 (off) cannot accidentally widen the gate to everything —
+    # COALESCE(rating,0) >= 0 would have passed every unrated item straight to the card.
     rows = db.execute("""SELECT f.path, i.system, i.title, i.external_id FROM files f
       JOIN items i ON i.id=f.matched_item_id
-      WHERE (? = 0 OR i.wanted = 1) AND (? = 0 OR i.keep = 1)
-      ORDER BY i.system, i.title""", (1 if wanted_only else 0, 1 if keep_only else 0)).fetchall()
+      WHERE (? = 0 OR i.wanted = 1)
+        AND (? = 0 OR i.keep = 1 OR (? > 0 AND COALESCE(i.rating,0) >= ?))
+      ORDER BY i.system, i.title""",
+      (1 if wanted_only else 0, 1 if keep_only else 0, rating_min, rating_min)).fetchall()
     # Arcade is built, not copied. One physical file belongs to many sets, and
     # `files.matched_item_id` records a single owner, so copying matched files leaves every
     # set but one incomplete -- galaga came out missing prom-2.5c that way. A flattened dump

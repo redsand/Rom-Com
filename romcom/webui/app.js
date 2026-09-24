@@ -163,15 +163,19 @@ setInterval(() => {
 }, 15000);
 
 /* ---------- Library ---------- */
-const lib = { offset: 0, limit: 200, total: 0 };
+const lib = { offset: 0, limit: 200, total: 0, sort: "system", dir: "asc" };
+
+// The natural direction per sort, matching web.py's _SORTS: the first click on a
+// column answers the question the column implies (crowd desc = best first, year desc =
+// newest first), and the second click flips it.
+const NATURAL_DIR = { system: "asc", title: "asc", year: "desc",
+                      community: "desc", rating: "desc", recent: "desc" };
 
 async function initFacets() {
   try {
     const f = await api("/api/facets");
     LIFECYCLE = f.statuses || LIFECYCLE_FALLBACK;
-    $("#f-system").innerHTML = `<option value="">All systems</option>` +
-      f.systems.map(s => `<option>${esc(s)}</option>`).join("");
-    $("#next-system").innerHTML = $("#f-system").innerHTML;
+    await refreshSystemCounts();
     $("#f-status").innerHTML = `<option value="">All statuses</option>` +
       LIFECYCLE.map(s => `<option>${esc(s)}</option>`).join("");
     $("#imp-system").innerHTML = `<option value="">Auto-detect system</option>` +
@@ -179,11 +183,34 @@ async function initFacets() {
   } catch (e) { toast("Facets failed: " + e.message, true); }
 }
 
+// Every system names how many items it holds under the CURRENT view, so the combo
+// answers "what do I have" in the Satisfied view and "what am I hunting" in Missing.
+async function refreshSystemCounts() {
+  try {
+    const f = await api("/api/facets?view=" + encodeURIComponent($("#f-view").value));
+    const counts = f.system_counts || {};
+    const grand = Object.values(counts).reduce((a, c) => a + (c.total || 0), 0);
+    const selected = $("#f-system").value;
+    $("#f-system").innerHTML = `<option value="">All systems (${grand.toLocaleString()})</option>` +
+      f.systems.map(s => {
+        const c = counts[s];
+        return `<option value="${esc(s)}">${esc(s)}${c ? ` (${(c.total || 0).toLocaleString()})` : ""}</option>`;
+      }).join("");
+    $("#f-system").value = selected;   // a refetch must never yank the owner's choice away
+    // The dashboard's next-picks filter shares the same system list; keep its choice too.
+    const nextSel = $("#next-system").value;
+    $("#next-system").innerHTML = $("#f-system").innerHTML;
+    $("#next-system").value = nextSel;
+  } catch (e) { /* counts are a nicety; the library itself still loads */ }
+}
+
 function libQuery() {
   const p = new URLSearchParams({limit: lib.limit, offset: lib.offset, view: $("#f-view").value});
   if ($("#f-q").value.trim()) p.set("q", $("#f-q").value.trim());
   if ($("#f-system").value) p.set("system", $("#f-system").value);
   if ($("#f-status").value) p.set("status", $("#f-status").value);
+  p.set("sort", lib.sort);
+  p.set("dir", lib.dir);
   return p;
 }
 
@@ -200,11 +227,21 @@ function itemRow(r) {
   const series = r.series ? `<div class="sub">${esc(r.series)}${r.series_number ? " #" + r.series_number : ""}</div>` : "";
   const statusSel = `<select class="status-edit" data-id="${esc(r.id)}">` +
     LIFECYCLE.map(s => `<option ${s === r.status ? "selected" : ""}>${esc(s)}</option>`).join("") + `</select>`;
+  // Crowd score from public pools; the tooltip says who vouched for the number.
+  const crowd = r.community_score == null ? `<span class="sub">—</span>` :
+    `<span title="${esc(r.community_source || "community")}">${r.community_score}</span>`;
+  // The owner's own 1-10 verdict; empty is "never auditioned", not zero.
+  const ratingSel = `<select class="rating-edit" data-id="${esc(r.id)}" title="Your 1-10 verdict (blank = unrated)">` +
+    `<option value="" ${r.rating == null ? "selected" : ""}>—</option>` +
+    Array.from({length: 10}, (_, i) => i + 1).map(n =>
+      `<option ${n === r.rating ? "selected" : ""}>${n}</option>`).join("") + `</select>`;
   return `<tr data-id="${esc(r.id)}">
     <td><div>${esc(r.title)}</div>${series}<div class="sub">${esc(r.id)}</div></td>
     <td>${esc(r.system || "—")}</td>
     <td class="r">${r.year || "—"}</td>
     <td>${badge(r.status)} ${statusSel}</td>
+    <td class="c">${crowd}</td>
+    <td class="c">${ratingSel}</td>
     <td class="c"><input type="checkbox" class="flag" data-field="authorized" data-id="${esc(r.id)}" ${r.authorized ? "checked" : ""}></td>
     <td class="c"><input type="checkbox" class="flag" data-field="wanted" data-id="${esc(r.id)}" ${r.wanted ? "checked" : ""}></td>
     <td class="c"><input type="checkbox" class="flag" data-field="keep" data-id="${esc(r.id)}" ${r.keep ? "checked" : ""} title="Mark for export to the card"></td>
@@ -234,7 +271,7 @@ async function loadLibrary(append = false) {
       // The filters (not the catalog) are hiding everything — say so and offer the way out.
       const p = libQuery(); p.set("view", "all"); p.set("limit", "1");
       const all = await api("/api/items?" + p);
-      if (all.total) body.innerHTML = `<tr><td colspan="7" class="sub" style="padding:20px">
+      if (all.total) body.innerHTML = `<tr><td colspan="9" class="sub" style="padding:20px">
         No <b>${esc($("#f-view").selectedOptions[0].text)}</b> items match — but ${all.total.toLocaleString()}
         cataloged items do. Imported catalogs start as not-wanted; switch to
         <button class="small ghost" id="lib-showall">All items</button> and use the bulk action to flag what you want.</td></tr>`;
@@ -279,8 +316,33 @@ $("#lib-own").addEventListener("click", async () => {
 
 let debounce;
 $("#f-q").addEventListener("input", () => { clearTimeout(debounce); debounce = setTimeout(() => loadLibrary(), 300); });
-["#f-view", "#f-system", "#f-status"].forEach(s => $(s).addEventListener("change", () => loadLibrary()));
+$("#f-view").addEventListener("change", () => { refreshSystemCounts(); loadLibrary(); });
+["#f-system", "#f-status"].forEach(s => $(s).addEventListener("change", () => loadLibrary()));
+$("#f-sort").addEventListener("change", () => {
+  lib.sort = $("#f-sort").value; lib.dir = NATURAL_DIR[lib.sort] || "asc";
+  renderSortArrows(); loadLibrary();
+});
 $("#lib-more").addEventListener("click", () => { lib.offset += lib.limit; loadLibrary(true); });
+
+// Click a column header to sort by it; click again to flip the direction. The arrow on
+// the active column is the only feedback the direction ever gets, so it is always drawn.
+document.querySelectorAll("#lib-table thead th[data-sort]").forEach(th =>
+  th.addEventListener("click", () => {
+    const key = th.dataset.sort;
+    if (lib.sort === key) lib.dir = lib.dir === "desc" ? "asc" : "desc";
+    else { lib.sort = key; lib.dir = NATURAL_DIR[key] || "asc"; }
+    $("#f-sort").value = lib.sort;   // the dropdown and the headers never disagree
+    renderSortArrows();
+    loadLibrary();
+  }));
+
+function renderSortArrows() {
+  document.querySelectorAll("#lib-table thead th[data-sort]").forEach(th => {
+    const active = th.dataset.sort === lib.sort;
+    th.textContent = th.dataset.label + (active ? (lib.dir === "desc" ? " ▼" : " ▲") : "");
+  });
+}
+renderSortArrows();
 
 $("#lib-table").addEventListener("change", async e => {
   const t = e.target;
@@ -295,6 +357,10 @@ $("#lib-table").addEventListener("change", async e => {
       const r = await post(`/api/items/${encodeURIComponent(t.dataset.id)}`, {field: "status", value: t.value});
       toast(`${r.title}: status ${r.status}`);
       t.closest("td").querySelector(".badge").outerHTML = badge(r.status);
+    } else if (t.matches("select.rating-edit")) {
+      const r = await post(`/api/items/${encodeURIComponent(t.dataset.id)}`,
+                           {field: "rating", value: t.value === "" ? "" : parseInt(t.value, 10)});
+      toast(r.rating ? `${r.title}: rated ${r.rating}` : `${r.title}: rating cleared`);
     }
   } catch (err) { toast(err.message, true); loadLibrary(); }
 });
@@ -488,6 +554,8 @@ const JOBS = {
   scan:     {wrap: "#scan-progress", bar: "#scan-bar", cur: "#scan-current", btn: "#scan-start", out: "#scan-result",  render: renderScanResult,     liveRender: renderScanLive, doneMsg: "Scan finished"},
   organize: {wrap: "#org-progress",  bar: "#org-bar",  cur: "#org-current",  btn: "#org-start",  out: "#org-result",   render: renderOrganizeResult, doneMsg: "Export finished"},
   acquire:  {wrap: "#acq-progress",  bar: "#acq-bar",  cur: "#acq-current",  btn: "#acq-start",  out: "#acq-result",   render: renderAcquireResult, liveRender: renderAcquireLive, doneMsg: "Download run finished"},
+  // Lives on the Settings tab; its render refills the coverage line under the button.
+  community:{wrap: "#community-progress", bar: "#community-bar", cur: "#community-current", btn: "#community-sync", out: "#community-result", render: renderCommunityResult, doneMsg: "Crowd scores synced"},
 };
 const jobTimers = {};
 
@@ -578,6 +646,27 @@ $("#org-start").addEventListener("click", () => {
   const systems = $("#org-systems").value.split(",").map(s => s.trim()).filter(Boolean);
   startJob("organize", "/api/organize", {path, systems});
 });
+
+$("#community-sync").addEventListener("click", () => startJob("community", "/api/community/sync", {}));
+
+function renderCommunityResult(r) {
+  const errs = (r.errors || []).length;
+  const head = `${(r.scored || 0).toLocaleString()} items updated across ` +
+               `${Object.keys(r.systems || {}).length} systems`;
+  const tail = errs ? ` — ${errs} provider problem(s): ${esc((r.errors || []).join(" | "))}` : "";
+  $("#community-result").innerHTML = `<p class="sub">${head}${tail}</p>`;
+  refreshCommunityStatus();
+}
+
+async function refreshCommunityStatus() {
+  try {
+    const s = await api("/api/community/status");
+    const srcs = Object.entries(s.by_source || {}).map(([k, v]) => `${k}: ${v.n.toLocaleString()}`).join(", ");
+    $("#community-status").textContent = s.covered_items
+      ? `${s.covered_items.toLocaleString()} items scored (${srcs || "none yet"}) — RAWG requests left today: ${s.rawg_budget_left}/${s.rawg_budget}`
+      : "no scores yet — sync first";
+  } catch (e) { $("#community-status").textContent = e.message; }
+}
 
 function renderScanLive(st, s) {
   const pct = s.done ? (100 * (st.matched || 0) / s.done) : 0;
@@ -713,7 +802,10 @@ const SET_KEYS = ["nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "s
                   "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout",
                   "vimm_enabled", "vimm_base", "vimm_dl_base", "vimm_delay", "vimm_jitter", "vimm_timeout",
                   "archive_enabled", "archive_base", "archive_delay", "archive_timeout",
-                  "search_cache_ttl", "llm_enabled", "llm_base", "llm_model", "llm_timeout"];
+                  "search_cache_ttl", "llm_enabled", "llm_base", "llm_model", "llm_timeout",
+                  "export_wanted_only", "export_curated_only", "export_rating_min",
+                  "rawg_enabled", "rawg_delay", "rawg_jitter", "rawg_timeout", "rawg_budget",
+                  "ra_enabled", "ra_delay", "ra_timeout"];
 
 const SRC_LABEL = { ui: "saved in UI", env: "from .env", default: "default" };
 
@@ -745,6 +837,7 @@ function renderSettings(d) {
         <span class="mark">${c.ok ? "✓" : "✕"}</span>
         <span class="n">${esc(c.name)}</span><span class="d">${esc(c.detail)}</span></div>`).join("");
   }).catch(e => { $("#settings-doctor").textContent = e.message; });
+  refreshCommunityStatus();
 }
 
 async function loadSettings() {
@@ -773,7 +866,8 @@ $("#set-test").addEventListener("click", async () => {
   out.innerHTML = `<div class="check"><span class="mark">…</span><span class="d">Testing connections…</span></div>`;
   try {
     const r = await post("/api/settings/test", {});
-    const names = { indexer: "NZB indexer", sabnzbd: "SABnzbd", romsgames: "romsgames.net" };
+    const names = { indexer: "NZB indexer", sabnzbd: "SABnzbd", romsgames: "romsgames.net",
+                    community: "community scores (RAWG / RetroAchievements)" };
     out.innerHTML = Object.entries(r).map(([k, v]) => `
       <div class="check ${v.ok ? "ok" : "bad"}">
         <span class="mark">${v.ok ? "✓" : "✕"}</span>

@@ -235,6 +235,36 @@ def set_keep(ident, on=True, db=None):
     return {"item": item["id"], "title": item["title"], "keep": bool(on)}
 
 
+def set_rating(ident, rating, db=None):
+    """The owner's 1-10 verdict after playing. None/0 clears it. Feeds recommendations
+    and (via the export threshold) the card, without needing keep's all-or-nothing."""
+    db = db or connect()
+    item = _item(db, ident)
+    if rating is None or rating == "":
+        with db:
+            db.execute("UPDATE items SET rating=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                       (item["id"],))
+            db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
+                       (item["id"], "unrated", item["title"][:200]))
+        return {"item": item["id"], "title": item["title"], "rating": None}
+    # bool is an int subclass (True would rate the game 1) and a float truncates silently
+    # ("8.5 stars"), so both are refused before the int() coercion can accept them.
+    if isinstance(rating, bool) or (isinstance(rating, float) and not rating.is_integer()):
+        raise ValueError(f"rating must be an integer 1-10, not {rating!r}")
+    try:
+        rating = int(rating)
+    except (TypeError, ValueError):
+        raise ValueError(f"rating must be an integer 1-10, not {rating!r}")
+    if not 1 <= rating <= 10:
+        raise ValueError(f"rating must be 1-10, not {rating}")
+    with db:
+        db.execute("UPDATE items SET rating=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                   (rating, item["id"]))
+        db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
+                   (item["id"], "rated", f"{item['title'][:190]} -> {rating}"))
+    return {"item": item["id"], "title": item["title"], "rating": rating}
+
+
 def kept(system=None, db=None):
     """What is currently marked for export, with its on-disk size."""
     db = db or connect()

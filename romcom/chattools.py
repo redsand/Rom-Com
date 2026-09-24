@@ -469,6 +469,16 @@ def _next_picks(args, ctx):
     return {"total": total, "returned": len(items), "items": items}
 
 
+def _recommend(args, ctx):
+    from .recommend import summary as recommend_summary
+    try:
+        n = max(1, min(10, int(args.get("n") or 5)))
+    except (TypeError, ValueError):
+        n = 5
+    return recommend_summary(system=(args.get("system") or None), n=n,
+                             include_played=bool(args.get("include_played")))
+
+
 def _download_ledger(args, ctx):
     db = connect()
     limit = _limit(args)
@@ -788,6 +798,17 @@ def build_registry(ctx=None):
              "status. Call this before filtering by a system or status so the exact spelling is "
              "correct instead of guessed.",
              _obj({}), _facets),
+        Tool("recommend",
+             "The best games to play next: ranks what is actually in hand (playable, junk "
+             "excluded) by public community score and the owner's own ratings, favouring games "
+             "not yet played or kept. Use this for 'what should I play', 'recommend me "
+             "something', 'top games'. One call — do not assemble a top-N by searching "
+             "franchise names one at a time.",
+             _obj({"system": dict(_STR, description="optional: one system slug, e.g. 'snes'"),
+                   "n": dict(_INT, description="how many (default 5, max 10)"),
+                   "include_played": dict(_BOOL, description="also suggest already-played games "
+                                                             "(default false: the unplayed shelf comes first)")}),
+             _recommend),
         Tool("list_items",
              "List catalog items with filters, paging and a total count. Same filters as the "
              "Library tab. Use for 'show me NES items', 'which titles are missing', 'what's "

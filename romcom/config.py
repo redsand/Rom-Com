@@ -59,13 +59,25 @@ ENV_VARS = {
     "chat_history_max": "ROMCOM_CHAT_HISTORY_MAX",
     "mcp_enabled": "ROMCOM_MCP_ENABLED",
     "mcp_servers_path": "ROMCOM_MCP_SERVERS",
+    "export_wanted_only": "ROMCOM_EXPORT_WANTED_ONLY",
+    "export_curated_only": "ROMCOM_EXPORT_CURATED_ONLY",
+    "export_rating_min": "ROMCOM_EXPORT_RATING_MIN",
+    "rawg_enabled": "ROMCOM_RAWG_ENABLED",
+    "rawg_delay": "ROMCOM_RAWG_DELAY",
+    "rawg_jitter": "ROMCOM_RAWG_JITTER",
+    "rawg_timeout": "ROMCOM_RAWG_TIMEOUT",
+    "rawg_budget": "ROMCOM_RAWG_BUDGET",
+    "ra_enabled": "ROMCOM_RA_ENABLED",
+    "ra_delay": "ROMCOM_RA_DELAY",
+    "ra_timeout": "ROMCOM_RA_TIMEOUT",
 }
-# Deliberately NOT here: the web master login (ROMCOM_WEB_USER/ROMCOM_WEB_PASS) and the
-# MCP key (ROMCOM_MCP_KEY). A key absent from _env_settings() is invisible to settings(),
+# Deliberately NOT here: the web master login (ROMCOM_WEB_USER/ROMCOM_WEB_PASS), the
+# MCP key (ROMCOM_MCP_KEY), and the community-source API credentials (RA_USERNAME,
+# RA_API_KEY, RAWG_API_KEY). A key absent from _env_settings() is invisible to settings(),
 # so it can never be persisted to app_settings, can never be echoed by GET /api/settings,
-# and can never be edited from the Settings tab. webauth.py reads those via os.getenv —
-# the settings-precedence system IS the security boundary, which is why nothing has to be
-# masked out of the payload afterwards.
+# and can never be edited from the Settings tab. webauth.py and community.py read those
+# via os.getenv — the settings-precedence system IS the security boundary, which is why
+# nothing has to be masked out of the payload afterwards.
 
 def _env_settings():
     return {
@@ -116,6 +128,20 @@ def _env_settings():
         "chat_history_max": os.getenv("ROMCOM_CHAT_HISTORY_MAX", "20"),
         "mcp_enabled": os.getenv("ROMCOM_MCP_ENABLED", "false"),
         "mcp_servers_path": os.getenv("ROMCOM_MCP_SERVERS", str(ROOT / "mcp-servers.json")),
+        # Export gates, off by default so existing deploys keep exporting everything.
+        "export_wanted_only": os.getenv("ROMCOM_EXPORT_WANTED_ONLY", "false"),
+        "export_curated_only": os.getenv("ROMCOM_EXPORT_CURATED_ONLY", "false"),
+        "export_rating_min": os.getenv("ROMCOM_EXPORT_RATING_MIN", "0"),
+        # RAWG is a free 20k-requests/month tier: politeness pacing plus a hard daily
+        # budget (requests/day) so a big sync can never burn the month in a day.
+        "rawg_enabled": os.getenv("ROMCOM_RAWG_ENABLED", "false"),
+        "rawg_delay": os.getenv("ROMCOM_RAWG_DELAY", "1.5"),
+        "rawg_jitter": os.getenv("ROMCOM_RAWG_JITTER", "0.8"),
+        "rawg_timeout": os.getenv("ROMCOM_RAWG_TIMEOUT", "30"),
+        "rawg_budget": os.getenv("ROMCOM_RAWG_BUDGET", "400"),
+        "ra_enabled": os.getenv("ROMCOM_RA_ENABLED", "false"),
+        "ra_delay": os.getenv("ROMCOM_RA_DELAY", "1.0"),
+        "ra_timeout": os.getenv("ROMCOM_RA_TIMEOUT", "30"),
     }
 
 def _overrides(db_path):
@@ -175,6 +201,20 @@ def settings():
     except (TypeError, ValueError): s["chat_history_max"] = 20
     s["mcp_enabled"] = str(s["mcp_enabled"]).strip().lower() in ("1", "true", "yes", "on")
     s["sab_verify_ssl"] = str(s["sab_verify_ssl"]).strip().lower() not in ("0", "false", "no", "off")
+    s["export_wanted_only"] = str(s["export_wanted_only"]).strip().lower() in ("1", "true", "yes", "on")
+    s["export_curated_only"] = str(s["export_curated_only"]).strip().lower() in ("1", "true", "yes", "on")
+    try: s["export_rating_min"] = max(0, min(10, int(s["export_rating_min"])))
+    except (TypeError, ValueError): s["export_rating_min"] = 0
+    s["rawg_enabled"] = str(s["rawg_enabled"]).strip().lower() in ("1", "true", "yes", "on")
+    for k, dflt in (("rawg_delay", 1.5), ("rawg_jitter", 0.8), ("rawg_timeout", 30.0)):
+        try: s[k] = max(0.0, float(s[k]))
+        except (TypeError, ValueError): s[k] = dflt
+    try: s["rawg_budget"] = max(0, int(s["rawg_budget"]))
+    except (TypeError, ValueError): s["rawg_budget"] = 400
+    s["ra_enabled"] = str(s["ra_enabled"]).strip().lower() in ("1", "true", "yes", "on")
+    for k, dflt in (("ra_delay", 1.0), ("ra_timeout", 30.0)):
+        try: s[k] = max(0.0, float(s[k]))
+        except (TypeError, ValueError): s[k] = dflt
     return s
 
 def load_yaml(name):

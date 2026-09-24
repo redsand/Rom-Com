@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS items (
  catalog_source TEXT, external_id TEXT, support_level TEXT,
  region TEXT, language TEXT, play_status TEXT NOT NULL DEFAULT 'UNPLAYED',
  keep INTEGER NOT NULL DEFAULT 0, last_played TEXT, is_device INTEGER NOT NULL DEFAULT 0,
- playable INTEGER NOT NULL DEFAULT 0,
+ playable INTEGER NOT NULL DEFAULT 0, rating INTEGER,
+ community_score INTEGER, community_source TEXT,
  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS aliases (
@@ -139,6 +140,22 @@ CREATE TABLE IF NOT EXISTS web_sessions (
  token_hash TEXT PRIMARY KEY, user TEXT NOT NULL,
  created_at TEXT DEFAULT CURRENT_TIMESTAMP, expires_at TEXT NOT NULL, last_seen TEXT
 );
+-- Community ratings pulled from public pools (RetroAchievements, RAWG). Raw per-source
+-- records are kept so a second source can never silently overwrite a first one's score,
+-- and so re-syncing after swapping keys can be audited; `items.community_score` is the
+-- denormalized best-of for cheap ORDER BY.
+CREATE TABLE IF NOT EXISTS community_scores (
+ item_id TEXT NOT NULL, source TEXT NOT NULL,
+ score INTEGER NOT NULL, votes INTEGER, matched_title TEXT,
+ fetched_at TEXT DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY(item_id, source),
+ FOREIGN KEY(item_id) REFERENCES items(id) ON DELETE CASCADE
+);
+-- Provider bookkeeping (e.g. RAWG's daily request count) — state, not settings.
+CREATE TABLE IF NOT EXISTS community_state (
+ source TEXT NOT NULL, k TEXT NOT NULL, v TEXT,
+ PRIMARY KEY(source,k)
+);
 """
 
 # ALTER TABLE has stricter default-expression rules than CREATE TABLE.
@@ -161,7 +178,14 @@ MIGRATIONS = {
    # Arcade only: the set can be fully assembled from files on disk. Status cannot
    # answer this — a MAME set is built from hashes scattered across a flat dump, so
    # an item with no matched file at all can still be perfectly playable.
-   "playable":"INTEGER NOT NULL DEFAULT 0"
+   "playable":"INTEGER NOT NULL DEFAULT 0",
+   # The owner's 1-10 verdict after playing. Nullable = unrated, deliberately not 0:
+   # 0 would itself be a rating, NULL is "never auditioned". keep means "export this";
+   # rating is the graded version of the same judgement and feeds recommendations.
+   "rating":"INTEGER",
+   # Crowd score 0-100 from public pools (see community_scores); NULL = no source has
+   # an opinion yet. Denormalized here so "top games" is one indexed ORDER BY.
+   "community_score":"INTEGER","community_source":"TEXT"
  },
  "volumes": {"min_bytes":"INTEGER","max_bytes":"INTEGER","updated_at":"TEXT"},
  "jobs": {"result_url":"TEXT","source":"TEXT"},
@@ -185,6 +209,8 @@ INDEXES = [
  # "what content is on disk" — the dashboard's hottest query. Indexed on the stored flag
  # so it's a range scan, not a full-table path sweep.
  "CREATE INDEX IF NOT EXISTS idx_files_content ON files(content, matched_item_id)",
+ # Recommendations and the library's community sort order on one indexed column.
+ "CREATE INDEX IF NOT EXISTS idx_items_community ON items(community_score)",
  # Assistant chat. History is fetched per session and paged by id, approvals are looked
  # up pending-per-session, and recall always filters by model (the dimension lock), so
  # model is the leading column there.

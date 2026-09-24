@@ -70,13 +70,18 @@ def _core_for(system):
     return "DETECT", "DETECT"
 
 
-def build(systems=None, keep_only=False, dest=None, replace=False, db=None):
-    """Write one playlist per system. Returns {system: count}."""
+def build(systems=None, keep_only=False, dest=None, replace=False, db=None, rating_min=None):
+    """Write one playlist per system. Returns {system: count}.
+
+    `rating_min` widens keep_only's gate to "keep OR rated at least N" — the same rule
+    the SD export uses, so a playlist and a card built from the same verdicts agree.
+    """
     db = db or connect()
     dest = Path(dest) if dest else playlists_dir()
     if not dest:
         return {"error": "RetroArch playlists folder not found — is a core configured?"}
     dest.mkdir(parents=True, exist_ok=True)
+    rating_min = int(rating_min or 0)
 
     wanted = {s.lower() for s in systems} if systems else None
     written, skipped, unloadable = {}, {}, {}
@@ -96,7 +101,9 @@ def build(systems=None, keep_only=False, dest=None, replace=False, db=None):
                     for r in db.execute(
                         "SELECT title, external_id FROM items WHERE system='arcade'"
                         " AND playable=1 AND COALESCE(is_device,0)=0"
-                        + (" AND keep=1" if keep_only else "") + " ORDER BY title")
+                        + (f" AND (keep=1 OR {int(rating_min)} > 0 AND COALESCE(rating,0) >= {int(rating_min)})"
+                           if keep_only else "")
+                        + " ORDER BY title")
                     if (Path(root) / r["external_id"].split("/", 1)[-1]).exists()]
         else:
             # One entry per game, not per file. The same rom sits in several folders here
@@ -108,7 +115,8 @@ def build(systems=None, keep_only=False, dest=None, replace=False, db=None):
                     """SELECT i.id, i.title, f.path, f.crc32, f.bytes, i.system FROM items i
                        JOIN files f ON f.matched_item_id = i.id
                        WHERE i.system = ? AND COALESCE(f.content,1)=1 """
-                    + ("AND i.keep=1 " if keep_only else "")
+                    + (f"AND (i.keep=1 OR {int(rating_min)} > 0 AND COALESCE(i.rating,0) >= {int(rating_min)}) "
+                       if keep_only else "")
                     + "ORDER BY i.title", (system,)):
                 best.setdefault(r["id"], []).append(dict(r))
             rows = []

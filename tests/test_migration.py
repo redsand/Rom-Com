@@ -50,3 +50,27 @@ def test_chat_schema_is_idempotent(tmp_path,monkeypatch):
     assert CHAT_TABLES <= tables
     idx={r["name"] for r in db.execute("SELECT name FROM sqlite_master WHERE type='index'")}
     assert "idx_chat_chunks_model" in idx
+
+
+def test_rating_and_community_columns_migrate_without_losing_data(tmp_path,monkeypatch):
+    """The ranking signals are new columns on `items`, so an existing database gains them
+    by ALTER on the next connect(). `rating` is deliberately nullable: NULL means never
+    auditioned, while 0 would itself be a verdict."""
+    p=tmp_path/"old.db"
+    db=sqlite3.connect(p)
+    db.execute("CREATE TABLE items(id TEXT PRIMARY KEY,title TEXT NOT NULL,authorized INTEGER DEFAULT 0,"
+               "wanted INTEGER DEFAULT 1,status TEXT DEFAULT 'CATALOGED',keep INTEGER DEFAULT 0)")
+    db.execute("INSERT INTO items(id,title,keep) VALUES('snes/x','X',1)")
+    db.commit(); db.close()
+    monkeypatch.setenv("ROMCOM_DB",str(p))
+    db=connect()
+    cols={r["name"] for r in db.execute("PRAGMA table_info(items)")}
+    assert {"rating","community_score","community_source"} <= cols
+    row=db.execute("SELECT title,keep,rating FROM items WHERE id='snes/x'").fetchone()
+    assert row["title"]=="X" and row["keep"]==1 and row["rating"] is None
+    tables={r["name"] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"community_scores","community_state"} <= tables
+    # and the raw per-source rows keep a foreign key back to items
+    with db:
+        db.execute("INSERT INTO community_scores(item_id,source,score,votes) VALUES('snes/x','rawg',88,40)")
+    assert db.execute("SELECT score FROM community_scores WHERE item_id='snes/x'").fetchone()["score"]==88
