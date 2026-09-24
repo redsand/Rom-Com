@@ -183,6 +183,20 @@ def cmd_adopt(a):
     from .scanner import adopt_unmatched
     print(json.dumps(adopt_unmatched(root=a.root),indent=2))
 
+def cmd_agent(a):
+    from . import player
+    def ev(name, payload):
+        if name == "ready":
+            print(f"launch agent ready (polling every {payload['interval']}s) — leave this running")
+        elif name == "launched":
+            print(f"launched {payload['count']} game(s)")
+        else:
+            print(f"{name}: {payload}")
+    try:
+        player.agent_loop(interval=a.interval, on_event=ev)
+    except KeyboardInterrupt:
+        print("agent stopped")
+
 def cmd_play(a):
     from . import player
     try:
@@ -224,6 +238,9 @@ def main():
     aa=s.add_parser("auto-acquire"); aa.add_argument("--poll",type=float,default=None); aa.add_argument("--max-wait",type=float,dest="max_wait",default=None); aa.add_argument("--max-batch",type=int,dest="max_batch",default=None); aa.add_argument("--parallel",type=int,default=None); aa.add_argument("--watch",action="store_true"); aa.set_defaults(fn=cmd_auto_acquire)
     wd=s.add_parser("webdl"); wd.add_argument("ident"); wd.add_argument("--result",type=int); wd.add_argument("--out"); wd.set_defaults(fn=cmd_webdl)
     sc=s.add_parser("scan"); sc.add_argument("path"); sc.add_argument("--no-name-match",action="store_true"); sc.add_argument("--no-adopt",action="store_true"); sc.add_argument("--no-recursive",action="store_true"); sc.set_defaults(fn=cmd_scan)
+    ag=s.add_parser("agent", help="run the launch agent in your session (needed for the web Play button)")
+    ag.add_argument("--interval", type=float, default=1.0)
+    ag.set_defaults(fn=cmd_agent)
     pl=s.add_parser("play", help="launch a game in its emulator (runs in YOUR session)")
     pl.add_argument("game", help="item id, or part of a title")
     pl.add_argument("--show", action="store_true", help="print the command, launch nothing")

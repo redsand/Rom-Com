@@ -112,3 +112,106 @@ def test_organize_can_export_only_what_is_kept(monkeypatch, tmp_path):
     r = organize(str(tmp_path / "card"), keep_only=True, dry_run=True)
     assert r["keep_only"] is True and r["would_copy"] == 2   # the kept item's rom + its manual
     assert (tmp_path / "card").exists() is False             # dry run wrote nothing
+
+
+# ---------------------------------------------------- the session-0 handoff
+
+def test_a_launch_is_queued_not_spawned(monkeypatch, tmp_path):
+    """The server must never spawn. A Windows service runs in session 0 whatever account it
+    uses, and session 0 has no desktop — the emulator window would exist and be invisible,
+    holding the ROM open with nothing to show for it."""
+    db, rom = setup(monkeypatch, tmp_path, {"snes": 'emu.exe "{rom}"'})
+    monkeypatch.setattr(player.subprocess, "Popen", lambda *a, **k: pytest.fail("must not spawn"))
+    r = player.request_launch("snes-ct", db=db)
+    assert r["status"] == "PENDING"
+    row = db.execute("SELECT * FROM launch_requests").fetchone()
+    assert row["status"] == "PENDING" and row["command"] == f'emu.exe "{rom}"'
+
+
+def test_a_bad_request_fails_where_someone_is_looking(monkeypatch, tmp_path):
+    """Resolved up front, so an unconfigured emulator is an error in the UI rather than a
+    row the agent quietly chokes on later."""
+    db, _ = setup(monkeypatch, tmp_path, {})
+    with pytest.raises(LookupError, match="emulators.yaml"):
+        player.request_launch("snes-ct", db=db)
+    assert db.execute("SELECT COUNT(*) c FROM launch_requests").fetchone()["c"] == 0
+
+
+def test_the_agent_runs_the_queue_and_marks_it_played(monkeypatch, tmp_path):
+    db, _ = setup(monkeypatch, tmp_path, {"snes": 'emu.exe "{rom}"'})
+    spawned = []
+    monkeypatch.setattr(player.subprocess, "Popen", lambda *a, **k: spawned.append(a[0]))
+    player.request_launch("snes-ct", db=db)
+    assert player.agent_once(db) == 1
+    assert len(spawned) == 1
+    assert db.execute("SELECT status FROM launch_requests").fetchone()["status"] == "RUNNING"
+    assert db.execute("SELECT play_status FROM items WHERE id='snes-ct'").fetchone()["play_status"] == "PLAYED"
+
+
+def test_the_same_request_is_never_launched_twice(monkeypatch, tmp_path):
+    """Claimed before spawning, so a second agent tick — or a second agent — cannot start
+    the same game again."""
+    db, _ = setup(monkeypatch, tmp_path, {"snes": '{rom}'})
+    monkeypatch.setattr(player.subprocess, "Popen", lambda *a, **k: None)
+    player.request_launch("snes-ct", db=db)
+    assert player.agent_once(db) == 1
+    assert player.agent_once(db) == 0
+
+
+def test_a_failed_spawn_is_recorded_not_retried_forever(monkeypatch, tmp_path):
+    db, _ = setup(monkeypatch, tmp_path, {"snes": '{rom}'})
+    def boom(*a, **k):
+        raise FileNotFoundError("emu.exe not found")
+    monkeypatch.setattr(player.subprocess, "Popen", boom)
+    player.request_launch("snes-ct", db=db)
+    player.agent_once(db)
+    row = db.execute("SELECT status,error FROM launch_requests").fetchone()
+    assert row["status"] == "FAILED" and "not found" in row["error"]
+    assert player.agent_once(db) == 0
+
+
+def test_agent_status_reports_whether_anyone_is_listening(monkeypatch, tmp_path):
+    """So the UI can say 'start the agent' instead of queuing launches into a void."""
+    db, _ = setup(monkeypatch, tmp_path, {"snes": '{rom}'})
+    assert player.agent_status(db)["running"] is False
+    player.agent_once(db)                      # a tick beats
+    assert player.agent_status(db)["running"] is True
+
+
+def test_arcade_exports_as_one_directory_per_set(monkeypatch, tmp_path):
+    """A MAME set is many chip images that only mean anything together. A flat copy is
+    doubly broken: 253,351 arcade files share only 126,980 distinct basenames, so half would
+    silently overwrite the other half — and MAME could not read the result either. A
+    directory named for the set is a layout it loads directly."""
+    from romcom.organizer import organize
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "arc.db"))
+    from romcom.config import invalidate
+    invalidate()
+    db = connect()
+    src = tmp_path / "flat"; src.mkdir()
+    with db:
+        for setname, chips in (("pacman", ["1.bin", "2.bin"]), ("galaga", ["1.bin", "3.bin"])):
+            db.execute("INSERT INTO items(id,title,system,status,catalog_source,external_id,keep)"
+                       " VALUES(?,?,'arcade','VERIFIED','antopisa',?,1)",
+                       (f"a-{setname}", setname.title(), f"arcade/{setname}"))
+            for ch in chips:
+                pth = src / f"{setname}_{ch}"
+                pth.write_bytes(b"x")
+                db.execute("INSERT INTO files(path,bytes,matched_item_id,content) VALUES(?,1,?,1)",
+                           (str(pth), f"a-{setname}"))
+    dest = tmp_path / "card"
+    r = organize(str(dest), keep_only=True)
+    assert r["copied"] == 4
+    assert sorted(p.name for p in (dest / "arcade").iterdir()) == ["galaga", "pacman"]
+    assert (dest / "arcade" / "pacman" / "pacman_1.bin").exists()
+    assert (dest / "arcade" / "galaga" / "galaga_1.bin").exists()   # same basename, no clash
+
+
+def test_non_arcade_systems_keep_the_flat_layout(monkeypatch, tmp_path):
+    """One file is one game everywhere else; nesting those would just add a pointless level."""
+    from romcom.organizer import organize
+    db, rom = setup(monkeypatch, tmp_path, {})
+    player.set_keep("snes-ct", True, db=db)
+    dest = tmp_path / "card2"
+    organize(str(dest), keep_only=True)
+    assert (dest / "snes" / rom.name).exists()

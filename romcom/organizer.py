@@ -3,6 +3,12 @@ from pathlib import Path
 import shutil
 from .db import connect
 
+def _safe(name):
+    """A directory name MAME and Windows will both accept."""
+    out = "".join(c for c in str(name) if c not in '<>:"/\\|?*').strip().rstrip(".")
+    return out[:120] or "unknown"
+
+
 def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
              dry_run=False, keep_only=False):
     """Copy files matched to a catalog item into <dest>/<system>/<filename>.
@@ -24,7 +30,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     touching the destination — worth doing before writing to a card.
     """
     db = connect()
-    rows = db.execute("""SELECT f.path, i.system, i.title FROM files f
+    rows = db.execute("""SELECT f.path, i.system, i.title, i.external_id FROM files f
       JOIN items i ON i.id=f.matched_item_id
       WHERE (? = 0 OR i.wanted = 1) AND (? = 0 OR i.keep = 1)
       ORDER BY i.system, i.title""", (1 if wanted_only else 0, 1 if keep_only else 0)).fetchall()
@@ -53,6 +59,14 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             by_system[r["system"] or "unknown"] = by_system.get(r["system"] or "unknown", 0) + 1
             continue
         folder = dest / (r["system"] or "unknown")
+        # Arcade is not one-file-per-game. A MAME set is many chip images that only mean
+        # anything together, and a flat copy is doubly broken: 253,351 arcade files share
+        # only 126,980 distinct basenames, so half of them would silently overwrite the
+        # other half, and MAME could not read the result either. A directory named for the
+        # set, holding its chips, is a layout MAME loads directly.
+        if (r["system"] or "").lower() == "arcade":
+            setname = (r["external_id"] or "").split("/", 1)[-1] or r["title"]
+            folder = folder / _safe(setname)
         target = folder / src.name
         try:
             folder.mkdir(parents=True, exist_ok=True)

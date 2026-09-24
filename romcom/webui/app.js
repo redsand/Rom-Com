@@ -198,7 +198,11 @@ function itemRow(r) {
     <td>${badge(r.status)} ${statusSel}</td>
     <td class="c"><input type="checkbox" class="flag" data-field="authorized" data-id="${esc(r.id)}" ${r.authorized ? "checked" : ""}></td>
     <td class="c"><input type="checkbox" class="flag" data-field="wanted" data-id="${esc(r.id)}" ${r.wanted ? "checked" : ""}></td>
-    <td><button class="small primary act-search" data-id="${esc(r.id)}" data-title="${esc(r.title)}" ${r.authorized ? "" : "disabled title='Mark authorized first'"}>Search</button></td>
+    <td class="c"><input type="checkbox" class="flag" data-field="keep" data-id="${esc(r.id)}" ${r.keep ? "checked" : ""} title="Mark for export to the card"></td>
+    <td class="nowrap">
+      <button class="small act-play" data-id="${esc(r.id)}" data-title="${esc(r.title)}" title="Launch in your emulator (needs: romcom agent)">Play</button>
+      <button class="small primary act-search" data-id="${esc(r.id)}" data-title="${esc(r.title)}" ${r.authorized ? "" : "disabled title='Mark authorized first'"}>Search</button>
+    </td>
   </tr>`;
 }
 
@@ -283,10 +287,26 @@ $("#lib-table").addEventListener("change", async e => {
 });
 
 /* ---------- Search: a quick indexer probe reported as a fading toast ---------- */
+  const pb = e.target.closest(".act-play");
+  if (pb) { playGame(pb.dataset.id, pb.dataset.title); return; }
 document.addEventListener("click", e => {
   const b = e.target.closest(".act-search");
   if (b) quickSearch(b.dataset.id, b.dataset.title);
 });
+
+// The server cannot start the emulator: a Windows service runs in session 0, which has no
+// desktop, so the window would exist and be invisible. It queues the command instead and an
+// agent in the owner's own session runs it — which is why "start the agent" is a real answer
+// here rather than an error to paper over.
+async function playGame(ident, title) {
+  toast(`Launching ${title}…`);
+  try {
+    const r = await post(`/api/item/${encodeURIComponent(ident)}/play`, {});
+    toast(`Sent to the emulator: ${r.title}`);
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
 
 async function quickSearch(ident, title) {
   toast(`Searching: ${title}…`);

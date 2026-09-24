@@ -110,6 +110,17 @@ CREATE TABLE IF NOT EXISTS chat_memory_pending (
  text TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT,
  created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+-- Launch requests, queued by the web app and executed by `romcom agent`.
+--
+-- A Windows service always runs in session 0 whatever account it uses, and session 0 is
+-- isolated from the desktop: an emulator started there opens a window nobody can ever see,
+-- holding the ROM open. So the server queues the resolved command here and an agent running
+-- in the owner's own session picks it up. The queue is the handoff across that boundary.
+CREATE TABLE IF NOT EXISTS launch_requests (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, item_id TEXT NOT NULL, title TEXT, system TEXT,
+ command TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING', error TEXT,
+ requested_at TEXT DEFAULT CURRENT_TIMESTAMP, started_at TEXT
+);
 CREATE TABLE IF NOT EXISTS chat_approvals (
  id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER,
  tool TEXT NOT NULL, arguments TEXT NOT NULL, summary TEXT,
@@ -170,6 +181,7 @@ INDEXES = [
  # model is the leading column there.
  "CREATE INDEX IF NOT EXISTS idx_chat_msg_session ON chat_messages(session_id, id)",
  "CREATE INDEX IF NOT EXISTS idx_chat_chunks_model ON chat_memory_chunks(model)",
+ "CREATE INDEX IF NOT EXISTS idx_launch_pending ON launch_requests(status, id)",
  "CREATE INDEX IF NOT EXISTS idx_chat_approvals ON chat_approvals(session_id, status)",
  "CREATE INDEX IF NOT EXISTS idx_chat_log_session ON chat_tool_log(session_id, id)",
  "CREATE INDEX IF NOT EXISTS idx_web_sessions_expires ON web_sessions(expires_at)"

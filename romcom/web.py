@@ -18,7 +18,7 @@ from . import (indexer, actions, acquirer, sab, webdl, webauth, chattools, webch
 
 STATIC = Path(__file__).resolve().parent / "webui"
 
-ITEM_FIELDS = {"authorized", "status", "wanted", "preferred_runtime", "notes", "play_status", "system", "region", "language"}
+ITEM_FIELDS = {"authorized", "status", "wanted", "preferred_runtime", "notes", "play_status", "system", "region", "language", "keep"}
 VOLUME_FIELDS = {"authorized", "status"}
 
 def _entity(db, ident):
@@ -186,7 +186,7 @@ def create_app():
         allowed = ITEM_FIELDS if kind == "item" else VOLUME_FIELDS
         if field not in allowed:
             return jsonify({"error": f"field must be one of: {', '.join(sorted(allowed))}"}), 400
-        if field in ("authorized", "wanted"):
+        if field in ("authorized", "wanted", "keep"):
             value = 1 if str(value).lower() in ("1", "true", "yes", "on") else 0
         table = "items" if kind == "item" else "volumes"
         with db:
@@ -498,6 +498,34 @@ def create_app():
             return jsonify(player.set_keep(item_id, on=on))
         except LookupError as e:
             return jsonify({"error": str(e)}), 404
+
+    @app.post("/api/item/<path:item_id>/play")
+    def api_item_play(item_id):
+        """Queue a launch for the agent running in the owner's session.
+
+        The server cannot spawn it: a Windows service lives in session 0 whatever account
+        it runs as, and session 0 has no desktop, so the emulator window would exist and be
+        invisible. Refuses up front when no agent is alive rather than queuing into a void."""
+        from . import player
+        st = player.agent_status()
+        if not st["running"]:
+            return jsonify({"error": "no launch agent is running — start it in your own "
+                                     "session with: romcom agent", "agent": st}), 409
+        try:
+            return jsonify(player.request_launch(item_id))
+        except LookupError as e:
+            return jsonify({"error": str(e)}), 404
+
+    @app.get("/api/play/<int:rid>")
+    def api_play_status(rid):
+        from . import player
+        r = player.launch_request(rid)
+        return (jsonify(r), 200) if r else (jsonify({"error": "no such request"}), 404)
+
+    @app.get("/api/agent")
+    def api_agent():
+        from . import player
+        return jsonify(player.agent_status())
 
     @app.get("/api/item/<path:item_id>/launch-command")
     def api_item_launch_command(item_id):

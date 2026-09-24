@@ -124,3 +124,108 @@ def kept(system=None, db=None):
     return {"items": rows, "count": len(rows),
             "bytes": sum(r["bytes"] or 0 for r in rows),
             "gb": round(sum(r["bytes"] or 0 for r in rows) / (1024 ** 3), 2)}
+
+
+# --------------------------------------------------------------- the session-0 handoff
+#
+# Everything below exists because of one Windows fact: a service runs in session 0 whatever
+# account it uses, and session 0 cannot put a window on the desktop. The web app therefore
+# queues a resolved command and `romcom agent`, running in the owner's session, executes it.
+
+AGENT_HEARTBEAT_KEY = "launch_agent_beat"
+AGENT_STALE_SECS = 30
+
+
+def request_launch(ident, db=None):
+    """Queue a launch. Resolves the command up front so a bad request fails in the UI, where
+    someone is looking, rather than silently in the agent."""
+    db = db or connect()
+    plan = command_for(ident, db=db)
+    with db:
+        cur = db.execute(
+            "INSERT INTO launch_requests(item_id,title,system,command) VALUES(?,?,?,?)",
+            (plan["item"], plan["title"], plan["system"], plan["command"]))
+    return plan | {"request": cur.lastrowid, "status": "PENDING"}
+
+
+def launch_request(rid, db=None):
+    row = (db or connect()).execute("SELECT * FROM launch_requests WHERE id=?", (rid,)).fetchone()
+    return dict(row) if row else None
+
+
+def _beat(db):
+    with db:
+        db.execute("INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,CURRENT_TIMESTAMP)"
+                   " ON CONFLICT(key) DO UPDATE SET value=excluded.value,"
+                   " updated_at=CURRENT_TIMESTAMP",
+                   (AGENT_HEARTBEAT_KEY, datetime.now().isoformat(timespec="seconds")))
+
+
+def agent_status(db=None):
+    """Whether an agent is alive, so the UI can say 'start the agent' instead of queuing
+    launches into a void."""
+    db = db or connect()
+    row = db.execute("SELECT value FROM app_settings WHERE key=?", (AGENT_HEARTBEAT_KEY,)).fetchone()
+    if not row:
+        return {"running": False, "last_beat": None, "age_secs": None}
+    try:
+        age = (datetime.now() - datetime.fromisoformat(row["value"])).total_seconds()
+    except ValueError:
+        return {"running": False, "last_beat": row["value"], "age_secs": None}
+    return {"running": age < AGENT_STALE_SECS, "last_beat": row["value"], "age_secs": round(age, 1)}
+
+
+def agent_once(db=None):
+    """Execute every pending request. Returns how many were started.
+
+    Claims each row before spawning, so two agents cannot launch the same game twice and a
+    crash mid-launch leaves the row as RUNNING rather than replaying it forever.
+    """
+    db = db or connect()
+    _beat(db)
+    started = 0
+    while True:
+        row = db.execute("SELECT * FROM launch_requests WHERE status='PENDING'"
+                         " ORDER BY id LIMIT 1").fetchone()
+        if not row:
+            return started
+        with db:
+            claimed = db.execute(
+                "UPDATE launch_requests SET status='RUNNING', started_at=CURRENT_TIMESTAMP"
+                " WHERE id=? AND status='PENDING'", (row["id"],)).rowcount
+        if not claimed:
+            continue
+        try:
+            args = row["command"] if os.name == "nt" else shlex.split(row["command"])
+            flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
+                     | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+            subprocess.Popen(args, shell=(os.name == "nt"), close_fds=True, creationflags=flags)
+            started += 1
+            with db:
+                db.execute("UPDATE items SET play_status=CASE WHEN play_status='UNPLAYED'"
+                           " THEN 'PLAYED' ELSE play_status END, last_played=?,"
+                           " updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                           (datetime.now().isoformat(timespec="seconds"), row["item_id"]))
+                db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,'played',?)",
+                           (row["item_id"], row["command"][:400]))
+        except Exception as e:
+            with db:
+                db.execute("UPDATE launch_requests SET status='FAILED', error=? WHERE id=?",
+                           (f"{type(e).__name__}: {e}"[:500], row["id"]))
+
+
+def agent_loop(interval=1.0, on_event=None):
+    """Poll for queued launches until interrupted. This is `romcom agent`."""
+    import time
+    db = connect()
+    if on_event:
+        on_event("ready", {"interval": interval})
+    while True:
+        try:
+            n = agent_once(db)
+            if n and on_event:
+                on_event("launched", {"count": n})
+        except Exception as e:
+            if on_event:
+                on_event("error", {"message": f"{type(e).__name__}: {e}"})
+        time.sleep(interval)
