@@ -161,7 +161,7 @@ def command_for(ident, db=None):
     if rom:
         command = command.replace("{rom}", rom)
     return {"item": item["id"], "title": item["title"], "system": system,
-            "set": setname, "rom": rom, "command": command}
+            "set": setname, "rom": rom, "command": _with_display(command, system)}
 
 
 def launch(ident, db=None, record=True):
@@ -365,3 +365,81 @@ def agent_loop(interval=1.0, on_event=None):
             if on_event:
                 on_event("error", {"message": f"{type(e).__name__}: {e}"})
         time.sleep(interval)
+
+
+# ------------------------------------------------------------------ which monitor
+#
+# Emulators disagree about how to say this, so the config says it once and each command gets
+# the form its own emulator understands.
+
+def displays():
+    """Attached monitors, in the order Windows enumerates them.
+
+    Device names are not sequential — a machine with two screens can report DISPLAY1 and
+    DISPLAY5 — so an index alone is not enough to target one. Both are returned and MAME is
+    given the real device name.
+    """
+    import ctypes
+    from ctypes import wintypes
+    if os.name != "nt":
+        return []
+
+    class DISPLAY_DEVICEW(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("DeviceName", wintypes.WCHAR * 32),
+                    ("DeviceString", wintypes.WCHAR * 128), ("StateFlags", wintypes.DWORD),
+                    ("DeviceID", wintypes.WCHAR * 128), ("DeviceKey", wintypes.WCHAR * 128)]
+
+    ATTACHED, PRIMARY = 0x00000001, 0x00000004
+    out, i = [], 0
+    while True:
+        d = DISPLAY_DEVICEW()
+        d.cb = ctypes.sizeof(d)
+        if not ctypes.windll.user32.EnumDisplayDevicesW(None, i, ctypes.byref(d), 0):
+            break
+        i += 1
+        if d.StateFlags & ATTACHED:
+            out.append({"index": len(out) + 1, "device": d.DeviceName,
+                        "name": d.DeviceString, "primary": bool(d.StateFlags & PRIMARY)})
+    return out
+
+
+def _display_choice(system):
+    """The configured monitor for a system: `displays: {arcade: 2}` beats a global `display:`."""
+    cfg = load_yaml("emulators.yaml") or {}
+    per = (cfg.get("displays") or {})
+    return per.get(system, cfg.get("display"))
+
+
+def _with_display(command, system):
+    """Add the monitor flag this emulator understands, if one is configured.
+
+    MAME takes a -screen argument and wants the real device name. RetroArch has no
+    command-line switch for it at all — the setting lives in retroarch.cfg as
+    video_monitor_index — so a tiny override file is written and appended with
+    --appendconfig, which leaves the user's own config untouched.
+    """
+    want = _display_choice(system)
+    if want in (None, "", 0):
+        return command
+    screens = displays()
+    if not screens:
+        return command
+    chosen = None
+    for s in screens:
+        if str(want).lower() in (str(s["index"]), s["device"].lower()):
+            chosen = s
+            break
+    if not chosen:
+        return command
+    low = command.lower()
+    if "mame" in low:
+        return f'{command} -screen "{chosen["device"]}"'
+    if "retroarch" in low:
+        # Written beside the repo so both the service (LocalSystem) and the agent (the owner)
+        # can read it; per-user temp directories are not shared between those two accounts.
+        from .config import ROOT
+        cfg = ROOT / ".retroarch-display.cfg"
+        cfg.write_text(f'video_monitor_index = "{chosen["index"]}"\n'
+                       f'video_fullscreen = "true"\n', encoding="utf-8")
+        return f'{command} --appendconfig "{cfg}"'
+    return command

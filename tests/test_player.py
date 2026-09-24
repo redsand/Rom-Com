@@ -328,3 +328,55 @@ def test_an_archive_beats_an_unknown_extension(monkeypatch, tmp_path):
                        (str(tmp_path / name), size))
     item = db.execute("SELECT * FROM items WHERE id='n'").fetchone()
     assert Path(player.rom_for(db, item)).name == "game.zip"
+
+
+# ------------------------------------------------------------- which monitor
+
+SCREENS = [{"index": 1, "device": r"\.\DISPLAY1", "name": "NVIDIA", "primary": True},
+           {"index": 2, "device": r"\.\DISPLAY5", "name": "AMD", "primary": False}]
+
+
+def test_mame_is_given_the_real_device_name_not_the_index(monkeypatch):
+    r"""Device names are not sequential -- two screens here are DISPLAY1 and DISPLAY5 -- so
+    building a name from the index would target a monitor that does not exist."""
+    monkeypatch.setattr(player, "displays", lambda: SCREENS)
+    monkeypatch.setattr(player, "_display_choice", lambda s: 2)
+    out = player._with_display("H:/Emus/MAME/mame.exe galaga", "arcade")
+    assert out.endswith(r'-screen "\.\DISPLAY5"')
+
+
+def test_retroarch_gets_an_appended_config_because_it_has_no_such_flag(monkeypatch, tmp_path):
+    """RetroArch has no command-line switch for the monitor; it lives in retroarch.cfg as
+    video_monitor_index. An appended override sets it without touching the owner's config."""
+    monkeypatch.setattr(player, "displays", lambda: SCREENS)
+    monkeypatch.setattr(player, "_display_choice", lambda s: 2)
+    import romcom.config as cfgmod
+    monkeypatch.setattr(cfgmod, "ROOT", tmp_path)
+    out = player._with_display('H:/Emus/RetroArch/retroarch.exe -L core.dll "rom"', "gba")
+    assert "--appendconfig" in out
+    written = (tmp_path / ".retroarch-display.cfg").read_text()
+    assert 'video_monitor_index = "2"' in written
+
+
+def test_no_configured_display_leaves_the_command_alone(monkeypatch):
+    """Unset must mean "emulator decides", not "monitor zero"."""
+    monkeypatch.setattr(player, "displays", lambda: SCREENS)
+    for value in (None, 0, ""):
+        monkeypatch.setattr(player, "_display_choice", lambda s, v=value: v)
+        assert player._with_display("mame.exe galaga", "arcade") == "mame.exe galaga"
+
+
+def test_a_per_system_choice_beats_the_global_one(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    import romcom.player as pl
+    monkeypatch.setattr(pl, "load_yaml", lambda name: {"display": 1, "displays": {"arcade": 2}})
+    assert pl._display_choice("arcade") == 2
+    assert pl._display_choice("gba") == 1
+
+
+def test_an_unknown_display_is_ignored_rather_than_guessed(monkeypatch):
+    """Sending a game to a monitor that is not attached would open it where nobody is
+    looking; falling back to the emulator's own choice is the safe failure."""
+    monkeypatch.setattr(player, "displays", lambda: SCREENS)
+    monkeypatch.setattr(player, "_display_choice", lambda s: 9)
+    assert player._with_display("mame.exe galaga", "arcade") == "mame.exe galaga"

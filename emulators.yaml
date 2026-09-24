@@ -10,6 +10,15 @@
 # has no desktop, so it queues the command and `romcom agent` — running as you — executes it:
 #     python -m romcom agent
 
+# Which monitor games open on. `python -m romcom displays` lists them.
+#   display: 2            every emulator uses monitor 2
+#   displays: {arcade: 2} per-system override, beats the global setting
+# Leave unset (or 0) to let the emulator choose, which means your primary screen.
+#
+# Device names are not sequential -- two screens can be DISPLAY1 and DISPLAY5 -- so always
+# use the index from `romcom displays`, or the exact device name it prints.
+display: 0
+
 # Where MAME sets are staged. Play builds a set here on demand from the flat rom dump, so a
 # game is playable without exporting anything by hand first.
 rompath: 'H:/Games/mame-sets/arcade'

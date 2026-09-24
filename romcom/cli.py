@@ -183,6 +183,17 @@ def cmd_adopt(a):
     from .scanner import adopt_unmatched
     print(json.dumps(adopt_unmatched(root=a.root),indent=2))
 
+def cmd_displays(a):
+    from . import player
+    ds = player.displays()
+    if not ds:
+        print("no displays detected"); return
+    for d in ds:
+        star = "  (primary)" if d["primary"] else ""
+        print(f'  {d["index"]}  {d["device"]:<15} {d["name"]}{star}')
+    print()
+    print("  set it in emulators.yaml:  display: <index>")
+
 def cmd_playable(a):
     from .mameset import refresh_playable
     print(json.dumps({"playable": refresh_playable()}, indent=2))
@@ -266,6 +277,8 @@ def main():
     aa=s.add_parser("auto-acquire"); aa.add_argument("--poll",type=float,default=None); aa.add_argument("--max-wait",type=float,dest="max_wait",default=None); aa.add_argument("--max-batch",type=int,dest="max_batch",default=None); aa.add_argument("--parallel",type=int,default=None); aa.add_argument("--watch",action="store_true"); aa.set_defaults(fn=cmd_auto_acquire)
     wd=s.add_parser("webdl"); wd.add_argument("ident"); wd.add_argument("--result",type=int); wd.add_argument("--out"); wd.set_defaults(fn=cmd_webdl)
     sc=s.add_parser("scan"); sc.add_argument("path"); sc.add_argument("--no-name-match",action="store_true"); sc.add_argument("--no-adopt",action="store_true"); sc.add_argument("--no-recursive",action="store_true"); sc.set_defaults(fn=cmd_scan)
+    dp=s.add_parser("displays", help="list monitors games can be sent to")
+    dp.set_defaults(fn=cmd_displays)
     pb=s.add_parser("playable", help="recompute which arcade sets can be assembled")
     pb.set_defaults(fn=cmd_playable)
     cr=s.add_parser("cores", help="which libretro cores this library needs, and fetch them")
