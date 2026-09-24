@@ -272,14 +272,20 @@ def _rawg_platform_id(db, slug):
     if not name:
         return None, None
     def fetch():
-        data = _request(f"{RAWG_BASE}/platforms", {"key": rawg_key(), "page_size": 40},
-                        "rawg", db, budget=False)
-        for page in [data] + [_request(f"{RAWG_BASE}/platforms",
-                            {"key": rawg_key(), "page_size": 40, "page": p},
-                            "rawg", db, budget=False) for p in range(2, 6)]:
-            for p in page.get("results", []):
+        params = {"key": rawg_key(), "page_size": 40}
+        page = 1
+        while page <= 6:  # ~51 platforms exist; 2 pages at 40 is the real ceiling
+            try:
+                data = _request(f"{RAWG_BASE}/platforms", params, "rawg", db, budget=False)
+            except requests.HTTPError:
+                break  # a page past the end 404s: the list is over, not broken
+            for p in data.get("results", []):
                 if p["name"].lower().strip() == name.lower().strip():
                     return {"id": p["id"], "name": p["name"]}
+            if not data.get("next"):
+                break
+            page += 1
+            params["page"] = page
         return {}
     rec = cached("rawg", f"platform-id:{name}", fetch)
     return (rec or {}).get("id"), name
@@ -299,7 +305,10 @@ def rawg_top_games(db, slug):
             # budget=False: this is the cheap, cached half of RAWG. The daily budget
             # guards the per-item searches; spending it here meant day one's bulk
             # pull ate the whole budget before a single search could run.
-            data = _request(f"{RAWG_BASE}/games", params, "rawg", db, budget=False)
+            try:
+                data = _request(f"{RAWG_BASE}/games", params, "rawg", db, budget=False)
+            except requests.HTTPError:
+                break  # past the last page: a short platform's list is over, not broken
             for g in data.get("results", []):
                 if g.get("rating") and (g.get("ratings_count") or 0) >= RAWG_MIN_VOTES:
                     out.append({"title": g["name"], "score": round(g["rating"] * 20),

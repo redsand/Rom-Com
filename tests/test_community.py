@@ -128,6 +128,69 @@ def test_bulk_matching_never_touches_the_search_budget(monkeypatch, tmp_path):
                       ).fetchone()["community_score"] == 85
 
 
+def _404(url):
+    import requests as rq
+    resp = rq.Response()
+    resp.status_code = 404
+    resp.url = url
+    resp.request = rq.Request("GET", url).prepare()
+    return rq.HTTPError("404 Client Error", response=resp)
+
+
+def test_platform_paging_stops_at_the_end_of_the_list(monkeypatch, tmp_path):
+    """RAWG has ~51 platforms: two pages at page_size 40. The id probe used to request
+    pages 2-5 unconditionally, and the page-3 404 aborted the probe — so no system
+    ever got a platform id and the first live sync scored nothing at all."""
+    db = setup(monkeypatch, tmp_path)
+    pages = {1: {"results": [{"id": 1, "name": "PC"}], "next": "?page=2"},
+             2: {"results": [{"id": 119, "name": "SEGA 32X"}], "next": None}}
+    seen = []
+    def fake_request(url, params, source, db_, budget=True):
+        p = params.get("page", 1)
+        seen.append(p)
+        if p in pages:
+            return pages[p]
+        raise _404(url)
+    monkeypatch.setattr(community, "_request", fake_request)
+    monkeypatch.setattr(community, "rawg_platforms", lambda db_: ["SEGA 32X"])
+    monkeypatch.setattr(community, "rawg_key", lambda: "k")
+    pid, name = community._rawg_platform_id(db, "32x")
+    assert (pid, name) == (119, "SEGA 32X")
+    assert seen == [1, 2]          # honored next=null: never asked for a page 3
+
+
+def test_a_lying_next_link_404s_the_probe_to_a_clean_stop(monkeypatch, tmp_path):
+    """If the API's next link points somewhere that 404s, the probe must conclude
+    'not found' rather than raise — one platform's bad page is not a failed sync."""
+    db = setup(monkeypatch, tmp_path)
+    def fake_request(url, params, source, db_, budget=True):
+        if params.get("page", 1) == 1:
+            return {"results": [{"id": 1, "name": "PC"}], "next": "?page=2"}
+        raise _404(url)
+    monkeypatch.setattr(community, "_request", fake_request)
+    monkeypatch.setattr(community, "rawg_platforms", lambda db_: ["SEGA 32X"])
+    monkeypatch.setattr(community, "rawg_key", lambda: "k")
+    pid, name = community._rawg_platform_id(db, "32x")
+    assert pid is None and name == "SEGA 32X"
+
+
+def test_a_short_platforms_game_list_ends_cleanly_too(monkeypatch, tmp_path):
+    """A platform with fewer than RAWG_PAGES pages of games: the top-games pull must
+    keep what it found instead of losing the whole system's bulk match to a 404."""
+    db = setup(monkeypatch, tmp_path)
+    pages = {1: {"results": [{"name": "Kolibri", "rating": 3.9, "ratings_count": 12}],
+                 "next": "?page=2"}}
+    def fake_request(url, params, source, db_, budget=True):
+        if params.get("page", 1) in pages:
+            return pages[params["page"]]
+        raise _404(url)
+    monkeypatch.setattr(community, "_request", fake_request)
+    monkeypatch.setattr(community, "_rawg_platform_id", lambda db_, slug: (119, "SEGA 32X"))
+    monkeypatch.setattr(community, "rawg_key", lambda: "k")
+    recs = community.rawg_top_games(db, "32x")
+    assert recs == [{"title": "Kolibri", "score": 78, "votes": 12, "year": None}]
+
+
 def test_spending_does_not_hold_the_write_lock(monkeypatch, tmp_path):
     """A running sync pinned SQLite's single write lock: _set_state left its implicit
     transaction open, so every web write — login, and the last_seen stamp every
