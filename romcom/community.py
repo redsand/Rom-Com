@@ -213,14 +213,25 @@ def _norm_title(title):
     return clean_query((title or "").lower())
 
 
+def _compact(title):
+    """Letters and digits only, order preserved — 'Mega Man Zero 3' and 'Megaman
+    Zero 3' are the same game with the space typed differently, and the catalog's
+    No-Intro spelling is not RAWG's spelling."""
+    return re.sub(r"[^a-z0-9]", "", _norm_title(title))
+
+
 def _index(records):
-    """Token-set -> record index, for exact-title matching without an API call."""
-    out = {}
+    """Two token-set -> record indexes: exact-title, plus a compact-form one so
+    spaced/unspaced name variants still meet."""
+    out, compact = {}, {}
     for r in records:
         t = frozenset(_tokens(_norm_title(r["title"])))
         if t:
             out.setdefault(t, r)
-    return out
+        c = _compact(r["title"])
+        if c:
+            compact.setdefault(c, r)
+    return out, compact
 
 
 def _match_items(items, records):
@@ -231,9 +242,13 @@ def _match_items(items, records):
     decoration clean_query leaves behind ('(Arcade)', '(Demo)'), never a different game:
     without that guard 'Super Mario' claimed 'Super Mario Bros. 3' and inherited its
     score. The reverse direction (record ⊂ item) never matches at all."""
-    index = _index(records)
+    index, compact_index = _index(records)
     matched = {}
     for item in items:
+        c = _compact(item["title"])
+        if c and c in compact_index:
+            matched[item["id"]] = compact_index[c]
+            continue
         toks = frozenset(_tokens(_norm_title(item["title"])))
         if not toks:
             continue
@@ -336,13 +351,15 @@ def _rawg_search(db, slug, title):
     data = _request(f"{RAWG_BASE}/games", params, "rawg", db)
     best = None
     qt = _tokens(_norm_title(title))
+    qcompact = _compact(title)
     for g in data.get("results", []):
         if not g.get("rating") or (g.get("ratings_count") or 0) < RAWG_MIN_VOTES:
             continue
-        rt = _tokens(_norm_title(g["name"]))
-        if not qt:
-            continue
-        overlap = len(qt & rt) / max(1, len(qt | rt))
+        if _compact(g["name"]) == qcompact:
+            overlap = 1.0        # 'Mega Man' vs 'Megaman': same game, different spacebar
+        else:
+            rt = _tokens(_norm_title(g["name"]))
+            overlap = len(qt & rt) / max(1, len(qt | rt)) if qt else 0.0
         if overlap >= 0.6 and (best is None or overlap > best[0]):
             best = (overlap, g)
     if not best:

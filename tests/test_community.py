@@ -17,6 +17,33 @@ def item(iid, title):
     return {"id": iid, "title": title}
 
 
+def test_matching_unspaced_name_variants(monkeypatch, tmp_path):
+    """The catalog's No-Intro spelling and RAWG's spelling differ on the spacebar:
+    'Megaman Zero 3' vs 'Mega Man Zero 3' are the same game, but token overlap
+    alone sees nothing in common. The compact form (letters and digits, order
+    kept) bridges it — in the bulk matcher and in the budgeted search alike."""
+    records = [{"title": "Mega Man Zero 3", "score": 92, "votes": 300}]
+    m = community._match_items(
+        [item("mz", "Megaman Zero 3 (Europe)"), item("mm", "Mega Man Zero 3")], records)
+    assert m["mz"]["title"] == "Mega Man Zero 3"
+    assert m["mm"]["title"] == "Mega Man Zero 3"
+    # and the bridge doesn't overreach: 'Megaman' is not 'Mega Man X'
+    bad = community._match_items([item("mx", "Megaman")],
+        [{"title": "Mega Man X", "score": 90, "votes": 200}])
+    assert bad == {}
+
+
+def test_the_search_path_scores_a_compact_match_as_perfect(monkeypatch, tmp_path):
+    db = setup(monkeypatch, tmp_path)
+    results = [{"name": "Mega Man Battle Network", "rating": 4.3, "ratings_count": 80},
+               {"name": "Totally Different Game", "rating": 4.9, "ratings_count": 900}]
+    monkeypatch.setattr(community, "_request",
+                        lambda *a, **k: {"results": results})
+    monkeypatch.setattr(community, "_rawg_platform_id", lambda db_, slug: (24, "GBA"))
+    rec = community._rawg_search(db, "gba", "Megaman Battle Network (USA)")
+    assert rec["title"] == "Mega Man Battle Network"
+
+
 def test_matching_ignores_region_and_revision_tags(monkeypatch, tmp_path):
     """clean_query strips (USA)/(Rev A) groups, so the catalog's release-speak matches a
     provider's plain titles — the same normalization the site searches use."""
