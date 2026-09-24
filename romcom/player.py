@@ -119,7 +119,15 @@ def command_for(ident, db=None):
     # quoted and bare arguments, and a regex over Windows paths is all backslash escaping
     # for no benefit.
     for token in template.replace(chr(34), " ").replace(chr(39), " ").split():
-        if not token.lower().endswith((".exe", ".dll")) or Path(token).exists():
+        # Absolute paths only. A bare `mame.exe` or `retroarch` is resolved through PATH by
+        # the shell, and we cannot tell from here whether it will be found — guessing would
+        # refuse to launch emulators that work perfectly well.
+        if not token.lower().endswith((".exe", ".dll")):
+            continue
+        if not (token[1:3] in (":/", ":" + chr(92)) or token.startswith("/")):
+            continue
+        if Path(token).exists():
+            continue
             continue
         what = "libretro core" if token.lower().endswith(".dll") else "emulator"
         extra = (" Download it in RetroArch: Online Updater -> Core Downloader."
