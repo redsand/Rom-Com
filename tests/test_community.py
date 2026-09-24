@@ -94,3 +94,75 @@ def test_a_sync_without_providers_reports_rather_than_raises(monkeypatch, tmp_pa
     report = community.sync(db=db)
     assert report["scored"] == 0
     assert any("no provider configured" in e for e in report["errors"])
+
+
+def _fake_rawg(monkeypatch):
+    """A RAWG provider that is 'on' with no bulk pull, so the per-item search loop is
+    the only thing that can produce a score."""
+    monkeypatch.setenv("RAWG_API_KEY", "k")
+    with connect() as d:
+        d.execute("INSERT INTO app_settings(key,value) VALUES('rawg_enabled','true')")
+    # settings() memoizes app_settings for 3s; opening the db above primed that cache
+    # empty, so the write must invalidate it the way the settings POST does.
+    from romcom.config import invalidate
+    invalidate()
+    monkeypatch.setattr(community, "rawg_top_games", lambda db_, slug: [])
+
+
+def test_owned_games_are_scored_before_the_wishlist(monkeypatch, tmp_path):
+    """The owner's order: what he can play tonight is scored first, so a thin daily
+    budget lands on owned games before it can be spent on games he doesn't have."""
+    db = setup(monkeypatch, tmp_path, budget="50")
+    _fake_rawg(monkeypatch)
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status,wanted) "
+                   "VALUES('own','In Hand','snes','VERIFIED',0)")
+        db.execute("INSERT INTO items(id,title,system,status,wanted) "
+                   "VALUES('wish','On The List','snes','CATALOGED',1)")
+    calls = []
+    monkeypatch.setattr(community, "_rawg_search",
+                       lambda db_, slug, title: calls.append(title) or {"title": title, "score": 80, "votes": 10})
+    report = community.sync(db=db)
+    assert calls == ["In Hand", "On The List"]
+    assert report["scored"] == 2
+
+
+def test_a_thin_budget_is_spent_on_owned_games_first(monkeypatch, tmp_path):
+    """Budget of one search: the owned game wins it, the wishlist waits for tomorrow."""
+    db = setup(monkeypatch, tmp_path, budget="1")
+    _fake_rawg(monkeypatch)
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status,wanted) "
+                   "VALUES('own','In Hand','snes','VERIFIED',0)")
+        db.execute("INSERT INTO items(id,title,system,status,wanted) "
+                   "VALUES('wish','On The List','snes','CATALOGED',1)")
+    calls = []
+    def fake_search(db_, slug, title):
+        community._spend(db_, "rawg", 1)  # the real search pays a request per call
+        calls.append(title)
+        return {"title": title, "score": 80, "votes": 10}
+    monkeypatch.setattr(community, "_rawg_search", fake_search)
+    community.sync(db=db)
+    assert calls == ["In Hand"]
+
+
+def test_an_interrupted_second_pass_still_leaves_the_first_written(monkeypatch, tmp_path):
+    """Owned results persist even if the wishlist pass dies: the pass boundary is a
+    commit point, so a crash mid-wishlist never costs the owned games their scores."""
+    db = setup(monkeypatch, tmp_path, budget="50")
+    _fake_rawg(monkeypatch)
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status,wanted) "
+                   "VALUES('own','In Hand','snes','VERIFIED',0)")
+        db.execute("INSERT INTO items(id,title,system,status,wanted) "
+                   "VALUES('wish','On The List','snes','CATALOGED',1)")
+
+    def boom(db_, slug, title):
+        raise RuntimeError("wishlist pass exploded")
+    monkeypatch.setattr(community, "_rawg_search",
+                       lambda db_, slug, title: (boom(db_, slug, title)
+                                                 if title == "On The List"
+                                                 else {"title": title, "score": 80, "votes": 10}))
+    community.sync(db=db)
+    row = db.execute("SELECT community_score FROM items WHERE id='own'").fetchone()
+    assert row["community_score"] == 80

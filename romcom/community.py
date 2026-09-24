@@ -366,13 +366,16 @@ def ra_players(db, gid):
 
 # ---------------------------------------------------------------- the sync
 
-def _targets(db, systems=None):
-    """What's worth scoring: in hand (or arcade-playable) plus anything wanted.
-    Devices are never candidates; hardware has no reputation."""
+def _targets(db, systems=None, owned=True):
+    """What's worth scoring. The owner's order: everything in hand first, the wishlist
+    second, so the day's search budget is spent on games he can play tonight before
+    games he might never fetch. Devices are never candidates; hardware has no
+    reputation."""
+    held = "(status IN ('FOUND','DOWNLOADED','VERIFIED','NORMALIZED','INSTALLED','TESTED')" \
+           " OR (system='arcade' AND playable=1))"
     q = f"""SELECT id, title, system, year FROM items
         WHERE COALESCE(is_device,0)=0
-        AND ((status IN ('FOUND','DOWNLOADED','VERIFIED','NORMALIZED','INSTALLED','TESTED'))
-             OR (system='arcade' AND playable=1) OR wanted=1)"""
+        AND ({held if owned else f"wanted=1 AND NOT {held}"})"""
     p = []
     if systems:
         q += f" AND system IN ({','.join('?' * len(systems))})"
@@ -403,7 +406,9 @@ def _write_scores(db, rows):
 
 
 def sync(systems=None, db=None, progress=None):
-    """Pull community scores for everything worth having an opinion about. Returns a
+    """Pull community scores for everything worth having an opinion about: owned
+    games first, then the wishlist. Owned results are written before the wishlist
+    pass starts, so an interrupted sync still leaves the library ranked. Returns a
     report; every provider failure is a line in it, not an aborted sync."""
     db = db or connect()
     ready = providers_ready(db)
@@ -413,82 +418,90 @@ def sync(systems=None, db=None, progress=None):
             "no provider configured — set RAWG_API_KEY / RA_USERNAME+RA_API_KEY in .env "
             "and enable rawg_enabled / ra_enabled in Settings")
         return report
-    targets = _targets(db, systems)
-    by_system = {}
-    for t in targets:
-        by_system.setdefault(t["system"], []).append(dict(t))
+    # Group both passes up front so progress can report one honest done/total.
+    phases = []
+    for owned in (True, False):
+        by_system = {}
+        for t in _targets(db, systems, owned=owned):
+            by_system.setdefault(t["system"], []).append(dict(t))
+        if by_system:
+            phases.append((owned, by_system))
+    total = sum(len(bs) for _, bs in phases)
+    done = 0
 
-    all_rows = []
-    for slug, items in sorted(by_system.items()):
-        if progress:
-            progress(len(report["systems"]), len(by_system), slug)
-        per = {"matched": 0, "rawg": 0, "ra": 0}
-        # ---- RAWG: bulk top games, then budgeted per-item searches for the misses.
-        if ready["rawg"]:
-            try:
-                item_ids = {x["id"] for x in items}
-                top = rawg_top_games(db, slug)
-                if top:
-                    bulk = _match_items(items, top)
-                    for iid, rec in bulk.items():
-                        all_rows.append({"item_id": iid, "source": "rawg",
-                                         "score": rec["score"], "votes": rec["votes"],
-                                         "matched_title": rec["title"]})
-                in_hand = [i for i in items if i["id"] not in
-                           {r["item_id"] for r in all_rows if r["source"] == "rawg"}]
-                searched = 0
-                for i in in_hand:
-                    if searched >= RAWG_SEARCH_MAX or _budget_left(db, "rawg") <= 0:
-                        break
-                    try:
-                        rec = _rawg_search(db, slug, i["title"])
-                    except Exception:
-                        break  # budget exhausted or transient failure — stop cleanly
-                    searched += 1
-                    if rec:
-                        all_rows.append({"item_id": i["id"], "source": "rawg",
-                                         "score": rec["score"], "votes": rec["votes"],
-                                         "matched_title": rec["title"]})
-                per["rawg"] = sum(1 for r in all_rows
-                                  if r["source"] == "rawg" and r["item_id"] in item_ids)
-            except Exception as ex:
-                report["errors"].append(f"rawg/{slug}: {ex}")
-        # ---- RA: game list per console, then player counts for matched in-hand games.
-        if ready["ra"]:
-            try:
-                cid, cname = _ra_console_id(db, slug)
-                if cid:
-                    games = ra_games(db, cid)
-                    hits = _match_items(items, games)
-                    per["matched"] += len(hits)
-                    fresh_cut = f"-{RA_STALE_DAYS} days"
-                    done = {r["item_id"] for r in db.execute(
-                        "SELECT item_id FROM community_scores WHERE source='ra' "
-                        "AND fetched_at > datetime('now', ?)", (fresh_cut,))}
-                    todo = [(iid, g) for iid, g in hits.items() if iid not in done]
-                    fetched = {}
-                    for iid, g in todo[:RA_FETCH_CAP]:
+    for owned, by_system in phases:
+        all_rows = []
+        for slug, items in sorted(by_system.items()):
+            done += 1
+            if progress:
+                progress(done, total, slug)
+            per = report["systems"].setdefault(slug, {"matched": 0, "rawg": 0, "ra": 0})
+            # ---- RAWG: bulk top games, then budgeted per-item searches for the misses.
+            if ready["rawg"]:
+                try:
+                    item_ids = {x["id"] for x in items}
+                    top = rawg_top_games(db, slug)
+                    if top:
+                        bulk = _match_items(items, top)
+                        for iid, rec in bulk.items():
+                            all_rows.append({"item_id": iid, "source": "rawg",
+                                             "score": rec["score"], "votes": rec["votes"],
+                                             "matched_title": rec["title"]})
+                    misses = [i for i in items if i["id"] not in
+                              {r["item_id"] for r in all_rows if r["source"] == "rawg"}]
+                    searched = 0
+                    for i in misses:
+                        if searched >= RAWG_SEARCH_MAX or _budget_left(db, "rawg") <= 0:
+                            break
                         try:
-                            players = ra_players(db, g["gid"])
+                            rec = _rawg_search(db, slug, i["title"])
                         except Exception:
-                            break  # budget/burst — keep what we have
-                        if players >= RA_MIN_PLAYERS:
-                            fetched[iid] = {"players": players, "title": g["title"]}
-                    # Percentile within the console: the point is rank, and a portable's
-                    # player counts live on a different scale than a console's.
-                    ordered = sorted(fetched.items(), key=lambda kv: kv[1]["players"])
-                    for pos, (iid, rec) in enumerate(ordered, 1):
-                        all_rows.append({"item_id": iid, "source": "retroachievements",
-                                         "score": round(100.0 * pos / max(1, len(ordered))),
-                                         "votes": rec["players"],
-                                         "matched_title": rec["title"]})
-                    per["ra"] = len(fetched)
-            except Exception as ex:
-                report["errors"].append(f"ra/{slug}: {ex}")
-        report["systems"][slug] = per
-
-    report["scored"] = _write_scores(db, all_rows)
-    report["scored_rows"] = len(all_rows)
+                            break  # budget exhausted or transient failure — stop cleanly
+                        searched += 1
+                        if rec:
+                            all_rows.append({"item_id": i["id"], "source": "rawg",
+                                             "score": rec["score"], "votes": rec["votes"],
+                                             "matched_title": rec["title"]})
+                    per["rawg"] += sum(1 for r in all_rows
+                                       if r["source"] == "rawg" and r["item_id"] in item_ids)
+                except Exception as ex:
+                    report["errors"].append(f"rawg/{slug}: {ex}")
+            # ---- RA: game list per console, then player counts for matched in-hand games.
+            if ready["ra"]:
+                try:
+                    cid, cname = _ra_console_id(db, slug)
+                    if cid:
+                        games = ra_games(db, cid)
+                        hits = _match_items(items, games)
+                        per["matched"] += len(hits)
+                        fresh_cut = f"-{RA_STALE_DAYS} days"
+                        recent = {r["item_id"] for r in db.execute(
+                            "SELECT item_id FROM community_scores WHERE source='ra' "
+                            "AND fetched_at > datetime('now', ?)", (fresh_cut,))}
+                        todo = [(iid, g) for iid, g in hits.items() if iid not in recent]
+                        fetched = {}
+                        for iid, g in todo[:RA_FETCH_CAP]:
+                            try:
+                                players = ra_players(db, g["gid"])
+                            except Exception:
+                                break  # budget/burst — keep what we have
+                            if players >= RA_MIN_PLAYERS:
+                                fetched[iid] = {"players": players, "title": g["title"]}
+                        # Percentile within the console: the point is rank, and a portable's
+                        # player counts live on a different scale than a console's.
+                        ordered = sorted(fetched.items(), key=lambda kv: kv[1]["players"])
+                        for pos, (iid, rec) in enumerate(ordered, 1):
+                            all_rows.append({"item_id": iid, "source": "retroachievements",
+                                             "score": round(100.0 * pos / max(1, len(ordered))),
+                                             "votes": rec["players"],
+                                             "matched_title": rec["title"]})
+                        per["ra"] += len(fetched)
+                except Exception as ex:
+                    report["errors"].append(f"ra/{slug}: {ex}")
+        # Persist this pass before the next starts: an interrupted sync still leaves
+        # whatever it finished written to the catalog.
+        report["scored"] += _write_scores(db, all_rows)
+        report["scored_rows"] = report["scored"]
     return report
 
 
