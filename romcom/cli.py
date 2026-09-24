@@ -185,7 +185,9 @@ def cmd_adopt(a):
 
 def cmd_organize(a):
     from .organizer import organize
-    print(json.dumps(organize(a.dest,systems=a.system or None),indent=2))
+    print(json.dumps(organize(a.dest, systems=a.system or None,
+                             wanted_only=a.wanted_only, sources=a.source or None,
+                             dry_run=a.dry_run), indent=2))
 
 def main():
     p=argparse.ArgumentParser(prog="romcom"); s=p.add_subparsers(dest="cmd",required=True)
@@ -202,7 +204,11 @@ def main():
     aa=s.add_parser("auto-acquire"); aa.add_argument("--poll",type=float,default=None); aa.add_argument("--max-wait",type=float,dest="max_wait",default=None); aa.add_argument("--max-batch",type=int,dest="max_batch",default=None); aa.add_argument("--parallel",type=int,default=None); aa.add_argument("--watch",action="store_true"); aa.set_defaults(fn=cmd_auto_acquire)
     wd=s.add_parser("webdl"); wd.add_argument("ident"); wd.add_argument("--result",type=int); wd.add_argument("--out"); wd.set_defaults(fn=cmd_webdl)
     sc=s.add_parser("scan"); sc.add_argument("path"); sc.add_argument("--no-name-match",action="store_true"); sc.add_argument("--no-adopt",action="store_true"); sc.add_argument("--no-recursive",action="store_true"); sc.set_defaults(fn=cmd_scan)
-    og=s.add_parser("organize"); og.add_argument("dest"); og.add_argument("--system",action="append"); og.set_defaults(fn=cmd_organize)
+    og=s.add_parser("organize"); og.add_argument("dest"); og.add_argument("--system",action="append")
+    og.add_argument("--source",action="append",help="only items from this catalog_source (e.g. antopisa)")
+    og.add_argument("--wanted-only",action="store_true",help="only items marked wanted")
+    og.add_argument("--dry-run",action="store_true",help="report what would be copied, copy nothing")
+    og.set_defaults(fn=cmd_organize)
     ad=s.add_parser("adopt"); ad.add_argument("--root"); ad.set_defaults(fn=cmd_adopt)
     d=s.add_parser("import-dat"); d.add_argument("path"); d.add_argument("--system",required=True); d.add_argument("--source",default="dat"); d.add_argument("--catalog-only",action="store_true"); d.set_defaults(fn=cmd_import_dat)
     ds=s.add_parser("import-dats"); ds.add_argument("path"); ds.add_argument("--system"); ds.add_argument("--source"); ds.add_argument("--wanted",action="store_true"); ds.add_argument("--json",action="store_true"); ds.set_defaults(fn=cmd_import_dats)

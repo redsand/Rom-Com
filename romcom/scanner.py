@@ -138,6 +138,10 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
     return out
 
 # Extensions that pin down a system on their own; ambiguous ones (.bin/.iso/.cue/.zip) rely on folder names.
+# What a self-contained arcade game looks like on disk. Anything else under an arcade
+# folder is a part of a set, not a game.
+ARCADE_SET_EXTS = {".zip", ".7z", ".chd"}
+
 EXT_SYSTEM={
  ".nes":"nes",".sfc":"snes",".smc":"snes",".gb":"gb",".gbc":"gbc",".gba":"gba",
  ".n64":"n64",".z64":"n64",".v64":"n64",".vb":"virtualboy",".nds":"nds",".3ds":"3ds",".cia":"3ds",
@@ -198,6 +202,16 @@ def adopt_unmatched(root=None,progress=None):
         p=Path(r["path"])
         if progress and i%100==0: progress(i,len(rows),p.name,{"adopted":adopted,"adopt_skipped":skipped})
         system=_detect_file_system(p,known,detect_system)
+        # A MAME "game" on disk is a set: one .zip/.7z, or a .chd for disc-based hardware.
+        # A flat ROM dump is loose chip images -- 115b101, 109740-001, foo.u25 -- and each
+        # one adopted separately becomes its own fake arcade title. Hundreds of those were
+        # sitting at the top of the library, sorting before every real game, and 33,489
+        # more would be re-adopted the moment a scan ran after the device cleanup.
+        if system == "arcade" and p.suffix.lower() not in ARCADE_SET_EXTS:
+            skipped += 1
+            ext = p.suffix.lower() or "(no extension)"
+            skipped_exts[ext] = skipped_exts.get(ext, 0) + 1
+            continue
         if not system:
             skipped+=1
             ext=p.suffix.lower() or "(no extension)"

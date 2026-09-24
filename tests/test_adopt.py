@@ -61,3 +61,25 @@ def test_adopt_unmatched(tmp_path, monkeypatch):
     assert db.execute("SELECT COUNT(*) c FROM files WHERE match_method='adopted'").fetchone()["c"] == 2
     # Idempotent: nothing left to adopt
     assert adopt_unmatched()["adopted"] == 0
+
+
+def test_loose_mame_chip_files_are_not_adopted_as_arcade_games(monkeypatch, tmp_path):
+    """A MAME game on disk is a set — one .zip/.7z, or a .chd. A flat ROM dump is loose chip
+    images, and each one adopted separately becomes its own fake arcade title: `115b101`,
+    `109740-001`, `1203,101-01`. Hundreds were sitting at the top of the library, sorting
+    ahead of every real game."""
+    from romcom.db import connect
+    from romcom.scanner import adopt_unmatched
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "a.db"))
+    db = connect()
+    mame = tmp_path / "Mame_0_260_Roms_Fullset"
+    mame.mkdir()
+    with db:
+        for name in ("115b101.u25", "109740-001.bin", "1203,101-01", "sf2.zip", "area51.chd"):
+            (mame / name).write_bytes(b"x")
+            db.execute("INSERT INTO files(path,bytes,sha1) VALUES(?,?,?)",
+                       (str(mame / name), 1, "sha" + name))
+    r = adopt_unmatched(root=str(mame))
+    titles = sorted(x["title"] for x in db.execute("SELECT title FROM items"))
+    assert titles == ["area51", "sf2"], titles
+    assert r["adopted"] == 2 and r["skipped"] == 3

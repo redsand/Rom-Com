@@ -38,6 +38,17 @@ def _parse_xml(data):
     for g in list(root.findall(".//game"))+list(root.findall(".//machine")):
         name=(g.get("name") or "").strip()
         if not name: continue
+        # MAME dats describe the whole machine tree, not just games: 3,350 of the 40,303
+        # entries in MAME 0.289 are devices (`isdevice="yes"`) -- "24C01 I2C Memory",
+        # "NVIDIA NV2A GPU", "Philips 22VP931". They are chips, not things you play, and
+        # imported as games they bury the actual arcade list. MAME pulls them into a
+        # parent set by itself, so nothing needs them catalogued separately.
+        #
+        # BIOS sets (`isbios="yes"`, 79 of them) are deliberately KEPT. They are not games
+        # either, but neogeo.zip and its kin genuinely have to be on the card for the
+        # games to run, so dropping them from the catalog would hide a real dependency.
+        if (g.get("isdevice") or "").lower() == "yes":
+            continue
         hashes=[]
         for node in list(g.findall("rom"))+list(g.findall("disk")):
             for alg in ("crc","md5","sha1"):
