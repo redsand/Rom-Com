@@ -151,7 +151,8 @@ def launch(ident, db=None, record=True):
     plan = command_for(ident, db=db)
     args = plan["command"] if os.name == "nt" else shlex.split(plan["command"])
     flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    subprocess.Popen(args, shell=(os.name == "nt"), close_fds=True, creationflags=flags)
+    subprocess.Popen(args, shell=(os.name == "nt"), close_fds=True, creationflags=flags,
+                     cwd=_workdir(plan["command"]))
     if record:
         with db:
             db.execute("UPDATE items SET play_status=CASE WHEN play_status='UNPLAYED'"
@@ -201,6 +202,19 @@ AGENT_HEARTBEAT_KEY = "launch_agent_beat"
 # How long an emulator must survive before we believe it started something.
 EARLY_EXIT_SECS = 4.0
 AGENT_STALE_SECS = 30
+
+
+def _workdir(command):
+    """Where to run an emulator from: its own directory.
+
+    Emulators write beside themselves — MAME drops cfg/, nvram/ and diff/ into the working
+    directory — and inheriting the agent's cwd meant those landed in the repository. Running
+    from the binary's own folder is also what the emulators expect for their relative paths.
+    """
+    for token in command.replace(chr(34), " ").replace(chr(39), " ").split():
+        if token.lower().endswith(".exe") and Path(token).exists():
+            return str(Path(token).parent)
+    return None
 
 
 def request_launch(ident, db=None):
@@ -274,7 +288,8 @@ def agent_once(db=None):
             log = Path(tempfile.gettempdir()) / f"romcom-launch-{row['id']}.log"
             fh = open(log, "wb")
             proc = subprocess.Popen(args, shell=(os.name == "nt"), close_fds=True,
-                                    creationflags=flags, stdout=fh, stderr=subprocess.STDOUT)
+                                    creationflags=flags, stdout=fh, stderr=subprocess.STDOUT,
+                                    cwd=_workdir(row["command"]))
             # A spawn that succeeds proves nothing: MAME with a missing romset prints
             # "NOT FOUND", exits 0, and vanishes — which reported as RUNNING with no error
             # while the owner saw nothing happen at all. An emulator that quits this fast did

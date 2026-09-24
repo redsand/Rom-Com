@@ -110,7 +110,13 @@ def test_a_short_finished_thread_is_summarized_so_it_is_recallable(monkeypatch, 
 
 def test_an_active_thread_is_left_alone(monkeypatch, tmp_path):
     """Idleness stands in for a session-close event, so a thread still being typed into must
-    not be compressed out from under the person using it."""
+    not be compressed out from under the person using it.
+
+    Timezone-sensitive, and that is the point. This is the test that failed only on CI:
+    the cutoff was built with datetime.now().isoformat() ('2026-09-23T19:56:12', local)
+    and compared against CURRENT_TIMESTAMP ('2026-09-23 15:51:18', UTC). Since ' ' sorts
+    before 'T', every session read as stale — but a negative UTC offset moved the date
+    forward enough to hide it locally. Running in UTC, it fired every time."""
     _db(monkeypatch, tmp_path)
     sid = cs.new_session("live one")
     cs.append(sid, "user", "still talking")

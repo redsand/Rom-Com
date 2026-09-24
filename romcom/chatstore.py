@@ -604,16 +604,20 @@ def summarize_stale_sessions(model=None, limit=3, minutes=STALE_SESSION_MINUTES)
 
     Bounded per call, because this runs on an ordinary turn and each session costs a model
     round trip. Never raises: this is housekeeping, and it must not take a turn down."""
-    from datetime import datetime, timedelta
-    cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+    # The cutoff is computed by SQLite, not Python, because the two disagree twice over:
+    # CURRENT_TIMESTAMP writes "2026-09-23 15:51:18" in UTC, while datetime.now().isoformat()
+    # produces "2026-09-23T19:56:12" in local time. String-comparing those is wrong on both
+    # counts -- and since ' ' sorts before 'T', every session compared as stale no matter how
+    # recent. Locally a negative UTC offset happened to mask it; in UTC it fired every time.
     done = []
     try:
         rows = connect().execute(
             """SELECT s.id FROM chat_sessions s
                JOIN chat_messages m ON m.session_id = s.id
                WHERE m.id > COALESCE(s.summarized_to, 0)
-               GROUP BY s.id HAVING MAX(m.created_at) < ?
-               ORDER BY s.id LIMIT ?""", (cutoff, int(limit))).fetchall()
+               GROUP BY s.id
+               HAVING MAX(m.created_at) < datetime('now', ?)
+               ORDER BY s.id LIMIT ?""", (f"-{int(minutes)} minutes", int(limit))).fetchall()
         for r in rows:
             # force=True: the point is to compress threads too short to trip the trigger.
             if maybe_summarize(r["id"], model=model, force=True):

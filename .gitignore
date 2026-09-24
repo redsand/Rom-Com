@@ -13,3 +13,6 @@ logs/
 romcom-web*.log
 backups/
 .vimm-profile/
+cfg/
+nvram/
+diff/
