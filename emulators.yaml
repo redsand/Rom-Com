@@ -10,6 +10,10 @@
 # has no desktop, so it queues the command and `romcom agent` — running as you — executes it.
 # Start the agent with:  python -m romcom agent
 
+# Where MAME sets are staged. The Play button builds a set here on demand from the flat
+# rom dump, so a game is playable without exporting anything by hand first.
+rompath: 'H:/Games/mame-sets/arcade'
+
 emulators:
   # MAME cannot read a flattened rom dump; it needs one directory (or zip) per set. Build
   # that with:  python -m romcom organize H:/Games/mame-sets --keep-only --system arcade

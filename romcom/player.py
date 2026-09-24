@@ -15,6 +15,8 @@ exact command; marking keep/skip works from either, because that is only a datab
 import os
 import shlex
 import subprocess
+import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -25,8 +27,39 @@ PLAY_STATUSES = ("UNPLAYED", "PLAYED", "KEEP", "SKIP")
 
 
 def emulators():
-    """system -> command template, from emulators.yaml. `{rom}` is substituted."""
+    """system -> command template, from emulators.yaml. `{rom}` and `{set}` are substituted."""
     return (load_yaml("emulators.yaml") or {}).get("emulators") or {}
+
+
+def rompath():
+    """Where built MAME sets live, from emulators.yaml. None if not configured."""
+    v = (load_yaml("emulators.yaml") or {}).get("rompath")
+    return str(v).strip() or None if v else None
+
+
+def ensure_arcade_set(setname, db=None):
+    """Make sure a MAME set exists in the rompath, building it from the flat dump if not.
+
+    Without this, Play only worked for sets someone had already exported by hand, and the
+    failure was silent in the worst way: MAME printed `NOT FOUND (tried in progolf)` into a
+    console nobody sees, exited 0, and the UI reported success. Clicking a game should just
+    play it, so the set is built on demand — the roms are already on disk and the dat says
+    which ones, so there is nothing to ask the owner about.
+    """
+    root = rompath()
+    if not root:
+        return None
+    target = Path(root) / setname
+    if target.is_dir() and any(target.iterdir()):
+        return {"set": setname, "built": False, "path": str(target)}
+    from . import mameset
+    r = mameset.build([setname], root, db=db)
+    info = (r.get("sets") or {}).get(setname) or {}
+    if not info.get("complete", False):
+        missing = ", ".join(info.get("missing") or []) or r.get("error") or "unknown"
+        raise LookupError(
+            f"{setname!r} cannot be assembled from what is on disk — missing: {missing}")
+    return {"set": setname, "built": True, "path": str(target), "report": r}
 
 
 def _item(db, ident):
@@ -142,6 +175,8 @@ def kept(system=None, db=None):
 # queues a resolved command and `romcom agent`, running in the owner's session, executes it.
 
 AGENT_HEARTBEAT_KEY = "launch_agent_beat"
+# How long an emulator must survive before we believe it started something.
+EARLY_EXIT_SECS = 4.0
 AGENT_STALE_SECS = 30
 
 
@@ -150,6 +185,9 @@ def request_launch(ident, db=None):
     someone is looking, rather than silently in the agent."""
     db = db or connect()
     plan = command_for(ident, db=db)
+    # Arcade needs its roms staged before the emulator is told to look for them.
+    if plan["system"] == "arcade":
+        plan["staged"] = ensure_arcade_set(plan["set"], db=db)
     with db:
         cur = db.execute(
             "INSERT INTO launch_requests(item_id,title,system,command) VALUES(?,?,?,?)",
@@ -208,7 +246,35 @@ def agent_once(db=None):
             args = row["command"] if os.name == "nt" else shlex.split(row["command"])
             flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
                      | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
-            subprocess.Popen(args, shell=(os.name == "nt"), close_fds=True, creationflags=flags)
+            # Output goes to a file, not a pipe: a pipe on a long-lived GUI process fills its
+            # buffer and wedges the emulator. A file costs nothing and is there when needed.
+            log = Path(tempfile.gettempdir()) / f"romcom-launch-{row['id']}.log"
+            fh = open(log, "wb")
+            proc = subprocess.Popen(args, shell=(os.name == "nt"), close_fds=True,
+                                    creationflags=flags, stdout=fh, stderr=subprocess.STDOUT)
+            # A spawn that succeeds proves nothing: MAME with a missing romset prints
+            # "NOT FOUND", exits 0, and vanishes — which reported as RUNNING with no error
+            # while the owner saw nothing happen at all. An emulator that quits this fast did
+            # not start a game, whatever it returned.
+            rc = None
+            for _ in range(int(EARLY_EXIT_SECS * 10)):
+                rc = proc.poll()
+                if rc is not None:
+                    break
+                time.sleep(0.1)
+            fh.close()
+            if rc is not None:
+                tail = ""
+                try:
+                    tail = log.read_text(errors="replace").strip().splitlines()
+                    tail = " | ".join(tail[-4:])
+                except OSError:
+                    pass
+                with db:
+                    db.execute("UPDATE launch_requests SET status='FAILED', error=? WHERE id=?",
+                               (f"exited after {EARLY_EXIT_SECS}s or less (code {rc}). "
+                                f"{tail}"[:500], row["id"]))
+                continue
             started += 1
             with db:
                 db.execute("UPDATE items SET play_status=CASE WHEN play_status='UNPLAYED'"

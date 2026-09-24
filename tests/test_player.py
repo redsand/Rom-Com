@@ -140,7 +140,10 @@ def test_a_bad_request_fails_where_someone_is_looking(monkeypatch, tmp_path):
 def test_the_agent_runs_the_queue_and_marks_it_played(monkeypatch, tmp_path):
     db, _ = setup(monkeypatch, tmp_path, {"snes": 'emu.exe "{rom}"'})
     spawned = []
-    monkeypatch.setattr(player.subprocess, "Popen", lambda *a, **k: spawned.append(a[0]))
+    class Alive:
+        def poll(self): return None
+    monkeypatch.setattr(player.subprocess, "Popen",
+                        lambda *a, **k: spawned.append(a[0]) or Alive())
     player.request_launch("snes-ct", db=db)
     assert player.agent_once(db) == 1
     assert len(spawned) == 1
@@ -152,7 +155,9 @@ def test_the_same_request_is_never_launched_twice(monkeypatch, tmp_path):
     """Claimed before spawning, so a second agent tick — or a second agent — cannot start
     the same game again."""
     db, _ = setup(monkeypatch, tmp_path, {"snes": '{rom}'})
-    monkeypatch.setattr(player.subprocess, "Popen", lambda *a, **k: None)
+    class Alive:
+        def poll(self): return None
+    monkeypatch.setattr(player.subprocess, "Popen", lambda *a, **k: Alive())
     player.request_launch("snes-ct", db=db)
     assert player.agent_once(db) == 1
     assert player.agent_once(db) == 0
@@ -218,3 +223,68 @@ def test_non_arcade_systems_keep_the_flat_layout(monkeypatch, tmp_path):
     dest = tmp_path / "card2"
     organize(str(dest), keep_only=True)
     assert (dest / "snes" / rom.name).exists()
+
+
+def test_play_stages_the_arcade_set_on_demand(monkeypatch, tmp_path):
+    """Clicking a game should play it. Before this, Play only worked for sets someone had
+    already exported by hand, and the failure was silent in the worst way: MAME printed
+    `NOT FOUND (tried in progolf)` to a console nobody sees, exited 0, and the UI said it
+    was running."""
+    from romcom import mameset
+    db, _ = setup(monkeypatch, tmp_path, {"arcade": 'mame.exe -rompath "{}" {{set}}'.format(tmp_path / "rp")})
+    monkeypatch.setattr(player, "rompath", lambda: str(tmp_path / "rp"))
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status,catalog_source,external_id)"
+                   " VALUES('a','Donkey King','arcade','VERIFIED','antopisa','arcade/dking')")
+    built = []
+    monkeypatch.setattr(mameset, "build", lambda sets, dest, db=None, dry_run=False:
+                        built.append(list(sets)) or
+                        {"sets": {s: {"complete": True, "missing": [], "roms": 1, "found": 1} for s in sets},
+                         "copied": 1, "bytes": 1, "complete": 1, "incomplete": 0})
+    r = player.request_launch("a", db=db)
+    assert built == [["dking"]]
+    assert r["staged"]["built"] is True
+    assert r["command"].endswith("dking")
+
+
+def test_an_unassemblable_set_refuses_before_queuing(monkeypatch, tmp_path):
+    """Better to say which roms are missing than to queue a launch that dies invisibly."""
+    from romcom import mameset
+    db, _ = setup(monkeypatch, tmp_path, {"arcade": 'mame.exe {set}'})
+    monkeypatch.setattr(player, "rompath", lambda: str(tmp_path / "rp"))
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status,catalog_source,external_id)"
+                   " VALUES('a','Broken','arcade','VERIFIED','antopisa','arcade/broken')")
+    monkeypatch.setattr(mameset, "build", lambda sets, dest, db=None, dry_run=False:
+                        {"sets": {"broken": {"complete": False, "missing": ["a.rom"], "roms": 2, "found": 1}},
+                         "copied": 0, "bytes": 0, "complete": 0, "incomplete": 1})
+    with pytest.raises(LookupError, match="a.rom"):
+        player.request_launch("a", db=db)
+    assert db.execute("SELECT COUNT(*) c FROM launch_requests").fetchone()["c"] == 0
+
+
+def test_an_emulator_that_quits_instantly_is_reported_as_failed(monkeypatch, tmp_path):
+    """A successful spawn proves nothing. MAME with a missing romset prints NOT FOUND, exits
+    0 and vanishes; that reported as RUNNING with no error while nothing happened on screen."""
+    db, _ = setup(monkeypatch, tmp_path, {"snes": 'emu.exe "{rom}"'})
+    monkeypatch.setattr(player, "EARLY_EXIT_SECS", 0.2)
+
+    class Dead:
+        def poll(self): return 0
+    monkeypatch.setattr(player.subprocess, "Popen", lambda *a, **k: Dead())
+    player.request_launch("snes-ct", db=db)
+    player.agent_once(db)
+    row = db.execute("SELECT status,error FROM launch_requests").fetchone()
+    assert row["status"] == "FAILED" and "exited" in row["error"]
+
+
+def test_a_surviving_emulator_stays_running(monkeypatch, tmp_path):
+    db, _ = setup(monkeypatch, tmp_path, {"snes": 'emu.exe "{rom}"'})
+    monkeypatch.setattr(player, "EARLY_EXIT_SECS", 0.2)
+
+    class Alive:
+        def poll(self): return None
+    monkeypatch.setattr(player.subprocess, "Popen", lambda *a, **k: Alive())
+    player.request_launch("snes-ct", db=db)
+    assert player.agent_once(db) == 1
+    assert db.execute("SELECT status FROM launch_requests").fetchone()["status"] == "RUNNING"
