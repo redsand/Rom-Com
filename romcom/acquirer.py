@@ -154,10 +154,18 @@ def _already_fetched(db, url):
 
 
 def _pick(results, min_score=MIN_SCORE):
-    """First usable result (rank() sorts descending) or None."""
+    """First usable result (rank() sorts descending) or None.
+
+    Results that advertise themselves as something other than a game are skipped before a
+    download is spent on them: a Nintendo DS title search returned a music album once, and
+    the cheapest bad download is the one never started."""
+    from .verify import result_smells_wrong
     for r in results or []:
-        if r.get("url") and r.get("score", 0) >= min_score:
-            return r
+        if not (r.get("url") and r.get("score", 0) >= min_score):
+            continue
+        if result_smells_wrong(r):
+            continue
+        return r
     return None
 
 
@@ -390,6 +398,17 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                 # means the item is fetched all over again on a later sweep, so it is worth
                 # retrying past a long-running writer: a bulk catalog edit can hold the
                 # write lock for longer than busy_timeout on its own.
+                # A fetch that returns a path proves only that bytes arrived. Check the
+                # shape of them against the system before the item is called satisfied --
+                # an album accepted here becomes a DOWNLOADED game nobody can play, and the
+                # mistake is only found much later at the emulator.
+                from .verify import check_download
+                ok_content, why = check_download(path, c["system"])
+                if not ok_content:
+                    with lock:
+                        direct_inflight.discard(url)
+                    _fail(c, f"{sname}: {why}")
+                    continue
                 _retry_write(wdb, "UPDATE items SET status='DOWNLOADED' WHERE id=?", (c["id"],))
                 try:
                     actions.journal_direct(wdb, c["id"], sname, direct, path)

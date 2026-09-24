@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import threading
 import time
 from datetime import datetime, timedelta
@@ -29,6 +30,19 @@ def fake_search(results):
         row = db.execute("SELECT * FROM items WHERE id=?", (ident,)).fetchone()
         return results, row
     return _search, seen
+
+
+def _fake_fetch(name):
+    """A stand-in download that really writes a file.
+
+    The acquirer inspects what landed before accepting it, so a fake that returns a
+    path without creating anything is no longer a faithful stand-in for a fetch."""
+    def _fetch(pick, dest):
+        out = Path(dest) / name
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"ROM" * 64)
+        return out
+    return _fetch
 
 
 def test_eligible_filters_status(monkeypatch, tmp_path):
@@ -394,7 +408,7 @@ def test_direct_fallback_when_indexer_has_nothing(monkeypatch, tmp_path):
     monkeypatch.setattr("romcom.acquirer.webdl.search",
                         lambda q, sys: [{"title": "super mario land", "console": "gameboy",
                                          "url": "https://r.example/gameboy-rom-super-mario-land/", "score": 100}])
-    monkeypatch.setattr("romcom.acquirer.webdl.fetch", lambda pick, dest: Path(dest) / "Super Mario Land (World).zip")
+    monkeypatch.setattr("romcom.acquirer.webdl.fetch", _fake_fetch("Super Mario Land (World).zip"))
     monkeypatch.setattr("romcom.actions.sync", lambda db: None)
     monkeypatch.setattr("romcom.acquirer.scan", lambda *a, **k: {"files": 1})
 
@@ -420,7 +434,7 @@ def test_direct_download_is_journaled(monkeypatch, tmp_path):
     monkeypatch.setattr("romcom.acquirer.webdl.search",
                         lambda q, sys: [{"title": "super mario land", "console": "gameboy",
                                          "url": "https://r.example/gameboy-rom-super-mario-land/", "score": 100}])
-    monkeypatch.setattr("romcom.acquirer.webdl.fetch", lambda pick, dest: Path(dest) / "Super Mario Land (World).zip")
+    monkeypatch.setattr("romcom.acquirer.webdl.fetch", _fake_fetch("Super Mario Land (World).zip"))
     monkeypatch.setattr("romcom.actions.sync", lambda db: None)
     monkeypatch.setattr("romcom.acquirer.scan", lambda *a, **k: {"files": 1})
 
@@ -452,8 +466,10 @@ def test_direct_duplicate_url_is_not_refetched(monkeypatch, tmp_path):
                         lambda q, sys: [{"title": "dragon ball z 4 in 1", "console": "nintendo",
                                          "url": same, "score": 100}])
     fetches = []
-    monkeypatch.setattr("romcom.acquirer.webdl.fetch",
-                        lambda pick, dest: fetches.append(pick["url"]) or Path(dest) / "dup.zip")
+    def _dup_fetch(pick, dest):
+        fetches.append(pick["url"])
+        return _fake_fetch("dup.zip")(pick, dest)
+    monkeypatch.setattr("romcom.acquirer.webdl.fetch", _dup_fetch)
     monkeypatch.setattr("romcom.actions.sync", lambda db: None)
     monkeypatch.setattr("romcom.acquirer.scan", lambda *a, **k: {"files": 1})
 
@@ -544,7 +560,7 @@ def test_indexer_error_falls_through_to_direct(monkeypatch, tmp_path):
         grabbed["q"] = q
         return [{"title": "super mario land", "url": "https://r/x/", "score": 100, "source": "romsgames"}]
     monkeypatch.setattr("romcom.acquirer.webdl.search", webdl_search)
-    monkeypatch.setattr("romcom.acquirer.webdl.fetch", lambda pick, dest: Path(dest) / "sml.zip")
+    monkeypatch.setattr("romcom.acquirer.webdl.fetch", _fake_fetch("sml.zip"))
     monkeypatch.setattr("romcom.actions.sync", lambda db: None)
     monkeypatch.setattr("romcom.acquirer.scan", lambda *a, **k: {"files": 1})
 
@@ -584,7 +600,7 @@ def test_vimm_used_when_enabled_and_romsgames_misses(monkeypatch, tmp_path):
     monkeypatch.setattr("romcom.acquirer.vimm.search",
                         lambda q, sys: [{"title": "super mario world", "score": 100,
                                          "url": "https://vimm.example/vault/1652", "source": "vimm"}])
-    monkeypatch.setattr("romcom.acquirer.vimm.fetch", lambda pick, dest: Path(dest) / "Super Mario World (USA).zip")
+    monkeypatch.setattr("romcom.acquirer.vimm.fetch", _fake_fetch("Super Mario World (USA).zip"))
     monkeypatch.setattr("romcom.actions.sync", lambda db: None)
     monkeypatch.setattr("romcom.acquirer.scan", lambda *a, **k: {"files": 1})
 
