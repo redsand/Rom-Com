@@ -46,6 +46,7 @@ RA_BASE = "https://retroachievements.org/API"
 # RAWG: platforms pulled per system, pages per platform, and the minimum votes below
 # which a community rating is one person's opinion wearing a number.
 RAWG_PAGES = 5
+RAWG_MAX_PAGES = 500   # safety ceiling for a full platform pull; the real stop is next=null
 RAWG_PAGE_SIZE = 40
 RAWG_MIN_VOTES = 3
 # Per-item RAWG searches per sync — the safety valve on the monthly budget even when
@@ -293,15 +294,18 @@ def _rawg_platform_id(db, slug):
 
 
 def rawg_top_games(db, slug):
-    """A platform's top-rated games — the bulk half of RAWG. ~5 calls per system,
-    so the whole library's popular games cost dozens of requests, not thousands."""
+    """A platform's games with enough votes to have an opinion — the bulk half of
+    RAWG, paged through the platform's WHOLE list. The owner wants every owned item
+    covered, not just each platform's famous 200; ~645 requests cover every system
+    we own, one-time, cached 14 days."""
     pid, name = _rawg_platform_id(db, slug)
     if not pid:
         return None
     def fetch():
         out, params = [], {"key": rawg_key(), "platforms": pid, "ordering": "-rating",
                            "page_size": RAWG_PAGE_SIZE}
-        for page in range(1, RAWG_PAGES + 1):
+        page = 1
+        while page <= RAWG_MAX_PAGES:  # safety ceiling; the real stop is next=null
             params["page"] = page
             # budget=False: this is the cheap, cached half of RAWG. The daily budget
             # guards the per-item searches; spending it here meant day one's bulk
@@ -317,8 +321,9 @@ def rawg_top_games(db, slug):
                                 "year": (g.get("released") or "")[:4] or None})
             if not data.get("next"):
                 break
+            page += 1
         return out
-    return cached("rawg", f"top:{slug}", fetch, ttl_minutes=60 * 24 * 14)
+    return cached("rawg", f"all:{slug}", fetch, ttl_minutes=60 * 24 * 14)
 
 
 def _rawg_search(db, slug, title):

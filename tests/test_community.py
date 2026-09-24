@@ -175,8 +175,9 @@ def test_a_lying_next_link_404s_the_probe_to_a_clean_stop(monkeypatch, tmp_path)
 
 
 def test_a_short_platforms_game_list_ends_cleanly_too(monkeypatch, tmp_path):
-    """A platform with fewer than RAWG_PAGES pages of games: the top-games pull must
-    keep what it found instead of losing the whole system's bulk match to a 404."""
+    """A platform with fewer pages of games than the loop might ask for: the top-games
+    pull must keep what it found instead of losing the whole system's bulk match to
+    a 404."""
     db = setup(monkeypatch, tmp_path)
     pages = {1: {"results": [{"name": "Kolibri", "rating": 3.9, "ratings_count": 12}],
                  "next": "?page=2"}}
@@ -189,6 +190,29 @@ def test_a_short_platforms_game_list_ends_cleanly_too(monkeypatch, tmp_path):
     monkeypatch.setattr(community, "rawg_key", lambda: "k")
     recs = community.rawg_top_games(db, "32x")
     assert recs == [{"title": "Kolibri", "score": 78, "votes": 12, "year": None}]
+
+
+def test_the_bulk_pull_pages_through_the_whole_platform(monkeypatch, tmp_path):
+    """The owner asked for every owned item to be covered, not just each platform's
+    famous 200. The pull follows next to the end of the list; the page cap is a
+    safety ceiling, not the working limit."""
+    db = setup(monkeypatch, tmp_path)
+    pages = {1: {"results": [{"name": "Page One", "rating": 4.0, "ratings_count": 30}],
+                 "next": "?page=2"},
+             2: {"results": [{"name": "Page Two", "rating": 4.5, "ratings_count": 40}],
+                 "next": "?page=3"},
+             3: {"results": [{"name": "Page Three", "rating": 3.5, "ratings_count": 6}],
+                 "next": None}}
+    seen = []
+    def fake_request(url, params, source, db_, budget=True):
+        seen.append(params.get("page", 1))
+        return pages[params["page"]]
+    monkeypatch.setattr(community, "_request", fake_request)
+    monkeypatch.setattr(community, "_rawg_platform_id", lambda db_, slug: (24, "Game Boy Advance"))
+    monkeypatch.setattr(community, "rawg_key", lambda: "k")
+    recs = community.rawg_top_games(db, "gba")
+    assert [r["title"] for r in recs] == ["Page One", "Page Two", "Page Three"]
+    assert seen == [1, 2, 3]      # followed next to its end, then stopped
 
 
 class _FlakyDb:
