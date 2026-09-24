@@ -131,3 +131,43 @@ def test_devices_are_never_offered_as_playable(monkeypatch, tmp_path):
                    " VALUES('d','Namco 54xx','arcade','VERIFIED','antopisa','arcade/namco54',1)")
     mameset.refresh_playable(db)
     assert db.execute("SELECT playable FROM items WHERE id='d'").fetchone()["playable"] == 0
+
+
+def test_best_available_counts_as_runnable(monkeypatch, tmp_path):
+    """MAME says "best available" when a set is as complete as anyone's copy can be — the
+    only roms absent were never dumped — and the game runs. Filing those with the genuinely
+    broken sets understated this library by 787 playable games."""
+    db, tmp = _setup(monkeypatch, tmp_path)
+    import subprocess
+    monkeypatch.setattr(mameset, "dat_path", lambda: tmp / "arcade.dat")
+    monkeypatch.setattr(mameset, "build", lambda *a, **k: {"sets": {}, "copied": 0})
+    import romcom.player as pl
+    monkeypatch.setattr(pl, "rompath", lambda: str(tmp))
+    exe = tmp / "mame.exe"; exe.write_bytes(b"x")
+    monkeypatch.setattr(pl, "emulator_options", lambda s: [("mame", f'"{exe}" {{set}}')])
+
+    class R:
+        stdout = ("romset galaga is good\n"
+                  "romset 005 is best available\n"
+                  "romset wrecked is bad\n")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: R())
+    r = mameset.prove(setnames=["galaga", "005", "wrecked"], db=db)
+    assert r["good"] == ["galaga"]
+    assert r["best_available"] == ["005"]
+    assert list(r["bad"]) == ["wrecked"]
+    assert r["runnable"] == ["005", "galaga"]
+
+
+def test_the_emulators_verdict_replaces_our_arithmetic(monkeypatch, tmp_path):
+    """assemblable() is a calculation over the dat; prove() is the emulator's answer. They
+    disagreed on 230 of 6,041 sets, and where they disagree the emulator is right — it is the
+    thing that has to load the game."""
+    db, tmp = _setup(monkeypatch, tmp_path)
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status,catalog_source,external_id,playable)"
+                   " VALUES('a','Galaga','arcade','VERIFIED','antopisa','arcade/galaga',0)")
+        db.execute("INSERT INTO items(id,title,system,status,catalog_source,external_id,playable)"
+                   " VALUES('b','Wrecked','arcade','VERIFIED','antopisa','arcade/wrecked',1)")
+    mameset.record_proof({"runnable": ["galaga"], "bad": {"wrecked": "romset wrecked is bad"}}, db=db)
+    got = {r["id"]: r["playable"] for r in db.execute("SELECT id,playable FROM items")}
+    assert got == {"a": 1, "b": 0}

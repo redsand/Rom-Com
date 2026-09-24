@@ -216,8 +216,13 @@ def cmd_audit(a):
 def cmd_prove(a):
     from .mameset import prove
     r = prove(progress=lambda n, t: print(f"  verifying {n}/{t}..."))
-    print(json.dumps({"checked": r.get("checked"), "good": r.get("good_count"),
-                      "bad": r.get("bad_count"), "error": r.get("error")}, indent=2))
+    if r.get("error"):
+        print(r["error"]); return 1
+    from .mameset import record_proof
+    rec = record_proof(r) if a.record else {}
+    print(json.dumps({"checked": r["checked"], "good": r["good_count"],
+                      "best_available": r["best_count"], "bad": r["bad_count"],
+                      "runnable": len(r["runnable"]), **rec}, indent=2))
     for s, why in list((r.get("bad") or {}).items())[:10]:
         print(f"  {s}: {why}")
 
@@ -328,6 +333,8 @@ def main():
     au.add_argument("--fix", action="store_true", help="apply the corrections")
     au.set_defaults(fn=cmd_audit)
     pv=s.add_parser("prove", help="have MAME verify the arcade sets it would run")
+    pv.add_argument("--record", action="store_true",
+                    help="write MAME's verdict into the catalog")
     pv.set_defaults(fn=cmd_prove)
     dp=s.add_parser("displays", help="list monitors games can be sent to")
     dp.set_defaults(fn=cmd_displays)
