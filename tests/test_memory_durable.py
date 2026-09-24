@@ -1,5 +1,6 @@
 """Long-term memory must survive the embedding model being down."""
 import romcom.chatstore as cs
+import romcom.llmclient as _llm
 from romcom.db import connect
 
 
@@ -85,3 +86,48 @@ def test_a_healthy_model_stores_directly_and_queues_nothing(monkeypatch, tmp_pat
     _fake_embeddings(monkeypatch)
     assert cs.store_chunk_durable("session_summary", "fine", ref_id=1) is not None
     assert cs.pending_chunks() == 0
+
+
+# ------------------------------------------- short threads must still reach memory
+
+def test_a_short_finished_thread_is_summarized_so_it_is_recallable(monkeypatch, tmp_path):
+    """Recall is built from session summaries, and summarization only fires once a thread is
+    long enough to be worth compressing — so a two-message exchange left no trace at all,
+    ever. Four sessions in the real library are exactly that and are unrecallable."""
+    _db(monkeypatch, tmp_path)
+    _fake_embeddings(monkeypatch)
+    sid = cs.new_session("short one")
+    cs.append(sid, "user", "the SNES folder is H:/Games/snes")
+    cs.append(sid, "assistant", "noted")
+    # Backdate it so it counts as finished rather than in-flight.
+    with cs.connect() as db:
+        db.execute("UPDATE chat_messages SET created_at='2000-01-01T00:00:00' WHERE session_id=?", (sid,))
+    monkeypatch.setattr(_llm, "chat", lambda *a, **k: {"content": "Owner's SNES folder: H:/Games/snes"})
+    assert cs.summarize_stale_sessions() == [sid]
+    assert "SNES folder" in (cs.session(sid)["summary"] or "")
+    assert cs.recall("where do snes roms live", k=3, min_score=0.0), "should now be recallable"
+
+
+def test_an_active_thread_is_left_alone(monkeypatch, tmp_path):
+    """Idleness stands in for a session-close event, so a thread still being typed into must
+    not be compressed out from under the person using it."""
+    _db(monkeypatch, tmp_path)
+    sid = cs.new_session("live one")
+    cs.append(sid, "user", "still talking")
+    called = []
+    monkeypatch.setattr(_llm, "chat", lambda *a, **k: called.append(1) or {"content": "x"})
+    assert cs.summarize_stale_sessions() == []
+    assert not called
+
+
+def test_it_is_bounded_per_turn(monkeypatch, tmp_path):
+    """This runs on an ordinary turn and each session costs a model round trip."""
+    _db(monkeypatch, tmp_path)
+    _fake_embeddings(monkeypatch)
+    for i in range(6):
+        sid = cs.new_session(f"s{i}")
+        cs.append(sid, "user", f"note {i}")
+    with cs.connect() as db:
+        db.execute("UPDATE chat_messages SET created_at='2000-01-01T00:00:00'")
+    monkeypatch.setattr(_llm, "chat", lambda *a, **k: {"content": "summary"})
+    assert len(cs.summarize_stale_sessions(limit=2)) == 2

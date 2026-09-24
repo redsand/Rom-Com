@@ -590,7 +590,40 @@ def _unsummarized(sid):
     return [m for m in history(sid) if m["id"] > (row["summarized_to"] or 0)]
 
 
-def maybe_summarize(sid, model=None, emit=None):
+STALE_SESSION_MINUTES = 45   # a thread untouched this long is treated as finished
+
+
+def summarize_stale_sessions(model=None, limit=3, minutes=STALE_SESSION_MINUTES):
+    """Close out finished threads so short ones still reach long-term memory.
+
+    Recall is built from session summaries, and summarization only fires once a thread is
+    long enough to be worth compressing. A short exchange therefore left no trace at all,
+    ever -- four of the sessions in this library are two messages each and are simply
+    unrecallable. There is no session-close event to hang this on, so idleness stands in
+    for it: a thread nobody has touched in `minutes` is over.
+
+    Bounded per call, because this runs on an ordinary turn and each session costs a model
+    round trip. Never raises: this is housekeeping, and it must not take a turn down."""
+    from datetime import datetime, timedelta
+    cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat(timespec="seconds")
+    done = []
+    try:
+        rows = connect().execute(
+            """SELECT s.id FROM chat_sessions s
+               JOIN chat_messages m ON m.session_id = s.id
+               WHERE m.id > COALESCE(s.summarized_to, 0)
+               GROUP BY s.id HAVING MAX(m.created_at) < ?
+               ORDER BY s.id LIMIT ?""", (cutoff, int(limit))).fetchall()
+        for r in rows:
+            # force=True: the point is to compress threads too short to trip the trigger.
+            if maybe_summarize(r["id"], model=model, force=True):
+                done.append(r["id"])
+    except Exception:
+        pass
+    return done
+
+
+def maybe_summarize(sid, model=None, emit=None, force=False):
     """Fold the oldest unsummarized messages into `chat_sessions.summary`.
 
     Returns the new summary text, or None if nothing was due or the model was unavailable.
@@ -610,7 +643,7 @@ def maybe_summarize(sid, model=None, emit=None):
         except Exception:
             pass
         pending = _unsummarized(sid)
-        if len(pending) < SUMMARY_TRIGGER:
+        if len(pending) < SUMMARY_TRIGGER and not force:
             return None
         # Everything except the newest SUMMARY_KEEP messages gets compressed.
         batch = pending[:-SUMMARY_KEEP] if len(pending) > SUMMARY_KEEP else pending

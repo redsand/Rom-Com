@@ -295,6 +295,9 @@ def run_turn(sid, message, registry, emit, cancel=None, model=None):
     # this call, and doing it afterwards would leave the first exchange past the trigger
     # running against a stale window. No-ops until the thread is long enough to be due.
     chatstore.maybe_summarize(sid, model=model, emit=emit)
+    # Close out threads that ended without ever getting long enough to summarize; without
+    # this a short exchange leaves no durable trace at all.
+    chatstore.summarize_stale_sessions(model=model)
     return _loop(sid, registry, emit, cancel, model)
 
 
