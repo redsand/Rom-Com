@@ -150,7 +150,12 @@ def create_app():
         return jsonify({"systems": systems, "statuses": LIFECYCLE, "all_systems": sorted(known | set(systems))})
 
     def _item_filter(args):
+        # MAME device/bios sets are catalogued because their roms are hard dependencies
+        # -- galaga will not run without namco54 -- but they are not games and must not
+        # sit in the library ahead of them. `?devices=1` opts in.
         q = "SELECT * FROM items WHERE 1=1"; p = []
+        if request.args.get("devices") not in ("1", "true", "yes"):
+            q += " AND COALESCE(is_device,0)=0"
         if args.get("system"): q += " AND system=?"; p.append(args["system"])
         if args.get("status"): q += " AND status=?"; p.append(args["status"])
         if args.get("q"):

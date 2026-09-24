@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS items (
  preferred_runtime TEXT, source TEXT, notes TEXT,
  catalog_source TEXT, external_id TEXT, support_level TEXT,
  region TEXT, language TEXT, play_status TEXT NOT NULL DEFAULT 'UNPLAYED',
- keep INTEGER NOT NULL DEFAULT 0, last_played TEXT,
+ keep INTEGER NOT NULL DEFAULT 0, last_played TEXT, is_device INTEGER NOT NULL DEFAULT 0,
  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS aliases (
@@ -152,7 +152,11 @@ MIGRATIONS = {
    # Curation marker, set by hand after actually playing something. Deliberately not
    # `wanted`: wanted means "acquire this", keep means "this earned a slot on the card",
    # and the whole point of auditioning a library is that those two are different sets.
-   "keep":"INTEGER NOT NULL DEFAULT 0","last_played":"TEXT"
+   "keep":"INTEGER NOT NULL DEFAULT 0","last_played":"TEXT",
+   # A MAME device/BIOS set: not a game, so it never appears in the library, but
+   # its roms are a hard dependency -- galaga will not run without namco54 -- so
+   # it stays catalogued and exportable.
+   "is_device":"INTEGER NOT NULL DEFAULT 0"
  },
  "volumes": {"min_bytes":"INTEGER","max_bytes":"INTEGER","updated_at":"TEXT"},
  "jobs": {"result_url":"TEXT","source":"TEXT"},

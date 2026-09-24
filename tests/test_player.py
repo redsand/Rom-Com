@@ -178,33 +178,36 @@ def test_agent_status_reports_whether_anyone_is_listening(monkeypatch, tmp_path)
     assert player.agent_status(db)["running"] is True
 
 
-def test_arcade_exports_as_one_directory_per_set(monkeypatch, tmp_path):
-    """A MAME set is many chip images that only mean anything together. A flat copy is
-    doubly broken: 253,351 arcade files share only 126,980 distinct basenames, so half would
-    silently overwrite the other half — and MAME could not read the result either. A
-    directory named for the set is a layout it loads directly."""
+def test_arcade_export_is_delegated_to_the_set_builder(monkeypatch, tmp_path):
+    """Arcade is built from the dat, not copied from the match table.
+
+    One physical file belongs to many sets while files.matched_item_id records a single
+    owner, so copying matched files left every set but one incomplete — galaga came out
+    missing prom-2.5c exactly that way. mameset.build owns the layout now; this pins that
+    organize hands arcade over to it and does not copy those rows itself."""
     from romcom.organizer import organize
+    from romcom import mameset
     monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "arc.db"))
     from romcom.config import invalidate
     invalidate()
     db = connect()
     src = tmp_path / "flat"; src.mkdir()
     with db:
-        for setname, chips in (("pacman", ["1.bin", "2.bin"]), ("galaga", ["1.bin", "3.bin"])):
-            db.execute("INSERT INTO items(id,title,system,status,catalog_source,external_id,keep)"
-                       " VALUES(?,?,'arcade','VERIFIED','antopisa',?,1)",
-                       (f"a-{setname}", setname.title(), f"arcade/{setname}"))
-            for ch in chips:
-                pth = src / f"{setname}_{ch}"
-                pth.write_bytes(b"x")
-                db.execute("INSERT INTO files(path,bytes,matched_item_id,content) VALUES(?,1,?,1)",
-                           (str(pth), f"a-{setname}"))
-    dest = tmp_path / "card"
-    r = organize(str(dest), keep_only=True)
-    assert r["copied"] == 4
-    assert sorted(p.name for p in (dest / "arcade").iterdir()) == ["galaga", "pacman"]
-    assert (dest / "arcade" / "pacman" / "pacman_1.bin").exists()
-    assert (dest / "arcade" / "galaga" / "galaga_1.bin").exists()   # same basename, no clash
+        db.execute("INSERT INTO items(id,title,system,status,catalog_source,external_id,keep)"
+                   " VALUES('a','Galaga','arcade','VERIFIED','antopisa','arcade/galaga',1)")
+        (src / "gg1.3p").write_bytes(b"x")
+        db.execute("INSERT INTO files(path,bytes,matched_item_id,content) VALUES(?,1,'a',1)",
+                   (str(src / "gg1.3p"),))
+    seen = {}
+    monkeypatch.setattr(mameset, "build",
+                        lambda sets, dest, db=None, dry_run=False:
+                        seen.update(sets=list(sets), dest=str(dest)) or
+                        {"sets": {}, "copied": 3, "bytes": 0, "complete": 1, "incomplete": 0})
+    r = organize(str(tmp_path / "card"), keep_only=True)
+    assert seen["sets"] == ["galaga"]
+    assert seen["dest"].endswith("arcade")
+    assert r["arcade"]["complete"] == 1
+    assert r["copied"] == 3        # the builder's count, not a second copy of the same files
 
 
 def test_non_arcade_systems_keep_the_flat_layout(monkeypatch, tmp_path):

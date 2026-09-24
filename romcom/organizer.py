@@ -3,6 +3,41 @@ from pathlib import Path
 import shutil
 from .db import connect
 
+import re
+from .config import ROOT
+
+
+def _device_deps(setnames):
+    """Device sets the given arcade sets need, read from the MAME dat.
+
+    A MAME game is not self-contained. galaga will not boot without namco54's roms, which
+    live in their own set, and MAME reports it as plainly as it can:
+    `54xx.bin - NOT FOUND (namco54)`. The dat records the dependency as <device_ref>, so an
+    export that ignores it produces a card full of games that refuse to start.
+
+    Returns an empty set when no dat is present rather than failing: a missing reference file
+    should degrade the export, not block it.
+    """
+    dat = next((p for p in (ROOT / "DAT" / "MAME").glob("*.dat")
+                if "arcade" in p.name.lower()), None) if (ROOT / "DAT" / "MAME").exists() else None
+    if not dat:
+        return set()
+    want, deps, cur = set(setnames), set(), None
+    try:
+        for line in dat.open(encoding="utf-8", errors="replace"):
+            m = re.search(r'<(?:game|machine)\s+name="([^"]+)"', line)
+            if m:
+                cur = m.group(1)
+                continue
+            if cur in want:
+                d = re.search(r'<device_ref\s+name="([^"]+)"', line)
+                if d:
+                    deps.add(d.group(1))
+    except OSError:
+        return set()
+    return deps - want
+
+
 def _safe(name):
     """A directory name MAME and Windows will both accept."""
     out = "".join(c for c in str(name) if c not in '<>:"/\\|?*').strip().rstrip(".")
@@ -34,6 +69,20 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
       JOIN items i ON i.id=f.matched_item_id
       WHERE (? = 0 OR i.wanted = 1) AND (? = 0 OR i.keep = 1)
       ORDER BY i.system, i.title""", (1 if wanted_only else 0, 1 if keep_only else 0)).fetchall()
+    # Arcade is built, not copied. One physical file belongs to many sets, and
+    # `files.matched_item_id` records a single owner, so copying matched files leaves every
+    # set but one incomplete -- galaga came out missing prom-2.5c that way. A flattened dump
+    # also renames collisions (`prom-2.5c_7`), and MAME only looks for the canonical name.
+    # mameset.build resolves each set's roms from the dat by hash and writes them under the
+    # names MAME expects, devices included.
+    arcade_sets = sorted({(r["external_id"] or "").split("/", 1)[-1]
+                          for r in rows if (r["system"] or "").lower() == "arcade"})
+    arcade_report = None
+    if arcade_sets:
+        from . import mameset
+        arcade_report = mameset.build(arcade_sets, Path(dest) / "arcade", db=db, dry_run=dry_run)
+        rows = [r for r in rows if (r["system"] or "").lower() != "arcade"]
+
     if sources:
         keep = {s.lower() for s in sources}
         ids = {r["path"] for r in db.execute(
@@ -79,8 +128,12 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         except OSError as e:
             errors.append({"file": src.name, "error": str(e)})
     if progress: progress(len(rows), len(rows), "done")
+    if arcade_report:
+        by_system["arcade"] = arcade_report["complete"] + arcade_report["incomplete"]
+        copied += arcade_report["copied"]
     out = {"matched_files": len(rows), "copied": copied, "skipped": skipped,
            "missing": missing, "by_system": by_system, "errors": errors,
+           "arcade": arcade_report,
            "wanted_only": bool(wanted_only), "keep_only": bool(keep_only),
            "sources": sorted(sources) if sources else None}
     if dry_run:

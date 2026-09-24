@@ -1,25 +1,30 @@
-# Emulator command per system, used by `romcom play <game>`.
+# Emulator command per system, used by the Library's Play button and `romcom play`.
 #
-# `{rom}` is replaced with the path of the largest content file matched to the item.
-# Quote it: ROM paths routinely contain spaces and commas.
+# `{rom}` -> the largest content file matched to the item.
+# `{set}` -> the catalog's short name for it (external_id without the system prefix).
 #
-# Launching happens in YOUR session, from the CLI. The web service runs as LocalSystem in
-# session 0, which cannot put a window on your desktop — so the UI shows you the command
-# rather than pretending it can run it.
+# Which one you need depends on the emulator. Most take a file path. MAME does not: it takes
+# a machine name and finds the roms itself under -rompath, so arcade uses {set}.
 #
-# Arcade note: MAME wants a set name, not a file path, and reads from its own rompath. The
-# example below passes the set name, which is what the catalog stores as the external id.
+# Launching happens in YOUR session. The web service runs as LocalSystem in session 0, which
+# has no desktop, so it queues the command and `romcom agent` — running as you — executes it.
+# Start the agent with:  python -m romcom agent
 
-emulators: {}
+emulators:
+  # MAME cannot read a flattened rom dump; it needs one directory (or zip) per set. Build
+  # that with:  python -m romcom organize H:/Games/mame-sets --keep-only --system arcade
+  # which writes H:/Games/mame-sets/arcade/<set>/<roms>, devices included.
+  arcade: 'H:/Emus/MAME/mame.exe -rompath "H:/Games/mame-sets/arcade" {set}'
 
-# Example — uncomment and point at your own binaries:
+# RetroArch — fill in once installed at H:/Emus/RetroArch. Cores live under
+# H:/Emus/RetroArch/cores and the exact dll names vary by build, so check that folder.
 #
-# emulators:
-#   snes:    'C:/RetroArch/retroarch.exe -L cores/snes9x_libretro.dll "{rom}"'
-#   nes:     'C:/RetroArch/retroarch.exe -L cores/mesen_libretro.dll "{rom}"'
-#   gba:     'C:/RetroArch/retroarch.exe -L cores/mgba_libretro.dll "{rom}"'
-#   n64:     'C:/RetroArch/retroarch.exe -L cores/mupen64plus_next_libretro.dll "{rom}"'
-#   nds:     'C:/melonDS/melonDS.exe "{rom}"'
-#   genesis: 'C:/RetroArch/retroarch.exe -L cores/genesis_plus_gx_libretro.dll "{rom}"'
-#   ps1:     'C:/duckstation/duckstation-qt-x64-ReleaseLTCG.exe "{rom}"'
-#   arcade:  'C:/mame/mame.exe "{rom}"'
+#   snes:    'H:/Emus/RetroArch/retroarch.exe -L H:/Emus/RetroArch/cores/snes9x_libretro.dll "{rom}"'
+#   nes:     'H:/Emus/RetroArch/retroarch.exe -L H:/Emus/RetroArch/cores/mesen_libretro.dll "{rom}"'
+#   gba:     'H:/Emus/RetroArch/retroarch.exe -L H:/Emus/RetroArch/cores/mgba_libretro.dll "{rom}"'
+#   gb:      'H:/Emus/RetroArch/retroarch.exe -L H:/Emus/RetroArch/cores/gambatte_libretro.dll "{rom}"'
+#   gbc:     'H:/Emus/RetroArch/retroarch.exe -L H:/Emus/RetroArch/cores/gambatte_libretro.dll "{rom}"'
+#   n64:     'H:/Emus/RetroArch/retroarch.exe -L H:/Emus/RetroArch/cores/mupen64plus_next_libretro.dll "{rom}"'
+#   genesis: 'H:/Emus/RetroArch/retroarch.exe -L H:/Emus/RetroArch/cores/genesis_plus_gx_libretro.dll "{rom}"'
+#   nds:     'H:/Emus/RetroArch/retroarch.exe -L H:/Emus/RetroArch/cores/melonds_libretro.dll "{rom}"'
+#   ps1:     'H:/Emus/RetroArch/retroarch.exe -L H:/Emus/RetroArch/cores/swanstation_libretro.dll "{rom}"'

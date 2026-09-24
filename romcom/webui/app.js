@@ -287,9 +287,9 @@ $("#lib-table").addEventListener("change", async e => {
 });
 
 /* ---------- Search: a quick indexer probe reported as a fading toast ---------- */
+document.addEventListener("click", e => {
   const pb = e.target.closest(".act-play");
   if (pb) { playGame(pb.dataset.id, pb.dataset.title); return; }
-document.addEventListener("click", e => {
   const b = e.target.closest(".act-search");
   if (b) quickSearch(b.dataset.id, b.dataset.title);
 });

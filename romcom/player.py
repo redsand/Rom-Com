@@ -69,11 +69,20 @@ def command_for(ident, db=None):
         raise LookupError(
             f"no emulator configured for {system!r} — add it to emulators.yaml, e.g.\n"
             f"  emulators:\n    {system}: 'C:/RetroArch/retroarch.exe -L core.dll \"{{rom}}\"'")
+    # MAME is the odd one out and the reason {set} exists: it takes a machine name and finds
+    # the roms itself via its rompath, so handing it a file path launches nothing. The
+    # catalog already stores that name -- external_id is "arcade/<setname>".
+    setname = (item["external_id"] or "").split("/", 1)[-1] or item["title"]
     rom = rom_for(db, item)
-    if not rom:
+    # Only insist on a file when the template actually wants one. A rompath-driven emulator
+    # needs no path from us, and refusing to launch it for lack of one would be nonsense.
+    if "{rom}" in template and not rom:
         raise LookupError(f"{item['title']!r} has no file on disk to launch")
+    command = template.replace("{set}", setname)
+    if rom:
+        command = command.replace("{rom}", rom)
     return {"item": item["id"], "title": item["title"], "system": system,
-            "rom": rom, "command": template.replace("{rom}", rom)}
+            "set": setname, "rom": rom, "command": command}
 
 
 def launch(ident, db=None, record=True):
