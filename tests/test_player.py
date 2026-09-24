@@ -380,3 +380,31 @@ def test_an_unknown_display_is_ignored_rather_than_guessed(monkeypatch):
     monkeypatch.setattr(player, "displays", lambda: SCREENS)
     monkeypatch.setattr(player, "_display_choice", lambda s: 9)
     assert player._with_display("mame.exe galaga", "arcade") == "mame.exe galaga"
+
+
+# ------------------------------------------------------- choosing an emulator
+
+def test_a_system_can_offer_several_emulators(monkeypatch, tmp_path):
+    """One core misbehaving, or RetroArch busy scanning, should not stop a game being tried
+    somewhere else. The first entry stays the default, so a plain string behaves as before."""
+    db, rom = setup(monkeypatch, tmp_path, {
+        "snes": {"retroarch": 'retroarch.exe -L snes9x.dll "{rom}"',
+                 "mame": 'mame.exe snes -cart "{rom}"'}})
+    assert [n for n, _ in player.emulator_options("snes")] == ["retroarch", "mame"]
+    assert "retroarch.exe" in player.command_for("snes-ct", db=db)["command"]
+    assert "mame.exe" in player.command_for("snes-ct", db=db, emulator="mame")["command"]
+
+
+def test_a_single_emulator_still_works_unchanged(monkeypatch, tmp_path):
+    db, _ = setup(monkeypatch, tmp_path, {"snes": 'emu.exe "{rom}"'})
+    assert [n for n, _ in player.emulator_options("snes")] == ["default"]
+    assert "emu.exe" in player.command_for("snes-ct", db=db)["command"]
+
+
+def test_an_unknown_emulator_name_lists_the_real_ones(monkeypatch, tmp_path):
+    """Silently falling back to the default would launch the thing the owner just chose not
+    to use."""
+    db, _ = setup(monkeypatch, tmp_path, {
+        "snes": {"retroarch": 'a.exe "{rom}"', "mame": 'b.exe "{rom}"'}})
+    with pytest.raises(LookupError, match="retroarch, mame"):
+        player.command_for("snes-ct", db=db, emulator="dolphin")

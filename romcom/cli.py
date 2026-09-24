@@ -183,6 +183,21 @@ def cmd_adopt(a):
     from .scanner import adopt_unmatched
     print(json.dumps(adopt_unmatched(root=a.root),indent=2))
 
+def cmd_audit(a):
+    from .audit import audit
+    r = audit(fix=a.fix)
+    print(json.dumps({k: v for k, v in r.items() if k != "examples"}, indent=2))
+    if not a.fix and r["status_changes"]:
+        print(f'{r["status_changes"]} claim(s) disagree with the evidence; re-run with --fix')
+
+def cmd_prove(a):
+    from .mameset import prove
+    r = prove(progress=lambda n, t: print(f"  verifying {n}/{t}..."))
+    print(json.dumps({"checked": r.get("checked"), "good": r.get("good_count"),
+                      "bad": r.get("bad_count"), "error": r.get("error")}, indent=2))
+    for s, why in list((r.get("bad") or {}).items())[:10]:
+        print(f"  {s}: {why}")
+
 def cmd_displays(a):
     from . import player
     ds = player.displays()
@@ -277,6 +292,11 @@ def main():
     aa=s.add_parser("auto-acquire"); aa.add_argument("--poll",type=float,default=None); aa.add_argument("--max-wait",type=float,dest="max_wait",default=None); aa.add_argument("--max-batch",type=int,dest="max_batch",default=None); aa.add_argument("--parallel",type=int,default=None); aa.add_argument("--watch",action="store_true"); aa.set_defaults(fn=cmd_auto_acquire)
     wd=s.add_parser("webdl"); wd.add_argument("ident"); wd.add_argument("--result",type=int); wd.add_argument("--out"); wd.set_defaults(fn=cmd_webdl)
     sc=s.add_parser("scan"); sc.add_argument("path"); sc.add_argument("--no-name-match",action="store_true"); sc.add_argument("--no-adopt",action="store_true"); sc.add_argument("--no-recursive",action="store_true"); sc.set_defaults(fn=cmd_scan)
+    au=s.add_parser("audit", help="check every claim against the evidence")
+    au.add_argument("--fix", action="store_true", help="apply the corrections")
+    au.set_defaults(fn=cmd_audit)
+    pv=s.add_parser("prove", help="have MAME verify the arcade sets it would run")
+    pv.set_defaults(fn=cmd_prove)
     dp=s.add_parser("displays", help="list monitors games can be sent to")
     dp.set_defaults(fn=cmd_displays)
     pb=s.add_parser("playable", help="recompute which arcade sets can be assembled")

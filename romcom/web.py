@@ -537,7 +537,8 @@ def create_app():
             return jsonify({"error": "no launch agent is running — start it in your own "
                                      "session with: romcom agent", "agent": st}), 409
         try:
-            return jsonify(player.request_launch(item_id))
+            emulator = (request.get_json(silent=True) or {}).get("emulator") or None
+            return jsonify(player.request_launch(item_id, emulator=emulator))
         except LookupError as e:
             return jsonify({"error": str(e)}), 404
 
@@ -546,6 +547,15 @@ def create_app():
         from . import player
         r = player.launch_request(rid)
         return (jsonify(r), 200) if r else (jsonify({"error": "no such request"}), 404)
+
+    @app.get("/api/emulators")
+    def api_emulators():
+        """Which emulators each system can use. The UI offers a choice when there is one."""
+        from . import player
+        systems = {}
+        for system in (player.emulators() or {}):
+            systems[system] = [n for n, _ in player.emulator_options(system)]
+        return jsonify(systems)
 
     @app.get("/api/agent")
     def api_agent():

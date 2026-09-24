@@ -175,3 +175,68 @@ def refresh_playable(db=None):
                            AND substr(external_id, instr(external_id,'/')+1) IN ({q})""",
                        tuple(ok))
     return db.execute("SELECT COUNT(*) c FROM items WHERE playable=1").fetchone()["c"]
+
+
+def prove(setnames=None, db=None, rompath=None, batch=200, progress=None):
+    """Ask MAME itself whether sets are complete, and record the verdict.
+
+    `assemblable()` is our own arithmetic over the dat; this is the emulator that will
+    actually run the game, checking every rom's size and hash with `-verifyroms`. For an
+    archive that is the difference between believing a set is good and knowing it. MAME
+    accepts many set names per invocation, so this is batched rather than one process per
+    game.
+
+    Sets are staged into the rompath first, because MAME can only verify what it can see.
+    Returns {"good": [...], "bad": {set: reason}, "checked": n}.
+    """
+    import re
+    import subprocess
+    from .db import connect
+    from .player import emulator_options, rompath as configured_rompath
+
+    db = db or connect()
+    root = rompath or configured_rompath()
+    if not root:
+        return {"error": "no rompath configured in emulators.yaml", "checked": 0,
+                "good": [], "bad": {}}
+    exe = None
+    for _name, template in emulator_options("arcade"):
+        for token in template.replace('"', " ").split():
+            if token.lower().endswith("mame.exe") and Path(token).exists():
+                exe = token
+                break
+        if exe:
+            break
+    if not exe:
+        return {"error": "mame.exe not found in the arcade emulator command", "checked": 0,
+                "good": [], "bad": {}}
+
+    if setnames is None:
+        setnames = sorted(r["external_id"].split("/", 1)[-1] for r in db.execute(
+            "SELECT external_id FROM items WHERE system='arcade' AND playable=1"
+            " AND COALESCE(is_device,0)=0"))
+    setnames = list(setnames)
+    good, bad = [], {}
+    for i in range(0, len(setnames), batch):
+        chunk = setnames[i:i + batch]
+        build(chunk, root, db=db)          # MAME can only verify what it can see
+        if progress:
+            progress(i + len(chunk), len(setnames))
+        try:
+            p = subprocess.run([exe, "-rompath", str(root), "-verifyroms", *chunk],
+                               capture_output=True, text=True, timeout=1800,
+                               cwd=str(Path(exe).parent))
+        except Exception as e:
+            for s in chunk:
+                bad[s] = f"{type(e).__name__}: {e}"
+            continue
+        for line in (p.stdout or "").splitlines():
+            m = re.match(r"romset (\S+)(?: \[\S+\])? is good", line)
+            if m:
+                good.append(m.group(1))
+                continue
+            m = re.match(r"romset (\S+)(?: \[\S+\])? is (bad|best available)", line)
+            if m:
+                bad.setdefault(m.group(1), line.strip())
+    return {"checked": len(setnames), "good": sorted(set(good)), "bad": bad,
+            "good_count": len(set(good)), "bad_count": len(bad)}

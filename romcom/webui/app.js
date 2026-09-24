@@ -187,6 +187,11 @@ function libQuery() {
   return p;
 }
 
+// Emulator choices per system, fetched once. A system with more than one gets a picker
+// beside Play — RetroArch being busy scanning should not block testing a game in MAME.
+let EMULATORS = {};
+api("/api/emulators").then(d => { EMULATORS = d || {}; }).catch(() => {});
+
 // Play is offered when the server says so. The rule differs by system — arcade sets are
 // assembled from a flat dump by hash, so status cannot answer it — and keeping that
 // judgement server-side means the browser never has to know the difference.
@@ -204,7 +209,11 @@ function itemRow(r) {
     <td class="c"><input type="checkbox" class="flag" data-field="wanted" data-id="${esc(r.id)}" ${r.wanted ? "checked" : ""}></td>
     <td class="c"><input type="checkbox" class="flag" data-field="keep" data-id="${esc(r.id)}" ${r.keep ? "checked" : ""} title="Mark for export to the card"></td>
     <td class="nowrap">
-      ${r.can_play ? `<button class="small act-play" data-id="${esc(r.id)}" data-title="${esc(r.title)}" title="Launch in your emulator (needs: romcom agent)">Play</button>` : ""}
+      ${r.can_play ? `${(EMULATORS[r.system] || []).length > 1
+          ? `<select class="small emu-pick" data-id="${esc(r.id)}" title="Emulator">${
+              (EMULATORS[r.system] || []).map(n => `<option>${esc(n)}</option>`).join("")}</select>`
+          : ""}<button class="small act-play" data-id="${esc(r.id)}" data-title="${esc(r.title)}"
+          title="Launch in your emulator (needs: romcom agent)">Play</button>` : ""}
       <button class="small primary act-search" data-id="${esc(r.id)}" data-title="${esc(r.title)}" ${r.authorized ? "" : "disabled title='Mark authorized first'"}>Search</button>
     </td>
   </tr>`;
@@ -293,7 +302,11 @@ $("#lib-table").addEventListener("change", async e => {
 /* ---------- Search: a quick indexer probe reported as a fading toast ---------- */
 document.addEventListener("click", e => {
   const pb = e.target.closest(".act-play");
-  if (pb) { playGame(pb.dataset.id, pb.dataset.title); return; }
+  if (pb) {
+    const pick = pb.closest("td")?.querySelector(".emu-pick");
+    playGame(pb.dataset.id, pb.dataset.title, pick ? pick.value : null);
+    return;
+  }
   const b = e.target.closest(".act-search");
   if (b) quickSearch(b.dataset.id, b.dataset.title);
 });
@@ -302,10 +315,10 @@ document.addEventListener("click", e => {
 // desktop, so the window would exist and be invisible. It queues the command instead and an
 // agent in the owner's own session runs it — which is why "start the agent" is a real answer
 // here rather than an error to paper over.
-async function playGame(ident, title) {
+async function playGame(ident, title, emulator) {
   toast(`Launching ${title}…`);
   try {
-    const r = await post(`/api/item/${encodeURIComponent(ident)}/play`, {});
+    const r = await post(`/api/item/${encodeURIComponent(ident)}/play`, emulator ? {emulator} : {});
     toast(`Sent to the emulator: ${r.title}`);
   } catch (err) {
     toast(err.message, true);

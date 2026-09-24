@@ -32,6 +32,26 @@ def emulators():
     return (load_yaml("emulators.yaml") or {}).get("emulators") or {}
 
 
+def emulator_options(system):
+    """[(name, template)] for a system, best first.
+
+    A system may name one emulator or several. Several matters in practice: RetroArch being
+    busy scanning, or a core behaving badly on one title, should not stop a game being tried
+    somewhere else. The first entry is the default, so a single string behaves exactly as
+    before.
+    """
+    entry = emulators().get((system or "").lower())
+    if not entry:
+        return []
+    if isinstance(entry, str):
+        return [("default", entry)]
+    if isinstance(entry, dict):
+        return [(str(k), str(v)) for k, v in entry.items()]
+    if isinstance(entry, list):        # a bare list: name them by position
+        return [(f"option {i + 1}", str(v)) for i, v in enumerate(entry)]
+    return []
+
+
 def rompath():
     """Where built MAME sets live, from emulators.yaml. None if not configured."""
     v = (load_yaml("emulators.yaml") or {}).get("rompath")
@@ -116,12 +136,22 @@ def rom_for(db, item):
     return None
 
 
-def command_for(ident, db=None):
+def command_for(ident, db=None, emulator=None):
     """Resolve the command that would launch `ident`. Never spawns anything."""
     db = db or connect()
     item = _item(db, ident)
     system = (item["system"] or "").lower()
-    template = emulators().get(system)
+    options = emulator_options(system)
+    template = None
+    if options:
+        if emulator:
+            match = [t for n, t in options if n.lower() == str(emulator).lower()]
+            if not match:
+                names = ", ".join(n for n, _ in options)
+                raise LookupError(f"no emulator named {emulator!r} for {system} — have: {names}")
+            template = match[0]
+        else:
+            template = options[0][1]
     if not template:
         raise LookupError(
             f"no emulator configured for {system!r} — add it to emulators.yaml, e.g.\n"
@@ -164,14 +194,14 @@ def command_for(ident, db=None):
             "set": setname, "rom": rom, "command": _with_display(command, system)}
 
 
-def launch(ident, db=None, record=True):
+def launch(ident, db=None, record=True, emulator=None):
     """Start the emulator and return once it has been spawned.
 
     Detached on purpose: the emulator outlives this process, so `romcom play` returns
     immediately instead of blocking a terminal for the length of a play session.
     """
     db = db or connect()
-    plan = command_for(ident, db=db)
+    plan = command_for(ident, db=db, emulator=emulator)
     args = plan["command"] if os.name == "nt" else shlex.split(plan["command"])
     flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     subprocess.Popen(args, shell=(os.name == "nt"), close_fds=True, creationflags=flags,
@@ -240,11 +270,11 @@ def _workdir(command):
     return None
 
 
-def request_launch(ident, db=None):
+def request_launch(ident, db=None, emulator=None):
     """Queue a launch. Resolves the command up front so a bad request fails in the UI, where
     someone is looking, rather than silently in the agent."""
     db = db or connect()
-    plan = command_for(ident, db=db)
+    plan = command_for(ident, db=db, emulator=emulator)
     # Arcade needs its roms staged before the emulator is told to look for them.
     if plan["system"] == "arcade":
         plan["staged"] = ensure_arcade_set(plan["set"], db=db)
