@@ -579,18 +579,43 @@ def create_app():
 
     CHECKPOINT_INTERVAL = 60.0  # seconds between WAL truncating checkpoints
 
+    WAL_WARN_BYTES = 128 * 1024 * 1024
+
     def _checkpointer():
-        """Fold the WAL back into the db on a cadence. The parallel watcher writes
-        constantly (jobs, events, scan upserts); without a periodic truncating checkpoint
-        the WAL grows without bound (observed multi-GB) and every read slows to a crawl.
-        This bounds the WAL to roughly one interval of writes."""
-        from .db import checkpoint
+        """Fold the WAL back into the db on a cadence.
+
+        The parallel watcher writes constantly and the server reads constantly, so a
+        TRUNCATE checkpoint routinely comes back busy: it needs every reader to stand
+        down at once. That failure used to be swallowed entirely, and the WAL grew to
+        428 MB unnoticed, at which point every read scans it and the UI takes seconds to
+        load. PASSIVE first (it reclaims what it can without waiting on anyone), then
+        TRUNCATE to reset the file, and a log line when the WAL stays large anyway --
+        silence is what let this get to 428 MB."""
+        from .db import checkpoint, connect as _conn
+        from pathlib import Path as _P
+        warned = False
         while True:
             time.sleep(CHECKPOINT_INTERVAL)
             try:
+                db = _conn()
+                try:
+                    db.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+                finally:
+                    db.close()
                 checkpoint()
             except Exception:
                 pass  # a busy checkpoint is fine — the next tick tries again
+            try:
+                wal = _P(str(settings()["db"]) + "-wal")
+                size = wal.stat().st_size if wal.exists() else 0
+                if size > WAL_WARN_BYTES and not warned:
+                    print(f" * WARNING: WAL is {size / 1048576:.0f} MB and not draining — "
+                          "reads will be slow until it does", flush=True)
+                    warned = True
+                elif size <= WAL_WARN_BYTES:
+                    warned = False
+            except Exception:
+                pass
 
     def start_checkpointer():
         threading.Thread(target=_checkpointer, daemon=True).start()
@@ -705,6 +730,17 @@ def serve(host="127.0.0.1", port=8927, open_browser=True, debug=False):
     n = backfill_content(connect())    # one-time, batched, BEFORE the watcher starts writing
     if n:
         print(f"backfilled files.content for {n} row(s)")
+    # The only reliably quiet moment in the process: the watcher has not started and no
+    # request is being served. A truncating checkpoint needs every reader to stand down,
+    # and once the watcher is up that window may never come again -- the WAL was found at
+    # 428 MB, which put simple reads at 6-16 seconds.
+    try:
+        from .db import checkpoint as _ckpt
+        busy, pages, done = _ckpt()
+        print(f" * WAL checkpoint at startup: {done}/{pages} pages folded in"
+              f"{' (BUSY)' if busy else ''}", flush=True)
+    except Exception as e:
+        print(f" * WAL checkpoint at startup failed: {type(e).__name__}: {e}", flush=True)
     app.start_watcher_if_on()
     app.start_watchdog()
     app.start_checkpointer()
