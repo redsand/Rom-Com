@@ -84,10 +84,33 @@ def rom_for(db, item):
     Biggest, not first: a set can carry a manual or a cue alongside the ROM, and the payload
     is reliably the largest of them. Returns None when nothing is on disk.
     """
+    from .scanner import EXT_SYSTEM
     rows = db.execute(
-        "SELECT path, bytes FROM files WHERE matched_item_id=? AND COALESCE(content,1)=1"
-        " ORDER BY COALESCE(bytes,0) DESC", (item["id"],)).fetchall()
-    for r in rows:
+        "SELECT path, bytes FROM files WHERE matched_item_id=? AND COALESCE(content,1)=1",
+        (item["id"],)).fetchall()
+    system = (item["system"] or "").lower()
+    archives = {".zip", ".7z", ".chd", ".iso", ".cue", ".gdi"}
+
+    def rank(row):
+        """Plausibility first, size second.
+
+        Size alone picks badly. One nds item holds a 122 MB PC CD image alongside the real
+        content, and handing that to melonDS produced "ROM isn't valid" — a confusing way to
+        learn the file was never a DS rom. An extension that maps to this system is the
+        strongest signal there is; an archive is next, because emulators read them directly.
+        """
+        ext = Path(row["path"]).suffix.lower()
+        if EXT_SYSTEM.get(ext) == system:
+            tier = 0
+        elif ext in archives:
+            tier = 1
+        elif EXT_SYSTEM.get(ext):
+            tier = 3          # belongs to a DIFFERENT system: almost certainly not it
+        else:
+            tier = 2
+        return (tier, -(row["bytes"] or 0))
+
+    for r in sorted(rows, key=rank):
         if Path(r["path"]).exists():
             return r["path"]
     return None

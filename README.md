@@ -411,3 +411,59 @@ pytest -q
 ```
 
 GitHub Actions runs the same test suite on pushes and pull requests.
+
+## Where downloads come from, and which to trust
+
+Four sources can feed the library. They are not interchangeable, and the differences matter
+more than the names suggest.
+
+| Source | Setting | Confidence | Use it for |
+|---|---|---|---|
+| **SABnzbd / NZB indexer** | `NZB_API_URL`, `SAB_URL` | **High** | Anything large. This is the one to rely on. |
+| **romsgames** (direct) | `ROMCOM_WEBDL_BASE` | **Medium** | The everyday workhorse for single carts. |
+| **archive.org** | `ROMCOM_ARCHIVE_ENABLED` | **Low-medium** | Things the other two do not carry. |
+| **Vimm's Lair** | `ROMCOM_VIMM_ENABLED` | **Currently unusable** | Nothing, for now. |
+
+**SABnzbd/NZB** is the only source with real error reporting, resumable transfers and
+parallelism. Jobs land in the ledger with a status you can audit, and a failure tells you
+why. If a title is available here, take it here.
+
+**romsgames** is a direct HTTP scrape: no queue, no resume, and it is deliberately paced
+(`webdl_delay`, `webdl_jitter`) so a sweep does not hammer the site. Reliable enough for
+cartridge-sized files, and it is what most of this library actually came from. A failure is
+usually just "not carried" rather than anything wrong.
+
+**archive.org** is opt-in and slow, and item naming is inconsistent enough that a name match
+is a weaker signal than elsewhere. Worth enabling when hunting something obscure; not worth
+it as a primary source.
+
+**Vimm** is off and should stay off. Every game page now sits behind a Cloudflare Turnstile
+widget, which a captured browser profile does not carry you past — so it cannot run
+unattended at all. The code reports this honestly rather than blaming a stale session, but
+reporting it clearly does not make it work.
+
+Downloads are serialised per source, so enabling more sources widens the search rather than
+multiplying the load on any one of them.
+
+## Playing and curating
+
+```bash
+python -m romcom cores                 # which libretro cores you need, and why
+python -m romcom cores --install --all # fetch them from the libretro buildbot
+python -m romcom agent                 # the launch agent (see below)
+python -m romcom play "Donkey Kong"    # launch it
+python -m romcom keep "Donkey Kong"    # this one earned a slot on the card
+python -m romcom organize D:\ --keep-only --dry-run
+```
+
+The web app runs as a Windows service, and a service lives in session 0 whatever account it
+uses — session 0 has no desktop, so it can never put an emulator window on screen. The Play
+button therefore queues a command and **`romcom agent`**, running in your own session,
+executes it. `tools/service/install-agent.ps1` registers that as a logon task so it survives
+a reboot; registering it as a *service* would put it back in session 0 and break the one
+thing it exists to do.
+
+Arcade is assembled rather than copied. A MAME set is many chip images that only mean
+anything together, and a flattened dump renames collisions, so sets are rebuilt from the dat
+by hash into `<rompath>/<set>/` with the names MAME expects — device dependencies included,
+because galaga will not boot without namco54.

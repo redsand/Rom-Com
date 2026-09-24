@@ -1,3 +1,4 @@
+from pathlib import Path
 """Auditioning a library: launch a game, then mark whether it earned a slot on the card."""
 import pytest
 from romcom.db import connect
@@ -288,3 +289,42 @@ def test_a_surviving_emulator_stays_running(monkeypatch, tmp_path):
     player.request_launch("snes-ct", db=db)
     assert player.agent_once(db) == 1
     assert db.execute("SELECT status FROM launch_requests").fetchone()["status"] == "RUNNING"
+
+
+def test_the_rom_picked_is_plausible_for_the_system_not_merely_largest(monkeypatch, tmp_path):
+    """Size alone picks badly.
+
+    One nds item holds a 122 MB PC CD image beside its real content, and handing that to
+    melonDS produced "ROM isn't valid, did you select the right file?" — a confusing way to
+    discover the file was never a DS rom. An extension mapping to this system wins; an
+    archive is next, since emulators read them directly; an extension belonging to a
+    *different* system sorts last.
+    """
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "r.db"))
+    from romcom.config import invalidate
+    invalidate()
+    db = connect()
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status) VALUES('n','G','nds','VERIFIED')")
+        for name, size in (("huge.bin", 122_000_000), ("game.zip", 20_000_000),
+                           ("other.nes", 500_000), ("game.nds", 8_000_000)):
+            (tmp_path / name).write_bytes(b"x")
+            db.execute("INSERT INTO files(path,bytes,matched_item_id,content) VALUES(?,?,'n',1)",
+                       (str(tmp_path / name), size))
+    item = db.execute("SELECT * FROM items WHERE id='n'").fetchone()
+    assert Path(player.rom_for(db, item)).name == "game.nds"    # not huge.bin
+
+
+def test_an_archive_beats_an_unknown_extension(monkeypatch, tmp_path):
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "r2.db"))
+    from romcom.config import invalidate
+    invalidate()
+    db = connect()
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status) VALUES('n','G','nds','VERIFIED')")
+        for name, size in (("junk.mp3", 9_000_000), ("game.zip", 1_000)):
+            (tmp_path / name).write_bytes(b"x")
+            db.execute("INSERT INTO files(path,bytes,matched_item_id,content) VALUES(?,?,'n',1)",
+                       (str(tmp_path / name), size))
+    item = db.execute("SELECT * FROM items WHERE id='n'").fetchone()
+    assert Path(player.rom_for(db, item)).name == "game.zip"

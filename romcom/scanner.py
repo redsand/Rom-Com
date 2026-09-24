@@ -146,6 +146,13 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
     # After matching, some files have moved from an adopted item onto a real catalog entry.
     # Sweep whatever that left behind, so ghosts cannot accumulate across scans.
     out["pruned_ghosts"]=prune_adopted_ghosts(db)
+    # New files can complete an arcade set that was previously unassemblable, and the Play
+    # button reads this column rather than recomputing it per row.
+    try:
+        from .mameset import refresh_playable
+        out["playable"]=refresh_playable(db)
+    except Exception:
+        pass   # a missing dat must not fail a scan
     return out
 
 # Extensions that pin down a system on their own; ambiguous ones (.bin/.iso/.cue/.zip) rely on folder names.

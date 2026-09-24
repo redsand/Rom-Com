@@ -119,3 +119,59 @@ def build(setnames, dest, db=None, dry_run=False):
     return {"sets": report, "copied": copied, "bytes": total_bytes,
             "complete": sum(1 for v in report.values() if v["complete"]),
             "incomplete": sum(1 for v in report.values() if not v["complete"])}
+
+
+def assemblable(db=None, path=None):
+    """Every machine in the dat whose roms are all present on disk, by hash.
+
+    This is the honest answer to "can I play this", and item status is not. A MAME set is
+    assembled from chips scattered through a flat dump, so an item with no matched file of
+    its own can still be complete — Ms. Pac-Man is CATALOGED with zero matched files and
+    builds perfectly. Conversely a VERIFIED item can be missing a chip another set claimed.
+
+    One pass over the dat and two hash sets: about a second for 13,743 machines.
+    """
+    from .db import connect
+    db = db or connect()
+    path = path or dat_path()
+    if not path:
+        return set()
+    sets, cur = {}, None
+    for line in path.open(encoding="utf-8", errors="replace"):
+        m = re.search(r'<(?:game|machine)\s+name="([^"]+)"', line)
+        if m:
+            cur = m.group(1)
+            continue
+        if "<rom " not in line:
+            continue
+        sha = re.search(r'\bsha1="([0-9a-fA-F]+)"', line)
+        crc = re.search(r'\bcrc="([0-9a-fA-F]+)"', line)
+        if sha or crc:
+            sets.setdefault(cur, []).append(
+                ((sha.group(1) if sha else "").lower(), (crc.group(1) if crc else "").lower()))
+    have_sha = {(r[0] or "").lower() for r in db.execute(
+        "SELECT sha1 FROM files WHERE sha1 IS NOT NULL")}
+    have_crc = {(r[0] or "").lower() for r in db.execute(
+        "SELECT crc32 FROM files WHERE crc32 IS NOT NULL")}
+    return {name for name, roms in sets.items()
+            if roms and all((s in have_sha) or (c in have_crc) for s, c in roms)}
+
+
+def refresh_playable(db=None):
+    """Recompute items.playable for arcade. Returns how many are playable.
+
+    Stored rather than computed per request: the UI asks this for every row on every page,
+    and a second of dat parsing per page load is not a trade worth making.
+    """
+    from .db import connect
+    db = db or connect()
+    ok = assemblable(db)
+    with db:
+        db.execute("UPDATE items SET playable=0 WHERE system='arcade' AND playable<>0")
+        if ok:
+            q = ",".join("?" * len(ok))
+            db.execute(f"""UPDATE items SET playable=1 WHERE system='arcade'
+                           AND COALESCE(is_device,0)=0
+                           AND substr(external_id, instr(external_id,'/')+1) IN ({q})""",
+                       tuple(ok))
+    return db.execute("SELECT COUNT(*) c FROM items WHERE playable=1").fetchone()["c"]

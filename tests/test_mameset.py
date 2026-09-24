@@ -15,6 +15,10 @@ DAT = """<?xml version="1.0"?><datafile>
 <description>Namco 54xx</description>
 <rom name="54xx.bin" size="1024" crc="cccc3333" sha1="3333333333333333333333333333333333333333"/>
 </machine>
+<machine name="broken" sourcefile="x.cpp">
+<description>Broken</description>
+<rom name="missing.rom" size="256" crc="dddd4444" sha1="4444444444444444444444444444444444444444"/>
+</machine>
 <machine name="other" sourcefile="x.cpp">
 <description>Other</description>
 <rom name="prom-2.5c" size="256" crc="bbbb2222" sha1="2222222222222222222222222222222222222222"/>
@@ -94,3 +98,36 @@ def test_no_dat_degrades_instead_of_failing(monkeypatch, tmp_path):
     monkeypatch.setattr(mameset, "dat_path", lambda: None)
     r = mameset.build(["galaga"], tmp / "out", db=db)
     assert r["copied"] == 0 and "no MAME dat" in r["error"]
+
+
+def test_playable_is_assembly_not_status(monkeypatch, tmp_path):
+    """Status is the wrong question for arcade.
+
+    A MAME set is built from chips scattered through a flat dump, so an item with no matched
+    file of its own can be perfectly playable while a VERIFIED one is missing a chip another
+    set claimed. In the real library 4,484 arcade items are VERIFIED but cannot be assembled
+    — each one offering a Play button whose only outcome was MAME refusing to start — and 119
+    are CATALOGED but build fine.
+    """
+    db, tmp = _setup(monkeypatch, tmp_path)
+    with db:
+        # galaga's roms are on disk; `other` needs a prom that is not.
+        db.execute("INSERT INTO items(id,title,system,status,catalog_source,external_id)"
+                   " VALUES('g','Galaga','arcade','CATALOGED','antopisa','arcade/galaga')")
+        db.execute("INSERT INTO items(id,title,system,status,catalog_source,external_id)"
+                   " VALUES('o','Broken','arcade','VERIFIED','antopisa','arcade/broken')")
+    ok = mameset.assemblable(db)
+    assert "galaga" in ok and "broken" not in ok
+    mameset.refresh_playable(db)
+    rows = {r["id"]: r["playable"] for r in db.execute("SELECT id,playable FROM items")}
+    assert rows["g"] == 1, "CATALOGED but assemblable must be playable"
+    assert rows["o"] == 0, "VERIFIED but unassemblable must not be"
+
+
+def test_devices_are_never_offered_as_playable(monkeypatch, tmp_path):
+    db, tmp = _setup(monkeypatch, tmp_path)
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status,catalog_source,external_id,is_device)"
+                   " VALUES('d','Namco 54xx','arcade','VERIFIED','antopisa','arcade/namco54',1)")
+    mameset.refresh_playable(db)
+    assert db.execute("SELECT playable FROM items WHERE id='d'").fetchone()["playable"] == 0

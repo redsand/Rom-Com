@@ -19,6 +19,24 @@ from . import (indexer, actions, acquirer, sab, webdl, webauth, chattools, webch
 STATIC = Path(__file__).resolve().parent / "webui"
 
 ITEM_FIELDS = {"authorized", "status", "wanted", "preferred_runtime", "notes", "play_status", "system", "region", "language", "keep"}
+
+# Statuses that mean the file is in hand for a one-file-per-game system.
+IN_HAND = ("FOUND", "DOWNLOADED", "VERIFIED", "NORMALIZED", "INSTALLED", "TESTED")
+
+
+def can_play(row):
+    """Whether Play should be offered for this item.
+
+    Arcade answers differently from everything else and status is the wrong question for it.
+    A MAME set is assembled from chips scattered through a flat dump, so an item with no
+    matched file of its own can be perfectly playable (Ms. Pac-Man is CATALOGED and builds
+    fine) while a VERIFIED one can be missing a chip another set claimed — 4,484 arcade items
+    are VERIFIED but cannot be assembled, and every one of them offered a Play button whose
+    only outcome was MAME refusing to start.
+    """
+    if (row["system"] or "").lower() == "arcade":
+        return bool(row["playable"])
+    return (row["status"] or "") in IN_HAND
 VOLUME_FIELDS = {"authorized", "status"}
 
 def _entity(db, ident):
@@ -178,7 +196,9 @@ def create_app():
         limit = min(int(request.args.get("limit", 200)), 1000)
         offset = int(request.args.get("offset", 0))
         q += " ORDER BY system,series,series_number,title LIMIT ? OFFSET ?"; p += [limit, offset]
-        return jsonify({"total": total, "items": [dict(r) for r in db.execute(q, p)]})
+        # can_play is computed here so the browser never has to know the arcade rule.
+        items = [dict(r) | {"can_play": can_play(r)} for r in db.execute(q, p)]
+        return jsonify({"total": total, "items": items})
 
     @app.post("/api/items/<ident>")
     def api_set(ident):

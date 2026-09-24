@@ -187,11 +187,9 @@ function libQuery() {
   return p;
 }
 
-// Hidden rather than disabled: a greyed-out button still reads as "this should work,
-// something is wrong". Nothing on disk is not a fault, it is simply not playable yet.
-// Statuses that mean the file is actually in hand. Offering Play for anything else is a
-// button whose only outcome is an error — the item has nothing on disk to launch.
-const IN_HAND = new Set(["FOUND", "DOWNLOADED", "VERIFIED", "NORMALIZED", "INSTALLED", "TESTED"]);
+// Play is offered when the server says so. The rule differs by system — arcade sets are
+// assembled from a flat dump by hash, so status cannot answer it — and keeping that
+// judgement server-side means the browser never has to know the difference.
 
 function itemRow(r) {
   const series = r.series ? `<div class="sub">${esc(r.series)}${r.series_number ? " #" + r.series_number : ""}</div>` : "";
@@ -206,7 +204,7 @@ function itemRow(r) {
     <td class="c"><input type="checkbox" class="flag" data-field="wanted" data-id="${esc(r.id)}" ${r.wanted ? "checked" : ""}></td>
     <td class="c"><input type="checkbox" class="flag" data-field="keep" data-id="${esc(r.id)}" ${r.keep ? "checked" : ""} title="Mark for export to the card"></td>
     <td class="nowrap">
-      ${IN_HAND.has(r.status) ? `<button class="small act-play" data-id="${esc(r.id)}" data-title="${esc(r.title)}" title="Launch in your emulator (needs: romcom agent)">Play</button>` : ""}
+      ${r.can_play ? `<button class="small act-play" data-id="${esc(r.id)}" data-title="${esc(r.title)}" title="Launch in your emulator (needs: romcom agent)">Play</button>` : ""}
       <button class="small primary act-search" data-id="${esc(r.id)}" data-title="${esc(r.title)}" ${r.authorized ? "" : "disabled title='Mark authorized first'"}>Search</button>
     </td>
   </tr>`;
