@@ -114,8 +114,14 @@ def _state(db, source, key):
 
 
 def _set_state(db, source, key, value):
-    db.execute("INSERT INTO community_state(source,k,v) VALUES(?,?,?) "
-               "ON CONFLICT(source,k) DO UPDATE SET v=excluded.v", (source, key, str(value)))
+    # `with db:` is not decoration: without it the INSERT leaves an implicit
+    # transaction open, and the connection holds SQLite's single write lock until
+    # some later commit — freezing every web write (each authenticated API call
+    # stamps web_sessions.last_seen) for as long as a sync runs.
+    with db:
+        db.execute("INSERT INTO community_state(source,k,v) VALUES(?,?,?) "
+                   "ON CONFLICT(source,k) DO UPDATE SET v=excluded.v",
+                   (source, key, str(value)))
 
 
 def _spend(db, source, n=1):

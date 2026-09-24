@@ -88,6 +88,22 @@ def test_scores_upsert_and_denormalize_the_best_one(monkeypatch, tmp_path):
     assert db.execute("SELECT community_score FROM items WHERE id='b'").fetchone()["community_score"] is None
 
 
+def test_spending_does_not_hold_the_write_lock(monkeypatch, tmp_path):
+    """A running sync pinned SQLite's single write lock: _set_state left its implicit
+    transaction open, so every web write — login, and the last_seen stamp every
+    authenticated API call makes — timed out and the whole UI froze for as long as
+    the sync ran. Spending must commit immediately."""
+    db = setup(monkeypatch, tmp_path, budget="50")
+    community._spend(db, "rawg", 1)
+    db2 = connect()
+    db2.execute("PRAGMA busy_timeout=250")   # fail fast, not after the 15s default
+    try:
+        with db2:   # raises "database is locked" if db still holds the write lock
+            db2.execute("INSERT INTO community_state(source,k,v) VALUES('t','k','v')")
+    finally:
+        db2.close()
+
+
 def test_a_sync_without_providers_reports_rather_than_raises(monkeypatch, tmp_path):
     """Fresh install, no keys: the sync must say what is missing, not blow up."""
     db = setup(monkeypatch, tmp_path)
