@@ -488,6 +488,34 @@ def create_app():
                                   "adopt": body.get("adopt", True) not in (False, "false", 0),
                                   "recursive": body.get("recursive", True) not in (False, "false", 0)})
 
+    @app.post("/api/item/<path:item_id>/keep")
+    def api_item_keep(item_id):
+        """Mark or unmark an item for export. A database write, so the service can do it
+        even though it cannot launch the emulator itself."""
+        from . import player
+        on = str((request.get_json(silent=True) or {}).get("keep", True)).lower() not in ("0", "false", "no")
+        try:
+            return jsonify(player.set_keep(item_id, on=on))
+        except LookupError as e:
+            return jsonify({"error": str(e)}), 404
+
+    @app.get("/api/item/<path:item_id>/launch-command")
+    def api_item_launch_command(item_id):
+        """What to run to play this. Deliberately NOT a launch: the service runs as
+        LocalSystem in session 0, which is isolated from the desktop, so anything it
+        spawned would be an invisible process holding the ROM open. The UI shows the
+        command; `romcom play` runs it in the owner's own session."""
+        from . import player
+        try:
+            return jsonify(player.command_for(item_id))
+        except LookupError as e:
+            return jsonify({"error": str(e)}), 404
+
+    @app.get("/api/keep")
+    def api_keep_list():
+        from . import player
+        return jsonify(player.kept(system=request.args.get("system") or None))
+
     @app.post("/api/organize")
     def api_organize():
         body = request.get_json(force=True)

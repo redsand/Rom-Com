@@ -1,0 +1,25 @@
+# Emulator command per system, used by `romcom play <game>`.
+#
+# `{rom}` is replaced with the path of the largest content file matched to the item.
+# Quote it: ROM paths routinely contain spaces and commas.
+#
+# Launching happens in YOUR session, from the CLI. The web service runs as LocalSystem in
+# session 0, which cannot put a window on your desktop — so the UI shows you the command
+# rather than pretending it can run it.
+#
+# Arcade note: MAME wants a set name, not a file path, and reads from its own rompath. The
+# example below passes the set name, which is what the catalog stores as the external id.
+
+emulators: {}
+
+# Example — uncomment and point at your own binaries:
+#
+# emulators:
+#   snes:    'C:/RetroArch/retroarch.exe -L cores/snes9x_libretro.dll "{rom}"'
+#   nes:     'C:/RetroArch/retroarch.exe -L cores/mesen_libretro.dll "{rom}"'
+#   gba:     'C:/RetroArch/retroarch.exe -L cores/mgba_libretro.dll "{rom}"'
+#   n64:     'C:/RetroArch/retroarch.exe -L cores/mupen64plus_next_libretro.dll "{rom}"'
+#   nds:     'C:/melonDS/melonDS.exe "{rom}"'
+#   genesis: 'C:/RetroArch/retroarch.exe -L cores/genesis_plus_gx_libretro.dll "{rom}"'
+#   ps1:     'C:/duckstation/duckstation-qt-x64-ReleaseLTCG.exe "{rom}"'
+#   arcade:  'C:/mame/mame.exe "{rom}"'

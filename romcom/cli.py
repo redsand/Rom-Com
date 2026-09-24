@@ -183,10 +183,30 @@ def cmd_adopt(a):
     from .scanner import adopt_unmatched
     print(json.dumps(adopt_unmatched(root=a.root),indent=2))
 
+def cmd_play(a):
+    from . import player
+    try:
+        plan = player.command_for(a.game) if a.show else player.launch(a.game)
+    except LookupError as e:
+        print(e); return 1
+    print(json.dumps(plan, indent=2))
+
+def cmd_keep(a):
+    from . import player
+    if a.list:
+        k = player.kept(system=a.system)
+        print(json.dumps({"count": k["count"], "gb": k["gb"],
+                          "items": [i["title"] for i in k["items"][:40]]}, indent=2))
+        return
+    try:
+        print(json.dumps(player.set_keep(a.game, on=not a.no), indent=2))
+    except LookupError as e:
+        print(e); return 1
+
 def cmd_organize(a):
     from .organizer import organize
     print(json.dumps(organize(a.dest, systems=a.system or None,
-                             wanted_only=a.wanted_only, sources=a.source or None,
+                             wanted_only=a.wanted_only, keep_only=a.keep_only, sources=a.source or None,
                              dry_run=a.dry_run), indent=2))
 
 def main():
@@ -204,9 +224,20 @@ def main():
     aa=s.add_parser("auto-acquire"); aa.add_argument("--poll",type=float,default=None); aa.add_argument("--max-wait",type=float,dest="max_wait",default=None); aa.add_argument("--max-batch",type=int,dest="max_batch",default=None); aa.add_argument("--parallel",type=int,default=None); aa.add_argument("--watch",action="store_true"); aa.set_defaults(fn=cmd_auto_acquire)
     wd=s.add_parser("webdl"); wd.add_argument("ident"); wd.add_argument("--result",type=int); wd.add_argument("--out"); wd.set_defaults(fn=cmd_webdl)
     sc=s.add_parser("scan"); sc.add_argument("path"); sc.add_argument("--no-name-match",action="store_true"); sc.add_argument("--no-adopt",action="store_true"); sc.add_argument("--no-recursive",action="store_true"); sc.set_defaults(fn=cmd_scan)
+    pl=s.add_parser("play", help="launch a game in its emulator (runs in YOUR session)")
+    pl.add_argument("game", help="item id, or part of a title")
+    pl.add_argument("--show", action="store_true", help="print the command, launch nothing")
+    pl.set_defaults(fn=cmd_play)
+    kp=s.add_parser("keep", help="mark a game for export to the card")
+    kp.add_argument("game", nargs="?", help="item id, or part of a title")
+    kp.add_argument("--no", action="store_true", help="unmark instead")
+    kp.add_argument("--list", action="store_true", help="show what is marked, and its size")
+    kp.add_argument("--system")
+    kp.set_defaults(fn=cmd_keep)
     og=s.add_parser("organize"); og.add_argument("dest"); og.add_argument("--system",action="append")
     og.add_argument("--source",action="append",help="only items from this catalog_source (e.g. antopisa)")
     og.add_argument("--wanted-only",action="store_true",help="only items marked wanted")
+    og.add_argument("--keep-only",action="store_true",help="only items marked keep")
     og.add_argument("--dry-run",action="store_true",help="report what would be copied, copy nothing")
     og.set_defaults(fn=cmd_organize)
     ad=s.add_parser("adopt"); ad.add_argument("--root"); ad.set_defaults(fn=cmd_adopt)

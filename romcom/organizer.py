@@ -4,7 +4,7 @@ import shutil
 from .db import connect
 
 def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
-             dry_run=False):
+             dry_run=False, keep_only=False):
     """Copy files matched to a catalog item into <dest>/<system>/<filename>.
 
     Files are copied (never moved); an existing target of the same size is skipped,
@@ -26,8 +26,8 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     db = connect()
     rows = db.execute("""SELECT f.path, i.system, i.title FROM files f
       JOIN items i ON i.id=f.matched_item_id
-      WHERE (? = 0 OR i.wanted = 1)
-      ORDER BY i.system, i.title""", (1 if wanted_only else 0,)).fetchall()
+      WHERE (? = 0 OR i.wanted = 1) AND (? = 0 OR i.keep = 1)
+      ORDER BY i.system, i.title""", (1 if wanted_only else 0, 1 if keep_only else 0)).fetchall()
     if sources:
         keep = {s.lower() for s in sources}
         ids = {r["path"] for r in db.execute(
@@ -67,7 +67,8 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     if progress: progress(len(rows), len(rows), "done")
     out = {"matched_files": len(rows), "copied": copied, "skipped": skipped,
            "missing": missing, "by_system": by_system, "errors": errors,
-           "wanted_only": bool(wanted_only), "sources": sorted(sources) if sources else None}
+           "wanted_only": bool(wanted_only), "keep_only": bool(keep_only),
+           "sources": sorted(sources) if sources else None}
     if dry_run:
         out |= {"dry_run": True, "would_copy": sum(by_system.values()),
                 "would_copy_bytes": planned_bytes,
