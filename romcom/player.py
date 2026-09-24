@@ -13,6 +13,7 @@ call from anywhere including the service, while `launch()` actually spawns and i
 exact command; marking keep/skip works from either, because that is only a database write.
 """
 import os
+import re
 import shlex
 import subprocess
 import tempfile
@@ -111,6 +112,20 @@ def command_for(ident, db=None):
     # needs no path from us, and refusing to launch it for lack of one would be nonsense.
     if "{rom}" in template and not rom:
         raise LookupError(f"{item['title']!r} has no file on disk to launch")
+    # A configured emulator whose binary or libretro core is not actually installed fails
+    # far away from here: RetroArch opens, finds no core, and closes again, which reaches the
+    # owner as "it didn't work". Name the missing file instead, while there is still context.
+    # Split on quotes and spaces rather than pattern-matching paths: a template mixes
+    # quoted and bare arguments, and a regex over Windows paths is all backslash escaping
+    # for no benefit.
+    for token in template.replace(chr(34), " ").replace(chr(39), " ").split():
+        if not token.lower().endswith((".exe", ".dll")) or Path(token).exists():
+            continue
+        what = "libretro core" if token.lower().endswith(".dll") else "emulator"
+        extra = (" Download it in RetroArch: Online Updater -> Core Downloader."
+                 if token.lower().endswith(".dll") else "")
+        raise LookupError(f"{system}: the {what} is not installed — {token} does not "
+                          f"exist.{extra}")
     command = template.replace("{set}", setname)
     if rom:
         command = command.replace("{rom}", rom)

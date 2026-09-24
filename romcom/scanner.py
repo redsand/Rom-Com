@@ -95,7 +95,18 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
             if zitems:
                 item_id=zitems[0]; method="hash-zip"; extra=[x for x in set(zitems) if x!=item_id]
         if not item_id and name_match:
-            item_id=idx.get(_norm(p.name)); method="filename-exact" if item_id else None
+            cand = idx.get(_norm(p.name))
+            # A name match is a guess, and the extension is evidence against it. "Donkey
+            # Kong (JU).nes" is not the arcade machine `dkong` however well the titles line
+            # up, and 1,254 arcade items had acquired nes/smc/gba files exactly that way —
+            # enough that the rom handed to an emulator could be for the wrong console.
+            # Hashes are proof and are never second-guessed; only this fallback is.
+            if cand:
+                ext_sys = EXT_SYSTEM.get(p.suffix.lower())
+                row = db.execute("SELECT system FROM items WHERE id=?", (cand,)).fetchone()
+                if ext_sys and row and (row["system"] or "").lower() != ext_sys:
+                    cand = None
+            item_id = cand; method = "filename-exact" if item_id else None
         if item_id:
             matched+=1
             hit=db.execute("SELECT title,system FROM items WHERE id=?",(item_id,)).fetchone()

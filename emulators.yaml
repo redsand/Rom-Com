@@ -1,34 +1,59 @@
 # Emulator command per system, used by the Library's Play button and `romcom play`.
 #
-# `{rom}` -> the largest content file matched to the item.
-# `{set}` -> the catalog's short name for it (external_id without the system prefix).
+#   {rom}  the largest content file matched to the item
+#   {set}  the catalog's short name for it (external_id without the system prefix)
 #
-# Which one you need depends on the emulator. Most take a file path. MAME does not: it takes
-# a machine name and finds the roms itself under -rompath, so arcade uses {set}.
+# Which you need depends on the emulator. Most take a file path. MAME does not: it takes a
+# machine name and finds the roms itself under -rompath, so arcade uses {set}.
 #
 # Launching happens in YOUR session. The web service runs as LocalSystem in session 0, which
-# has no desktop, so it queues the command and `romcom agent` — running as you — executes it.
-# Start the agent with:  python -m romcom agent
+# has no desktop, so it queues the command and `romcom agent` — running as you — executes it:
+#     python -m romcom agent
 
-# Where MAME sets are staged. The Play button builds a set here on demand from the flat
-# rom dump, so a game is playable without exporting anything by hand first.
+# Where MAME sets are staged. Play builds a set here on demand from the flat rom dump, so a
+# game is playable without exporting anything by hand first.
 rompath: 'H:/Games/mame-sets/arcade'
 
+# RetroArch needs its cores downloaded before any of these will run:
+#   RetroArch -> Online Updater -> Core Downloader
+# Nothing is installed under H:/Emus/RetroArch/cores yet, so every line below will report a
+# missing core until you fetch them. The core filenames are the standard libretro ones.
 emulators:
-  # MAME cannot read a flattened rom dump; it needs one directory (or zip) per set. Build
-  # that with:  python -m romcom organize H:/Games/mame-sets --keep-only --system arcade
-  # which writes H:/Games/mame-sets/arcade/<set>/<roms>, devices included.
-  arcade: 'H:/Emus/MAME/mame.exe -rompath "H:/Games/mame-sets/arcade" {set}'
+  arcade:  'H:/Emus/MAME/mame.exe -rompath "H:/Games/mame-sets/arcade" {set}'
 
-# RetroArch — fill in once installed at H:/Emus/RetroArch. Cores live under
-# H:/Emus/RetroArch/cores and the exact dll names vary by build, so check that folder.
-#
-#   snes:    'H:/Emus/RetroArch/retroarch.exe -L H:/Emus/RetroArch/cores/snes9x_libretro.dll "{rom}"'
-#   nes:     'H:/Emus/RetroArch/retroarch.exe -L H:/Emus/RetroArch/cores/mesen_libretro.dll "{rom}"'
-#   gba:     'H:/Emus/RetroArch/retroarch.exe -L H:/Emus/RetroArch/cores/mgba_libretro.dll "{rom}"'
-#   gb:      'H:/Emus/RetroArch/retroarch.exe -L H:/Emus/RetroArch/cores/gambatte_libretro.dll "{rom}"'
-#   gbc:     'H:/Emus/RetroArch/retroarch.exe -L H:/Emus/RetroArch/cores/gambatte_libretro.dll "{rom}"'
-#   n64:     'H:/Emus/RetroArch/retroarch.exe -L H:/Emus/RetroArch/cores/mupen64plus_next_libretro.dll "{rom}"'
-#   genesis: 'H:/Emus/RetroArch/retroarch.exe -L H:/Emus/RetroArch/cores/genesis_plus_gx_libretro.dll "{rom}"'
-#   nds:     'H:/Emus/RetroArch/retroarch.exe -L H:/Emus/RetroArch/cores/melonds_libretro.dll "{rom}"'
-#   ps1:     'H:/Emus/RetroArch/retroarch.exe -L H:/Emus/RetroArch/cores/swanstation_libretro.dll "{rom}"'
+  # --- Nintendo ---
+  nes:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/mesen_libretro.dll" "{rom}"'
+  snes:    'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/snes9x_libretro.dll" "{rom}"'
+  n64:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/mupen64plus_next_libretro.dll" "{rom}"'
+  gb:      'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/gambatte_libretro.dll" "{rom}"'
+  gbc:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/gambatte_libretro.dll" "{rom}"'
+  gba:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/mgba_libretro.dll" "{rom}"'
+  nds:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/melonds_libretro.dll" "{rom}"'
+  virtualboy: 'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/mednafen_vb_libretro.dll" "{rom}"'
+  gamecube: 'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/dolphin_libretro.dll" "{rom}"'
+  wii:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/dolphin_libretro.dll" "{rom}"'
+
+  # --- Sega ---
+  mastersystem: 'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/genesis_plus_gx_libretro.dll" "{rom}"'
+  gamegear: 'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/genesis_plus_gx_libretro.dll" "{rom}"'
+  genesis: 'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/genesis_plus_gx_libretro.dll" "{rom}"'
+  segacd:  'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/genesis_plus_gx_libretro.dll" "{rom}"'
+  # 32X is its own core — genesis_plus_gx does not cover it.
+  32x:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/picodrive_libretro.dll" "{rom}"'
+  saturn:  'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/mednafen_saturn_libretro.dll" "{rom}"'
+  dreamcast: 'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/flycast_libretro.dll" "{rom}"'
+
+  # --- Sony ---
+  ps1:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/swanstation_libretro.dll" "{rom}"'
+  psp:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/ppsspp_libretro.dll" "{rom}"'
+
+  # --- Other ---
+  pcengine: 'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/mednafen_pce_libretro.dll" "{rom}"'
+  lynx:    'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/handy_libretro.dll" "{rom}"'
+  wonderswan: 'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/mednafen_wswan_libretro.dll" "{rom}"'
+  atari2600: 'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/stella_libretro.dll" "{rom}"'
+  atari7800: 'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/prosystem_libretro.dll" "{rom}"'
+  c64:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/vice_x64_libretro.dll" "{rom}"'
+  amiga:   'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/puae_libretro.dll" "{rom}"'
+  3do:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/opera_libretro.dll" "{rom}"'
+  dos:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/dosbox_pure_libretro.dll" "{rom}"'

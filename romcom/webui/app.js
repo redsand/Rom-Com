@@ -187,6 +187,8 @@ function libQuery() {
   return p;
 }
 
+// Hidden rather than disabled: a greyed-out button still reads as "this should work,
+// something is wrong". Nothing on disk is not a fault, it is simply not playable yet.
 // Statuses that mean the file is actually in hand. Offering Play for anything else is a
 // button whose only outcome is an error — the item has nothing on disk to launch.
 const IN_HAND = new Set(["FOUND", "DOWNLOADED", "VERIFIED", "NORMALIZED", "INSTALLED", "TESTED"]);
@@ -204,7 +206,7 @@ function itemRow(r) {
     <td class="c"><input type="checkbox" class="flag" data-field="wanted" data-id="${esc(r.id)}" ${r.wanted ? "checked" : ""}></td>
     <td class="c"><input type="checkbox" class="flag" data-field="keep" data-id="${esc(r.id)}" ${r.keep ? "checked" : ""} title="Mark for export to the card"></td>
     <td class="nowrap">
-      <button class="small act-play" data-id="${esc(r.id)}" data-title="${esc(r.title)}" ${IN_HAND.has(r.status) ? "" : "disabled title='Nothing on disk to launch'"} title="Launch in your emulator (needs: romcom agent)">Play</button>
+      ${IN_HAND.has(r.status) ? `<button class="small act-play" data-id="${esc(r.id)}" data-title="${esc(r.title)}" title="Launch in your emulator (needs: romcom agent)">Play</button>` : ""}
       <button class="small primary act-search" data-id="${esc(r.id)}" data-title="${esc(r.title)}" ${r.authorized ? "" : "disabled title='Mark authorized first'"}>Search</button>
     </td>
   </tr>`;
