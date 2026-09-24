@@ -120,14 +120,20 @@ def rom_for(db, item):
         strongest signal there is; an archive is next, because emulators read them directly.
         """
         ext = Path(row["path"]).suffix.lower()
+        inner = Path(Path(row["path"]).stem).suffix.lower()
         if EXT_SYSTEM.get(ext) == system:
-            tier = 0
-        elif ext in archives:
+            tier = 0          # a clean name for this system
+        elif EXT_SYSTEM.get(inner) == system:
+            # A rom wearing a decoy suffix (`Stargate.smc.ttf`) is still the game, but the
+            # clean copy is preferred when both exist: emulators and RetroArch's playlist
+            # scanner both filter on the visible extension.
             tier = 1
-        elif EXT_SYSTEM.get(ext):
-            tier = 3          # belongs to a DIFFERENT system: almost certainly not it
-        else:
+        elif ext in archives:
             tier = 2
+        elif EXT_SYSTEM.get(ext):
+            tier = 4          # belongs to a DIFFERENT system: almost certainly not it
+        else:
+            tier = 3
         return (tier, -(row["bytes"] or 0))
 
     for r in sorted(rows, key=rank):

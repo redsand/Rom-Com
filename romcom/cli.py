@@ -183,6 +183,19 @@ def cmd_adopt(a):
     from .scanner import adopt_unmatched
     print(json.dumps(adopt_unmatched(root=a.root),indent=2))
 
+def cmd_playlists(a):
+    from .playlists import build
+    r = build(systems=a.system or None, keep_only=a.keep_only, replace=a.replace)
+    if r.get("error"):
+        print(r["error"]); return 1
+    print(f'wrote {r["total"]:,} entries into {r["dest"]}')
+    for system, n in sorted(r["written"].items(), key=lambda kv: -kv[1]):
+        print(f'   {system:<14} {n:>7,}')
+    for system, n in (r.get("unloadable") or {}).items():
+        print(f'   {system:<14} {n:>7,} listed but wear a decoy extension — RetroArch will not load them')
+    for system, why in r.get("skipped", {}).items():
+        print(f'   {system:<14} skipped: {why}')
+
 def cmd_audit(a):
     from .audit import audit
     r = audit(fix=a.fix)
@@ -292,6 +305,12 @@ def main():
     aa=s.add_parser("auto-acquire"); aa.add_argument("--poll",type=float,default=None); aa.add_argument("--max-wait",type=float,dest="max_wait",default=None); aa.add_argument("--max-batch",type=int,dest="max_batch",default=None); aa.add_argument("--parallel",type=int,default=None); aa.add_argument("--watch",action="store_true"); aa.set_defaults(fn=cmd_auto_acquire)
     wd=s.add_parser("webdl"); wd.add_argument("ident"); wd.add_argument("--result",type=int); wd.add_argument("--out"); wd.set_defaults(fn=cmd_webdl)
     sc=s.add_parser("scan"); sc.add_argument("path"); sc.add_argument("--no-name-match",action="store_true"); sc.add_argument("--no-adopt",action="store_true"); sc.add_argument("--no-recursive",action="store_true"); sc.set_defaults(fn=cmd_scan)
+    pls=s.add_parser("playlists", help="write RetroArch playlists from this catalog")
+    pls.add_argument("--system", action="append")
+    pls.add_argument("--keep-only", action="store_true", help="only items marked keep")
+    pls.add_argument("--replace", action="store_true",
+                     help="overwrite RetroArch's own playlists instead of writing beside them")
+    pls.set_defaults(fn=cmd_playlists)
     au=s.add_parser("audit", help="check every claim against the evidence")
     au.add_argument("--fix", action="store_true", help="apply the corrections")
     au.set_defaults(fn=cmd_audit)
