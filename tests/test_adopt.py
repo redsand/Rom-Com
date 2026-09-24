@@ -83,3 +83,55 @@ def test_loose_mame_chip_files_are_not_adopted_as_arcade_games(monkeypatch, tmp_
     titles = sorted(x["title"] for x in db.execute("SELECT title FROM items"))
     assert titles == ["area51", "sf2"], titles
     assert r["adopted"] == 2 and r["skipped"] == 3
+
+
+def test_media_and_documents_are_not_adopted_as_games(monkeypatch, tmp_path):
+    """Acquisition brings back whatever the source actually had.
+
+    A search for a DS title returned a music album, and every track became its own "game":
+    `Wolf - Edge Of The World - 10 - Medicine Man`, system nds. Fonts, installers, playlists
+    and checksum files arrive the same way, bundled beside real content.
+    """
+    from romcom.db import connect
+    from romcom.scanner import adopt_unmatched
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "m.db"))
+    from romcom.config import invalidate
+    invalidate()
+    db = connect()
+    d = tmp_path / "snes"
+    d.mkdir()
+    names = ["Track 01.mp3", "album.sfv", "listing.m3u", "setup.exe", "manual.pdf",
+             "Chrono Trigger.smc"]
+    with db:
+        for n in names:
+            (d / n).write_bytes(b"x" * 32)
+            db.execute("INSERT INTO files(path,bytes,sha1) VALUES(?,?,?)",
+                       (str(d / n), 32, "sha" + n))
+    adopt_unmatched(root=str(d))
+    titles = sorted(r["title"] for r in db.execute("SELECT title FROM items"))
+    assert titles == ["Chrono Trigger"], titles
+
+
+def test_a_rom_wearing_a_decoy_extension_is_still_adopted(monkeypatch, tmp_path):
+    """The outer extension can lie.
+
+    A pile of snes roms here arrive as `Stargate.smc.ttf` — 2,097,664 bytes, a real 2 MB
+    cartridge wearing a font suffix. Judging on the last extension alone would have deleted
+    genuine games; the rom extension underneath is the better evidence.
+    """
+    from romcom.db import connect
+    from romcom.scanner import adopt_unmatched
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "t.db"))
+    from romcom.config import invalidate
+    invalidate()
+    db = connect()
+    d = tmp_path / "snes"
+    d.mkdir()
+    with db:
+        for n in ("Stargate.smc.ttf", "readme.ttf"):
+            (d / n).write_bytes(b"x" * 32)
+            db.execute("INSERT INTO files(path,bytes,sha1) VALUES(?,?,?)",
+                       (str(d / n), 32, "sha" + n))
+    adopt_unmatched(root=str(d))
+    titles = sorted(r["title"] for r in db.execute("SELECT title FROM items"))
+    assert titles == ["Stargate.smc"], titles

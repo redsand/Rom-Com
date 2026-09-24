@@ -158,6 +158,25 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
 # Extensions that pin down a system on their own; ambiguous ones (.bin/.iso/.cue/.zip) rely on folder names.
 # What a self-contained arcade game looks like on disk. Anything else under an arcade
 # folder is a part of a set, not a game.
+# Things that are never a game, however they arrived. Acquisition brings back whatever the
+# source actually had: a search for a DS title returned a music album, and every track was
+# adopted as its own "game" -- "Wolf - Edge Of The World - 10 - Medicine Man", system nds.
+# Fonts, installers and playlists arrive the same way, bundled beside real content.
+NOT_GAME_EXTS = {
+    # audio
+    ".mp3", ".flac", ".ogg", ".wav", ".m4a", ".aac", ".wma", ".ape", ".mid",
+    # video
+    ".mkv", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm", ".srt", ".sub",
+    # documents and books
+    ".pdf", ".epub", ".mobi", ".azw", ".azw3", ".djvu", ".doc", ".docx", ".rtf",
+    ".xls", ".xlsx", ".ppt", ".pptx", ".odt",
+    # release metadata and playlists -- descriptive, never playable
+    ".sfv", ".m3u", ".m3u8", ".nfo", ".diz", ".md5", ".sha1", ".par2",
+    # fonts, images, installers, and the rest of a bundle
+    ".ttf", ".otf", ".fon", ".wmf", ".emf", ".ico", ".exe", ".msi", ".dll", ".url",
+    ".lnk", ".html", ".htm", ".xml", ".json", ".log",
+}
+
 ARCADE_SET_EXTS = {".zip", ".7z", ".chd"}
 
 EXT_SYSTEM={
@@ -225,6 +244,16 @@ def adopt_unmatched(root=None,progress=None):
         # one adopted separately becomes its own fake arcade title. Hundreds of those were
         # sitting at the top of the library, sorting before every real game, and 33,489
         # more would be re-adopted the moment a scan ran after the device cleanup.
+        # The outer extension can lie. A pile of snes roms here arrive as
+        # "Stargate.smc.ttf" -- 2,097,664 bytes, a real 2 MB cartridge wearing a font
+        # suffix -- so judging on the last extension alone would discard genuine games.
+        # If the name still carries a rom extension underneath, believe that instead.
+        inner = Path(p.stem).suffix.lower()
+        if p.suffix.lower() in NOT_GAME_EXTS and inner not in EXT_SYSTEM and inner not in ARCADE_SET_EXTS:
+            skipped += 1
+            ext = p.suffix.lower() or "(no extension)"
+            skipped_exts[ext] = skipped_exts.get(ext, 0) + 1
+            continue
         if system == "arcade" and p.suffix.lower() not in ARCADE_SET_EXTS:
             skipped += 1
             ext = p.suffix.lower() or "(no extension)"
