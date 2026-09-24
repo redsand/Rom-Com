@@ -255,7 +255,7 @@ def rawg_platforms(db):
         out, url = [], f"{RAWG_BASE}/platforms"
         params = {"key": rawg_key(), "page_size": 40}
         for _ in range(5):  # ~70 platforms exist; 5 pages is the ceiling
-            data = _request(url, params, "rawg", db)
+            data = _request(url, params, "rawg", db, budget=False)
             out += [p["name"] for p in data.get("results", [])]
             if not data.get("next"):
                 break
@@ -272,8 +272,11 @@ def _rawg_platform_id(db, slug):
     if not name:
         return None, None
     def fetch():
-        data = _request(f"{RAWG_BASE}/platforms", {"key": rawg_key(), "page_size": 40}, "rawg", db)
-        for page in [data] + [_request(f"{RAWG_BASE}/platforms", {"key": rawg_key(), "page_size": 40, "page": p}, "rawg", db) for p in range(2, 6)]:
+        data = _request(f"{RAWG_BASE}/platforms", {"key": rawg_key(), "page_size": 40},
+                        "rawg", db, budget=False)
+        for page in [data] + [_request(f"{RAWG_BASE}/platforms",
+                            {"key": rawg_key(), "page_size": 40, "page": p},
+                            "rawg", db, budget=False) for p in range(2, 6)]:
             for p in page.get("results", []):
                 if p["name"].lower().strip() == name.lower().strip():
                     return {"id": p["id"], "name": p["name"]}
@@ -293,7 +296,10 @@ def rawg_top_games(db, slug):
                            "page_size": RAWG_PAGE_SIZE}
         for page in range(1, RAWG_PAGES + 1):
             params["page"] = page
-            data = _request(f"{RAWG_BASE}/games", params, "rawg", db)
+            # budget=False: this is the cheap, cached half of RAWG. The daily budget
+            # guards the per-item searches; spending it here meant day one's bulk
+            # pull ate the whole budget before a single search could run.
+            data = _request(f"{RAWG_BASE}/games", params, "rawg", db, budget=False)
             for g in data.get("results", []):
                 if g.get("rating") and (g.get("ratings_count") or 0) >= RAWG_MIN_VOTES:
                     out.append({"title": g["name"], "score": round(g["rating"] * 20),
@@ -437,37 +443,25 @@ def sync(systems=None, db=None, progress=None):
 
     for owned, by_system in phases:
         all_rows = []
+        misses = []   # items RAWG's bulk pull couldn't name — search budget goes here
         for slug, items in sorted(by_system.items()):
             done += 1
             if progress:
                 progress(done, total, slug)
             per = report["systems"].setdefault(slug, {"matched": 0, "rawg": 0, "ra": 0})
-            # ---- RAWG: bulk top games, then budgeted per-item searches for the misses.
+            # ---- RAWG bulk: a platform's top games, matched locally. Cached, paced,
+            # and deliberately unbudgeted — the daily budget is for per-item searches,
+            # and burning it here left no searches at all on day one.
             if ready["rawg"]:
                 try:
                     item_ids = {x["id"] for x in items}
                     top = rawg_top_games(db, slug)
-                    if top:
-                        bulk = _match_items(items, top)
-                        for iid, rec in bulk.items():
-                            all_rows.append({"item_id": iid, "source": "rawg",
-                                             "score": rec["score"], "votes": rec["votes"],
-                                             "matched_title": rec["title"]})
-                    misses = [i for i in items if i["id"] not in
-                              {r["item_id"] for r in all_rows if r["source"] == "rawg"}]
-                    searched = 0
-                    for i in misses:
-                        if searched >= RAWG_SEARCH_MAX or _budget_left(db, "rawg") <= 0:
-                            break
-                        try:
-                            rec = _rawg_search(db, slug, i["title"])
-                        except Exception:
-                            break  # budget exhausted or transient failure — stop cleanly
-                        searched += 1
-                        if rec:
-                            all_rows.append({"item_id": i["id"], "source": "rawg",
-                                             "score": rec["score"], "votes": rec["votes"],
-                                             "matched_title": rec["title"]})
+                    bulk = _match_items(items, top or [])
+                    for iid, rec in bulk.items():
+                        all_rows.append({"item_id": iid, "source": "rawg",
+                                         "score": rec["score"], "votes": rec["votes"],
+                                         "matched_title": rec["title"]})
+                    misses += [i for i in items if i["id"] not in bulk]
                     per["rawg"] += sum(1 for r in all_rows
                                        if r["source"] == "rawg" and r["item_id"] in item_ids)
                 except Exception as ex:
@@ -504,8 +498,28 @@ def sync(systems=None, db=None, progress=None):
                         per["ra"] += len(fetched)
                 except Exception as ex:
                     report["errors"].append(f"ra/{slug}: {ex}")
-        # Persist this pass before the next starts: an interrupted sync still leaves
-        # whatever it finished written to the catalog.
+            # Scores land as each system completes, so the Crowd column fills in while
+            # the sync runs instead of only at the end.
+            report["scored"] += _write_scores(db, all_rows)
+            all_rows = []
+        # ---- The day's search budget, spent on the misses the owner cares about:
+        # owned games first, newest to oldest.
+        misses.sort(key=lambda i: (i["year"] or 0), reverse=True)
+        searched = 0
+        for i in misses:
+            if searched >= RAWG_SEARCH_MAX or _budget_left(db, "rawg") <= 0:
+                break
+            try:
+                rec = _rawg_search(db, i["system"], i["title"])
+            except Exception:
+                break  # budget exhausted or transient failure — stop cleanly
+            searched += 1
+            if rec:
+                all_rows.append({"item_id": i["id"], "source": "rawg",
+                                 "score": rec["score"], "votes": rec["votes"],
+                                 "matched_title": rec["title"]})
+                report["systems"].setdefault(
+                    i["system"], {"matched": 0, "rawg": 0, "ra": 0})["rawg"] += 1
         report["scored"] += _write_scores(db, all_rows)
         report["scored_rows"] = report["scored"]
     return report

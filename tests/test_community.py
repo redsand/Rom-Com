@@ -88,6 +88,46 @@ def test_scores_upsert_and_denormalize_the_best_one(monkeypatch, tmp_path):
     assert db.execute("SELECT community_score FROM items WHERE id='b'").fetchone()["community_score"] is None
 
 
+def test_the_search_budget_goes_to_the_newest_owned_games_first(monkeypatch, tmp_path):
+    """The owner reads his library newest to oldest, so a thin search budget must land
+    there too — not on whatever row order SQLite happens to return."""
+    db = setup(monkeypatch, tmp_path, budget="50")
+    _fake_rawg(monkeypatch)
+    with db:
+        db.execute("INSERT INTO items(id,title,system,year,status) "
+                   "VALUES('old','Old Game','snes',1989,'VERIFIED')")
+        db.execute("INSERT INTO items(id,title,system,year,status) "
+                   "VALUES('new','New Game','snes',2004,'VERIFIED')")
+    calls = []
+    monkeypatch.setattr(community, "_rawg_search",
+                        lambda db_, slug, title: calls.append(title)
+                        or {"title": title, "score": 80, "votes": 10})
+    community.sync(db=db)
+    assert calls == ["New Game", "Old Game"]
+
+
+def test_bulk_matching_never_touches_the_search_budget(monkeypatch, tmp_path):
+    """Day one's bug: the bulk pull charged the budget, so 400 requests of platform
+    lists left nothing for the per-item searches the budget exists for. Bulk is
+    cached and free; searches alone pay."""
+    db = setup(monkeypatch, tmp_path, budget="0")   # nothing to search with
+    monkeypatch.setenv("RAWG_API_KEY", "k")
+    from romcom.config import invalidate
+    invalidate()
+    with connect() as d:
+        d.execute("INSERT INTO app_settings(key,value) VALUES('rawg_enabled','true')")
+    invalidate()
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status) "
+                   "VALUES('own','In Hand','snes','VERIFIED')")
+    monkeypatch.setattr(community, "rawg_top_games",
+                        lambda db_, slug: [{"title": "In Hand", "score": 85, "votes": 40}])
+    report = community.sync(db=db)
+    assert report["scored"] == 1
+    assert db.execute("SELECT community_score FROM items WHERE id='own'"
+                      ).fetchone()["community_score"] == 85
+
+
 def test_spending_does_not_hold_the_write_lock(monkeypatch, tmp_path):
     """A running sync pinned SQLite's single write lock: _set_state left its implicit
     transaction open, so every web write — login, and the last_seen stamp every
