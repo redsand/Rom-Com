@@ -191,6 +191,53 @@ def test_a_short_platforms_game_list_ends_cleanly_too(monkeypatch, tmp_path):
     assert recs == [{"title": "Kolibri", "score": 78, "votes": 12, "year": None}]
 
 
+class _FlakyDb:
+    """A connection proxy that raises 'database is locked' on the first N score
+    writes, then lets the rest through — what the live watcher's write stretches
+    look like to the sync."""
+    def __init__(self, real, fails):
+        self._real, self._fails, self._n = real, fails, 0
+    def execute(self, sql, *p):
+        if "INSERT INTO community_scores" in sql and self._n < self._fails:
+            self._n += 1
+            import sqlite3
+            raise sqlite3.OperationalError("database is locked")
+        return self._real.execute(sql, *p)
+    def __enter__(self):
+        self._real.__enter__()
+        return self
+    def __exit__(self, *a):
+        return self._real.__exit__(*a)
+
+
+def test_a_locked_write_is_retried_not_discarded(monkeypatch, tmp_path):
+    """One busy-timeout threw away 400 budgeted search results — a whole day's
+    searches. The write is an idempotent upsert, so it retries through the lock."""
+    db = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(community.time, "sleep", lambda s: None)
+    with db:
+        db.execute("INSERT INTO items(id,title,system) VALUES('a','Game A','snes')")
+    rows = [{"item_id": "a", "source": "rawg", "score": 85, "votes": 30, "matched_title": "Game A"}]
+    assert community._write_scores(_FlakyDb(db, fails=2), rows) == 1
+    assert db.execute("SELECT community_score FROM items WHERE id='a'"
+                      ).fetchone()["community_score"] == 85
+
+
+def test_a_persistently_locked_write_gives_up_loudly(monkeypatch, tmp_path):
+    """Retries are bounded: a lock that never lifts must surface as an error, not
+    spin forever."""
+    import sqlite3 as _sq
+    db = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(community.time, "sleep", lambda s: None)
+    rows = [{"item_id": "a", "source": "rawg", "score": 85, "votes": 30, "matched_title": "Game A"}]
+    try:
+        community._write_scores(_FlakyDb(db, fails=99), rows)
+        raised = False
+    except _sq.OperationalError:
+        raised = True
+    assert raised
+
+
 def test_spending_does_not_hold_the_write_lock(monkeypatch, tmp_path):
     """A running sync pinned SQLite's single write lock: _set_state left its implicit
     transaction open, so every web write — login, and the last_seen stamp every

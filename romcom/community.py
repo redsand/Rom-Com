@@ -27,6 +27,7 @@ import json
 import os
 import random
 import re
+import sqlite3
 import threading
 import time
 from datetime import date
@@ -406,23 +407,33 @@ def _targets(db, systems=None, owned=True):
 
 def _write_scores(db, rows):
     """rows: {item_id, source, score, votes, matched_title}. Raw records first, then
-    the denormalized best-of, in one transaction so the watcher never sees half a sync."""
+    the denormalized best-of, in one transaction so the watcher never sees half a sync.
+    The live watcher holds the write lock for stretches, so a busy-timeout is retried
+    with backoff — every write here is an idempotent upsert, and throwing away a
+    system's scores to one locked transaction cost a whole day's searches once."""
     if not rows:
         return 0
-    with db:
-        for r in rows:
-            db.execute("""INSERT INTO community_scores(item_id,source,score,votes,matched_title,fetched_at)
-                VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
-                ON CONFLICT(item_id,source) DO UPDATE SET
-                score=excluded.score, votes=excluded.votes,
-                matched_title=excluded.matched_title, fetched_at=CURRENT_TIMESTAMP""",
-                (r["item_id"], r["source"], r["score"], r["votes"], r["matched_title"]))
-        # Best available = highest score; ties go to the more-voted (more trusted) source.
-        db.execute("""UPDATE items SET
-            community_score=(SELECT MAX(score) FROM community_scores cs WHERE cs.item_id=items.id),
-            community_source=(SELECT source FROM community_scores cs WHERE cs.item_id=items.id
-                ORDER BY score DESC, votes DESC LIMIT 1)
-            WHERE id IN (SELECT DISTINCT item_id FROM community_scores)""")
+    for attempt in range(5):
+        try:
+            with db:
+                for r in rows:
+                    db.execute("""INSERT INTO community_scores(item_id,source,score,votes,matched_title,fetched_at)
+                        VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
+                        ON CONFLICT(item_id,source) DO UPDATE SET
+                        score=excluded.score, votes=excluded.votes,
+                        matched_title=excluded.matched_title, fetched_at=CURRENT_TIMESTAMP""",
+                        (r["item_id"], r["source"], r["score"], r["votes"], r["matched_title"]))
+                # Best available = highest score; ties go to the more-voted (more trusted) source.
+                db.execute("""UPDATE items SET
+                    community_score=(SELECT MAX(score) FROM community_scores cs WHERE cs.item_id=items.id),
+                    community_source=(SELECT source FROM community_scores cs WHERE cs.item_id=items.id
+                        ORDER BY score DESC, votes DESC LIMIT 1)
+                    WHERE id IN (SELECT DISTINCT item_id FROM community_scores)""")
+            return len(rows)
+        except sqlite3.OperationalError as ex:
+            if "locked" not in str(ex).lower() or attempt == 4:
+                raise
+            time.sleep(2 * (attempt + 1))
     return len(rows)
 
 
