@@ -134,9 +134,15 @@ def current_user(req=None):
             db.execute("UPDATE web_sessions SET expires_at=?,last_seen=? WHERE token_hash=?",
                        (_stamp(now + timedelta(hours=TTL_HOURS)), _stamp(now), row["token_hash"]))
     else:
-        with db:
-            db.execute("UPDATE web_sessions SET last_seen=? WHERE token_hash=?",
-                       (_stamp(now), row["token_hash"]))
+        # last_seen is "when was this browser last here", not a per-request stamp: the
+        # UI polls continuously and each write competes with the acquire watcher for
+        # SQLite's single write lock — the same contention the half-life renewal above
+        # exists to avoid. Minute granularity is plenty for a display column.
+        seen = _parse(row["last_seen"]) if row["last_seen"] else None
+        if seen is None or (now - seen) >= timedelta(minutes=1):
+            with db:
+                db.execute("UPDATE web_sessions SET last_seen=? WHERE token_hash=?",
+                           (_stamp(now), row["token_hash"]))
     return row["user"]
 
 

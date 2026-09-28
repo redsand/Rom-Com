@@ -181,6 +181,21 @@ def test_a_fresh_session_is_not_rewritten_on_every_request(monkeypatch, tmp_path
     assert before == after
 
 
+def test_last_seen_is_a_heartbeat_not_a_per_request_write(monkeypatch, tmp_path):
+    """Same reasoning as renewal, for the last_seen stamp: writing it on every
+    authenticated request is one write per UI poll competing with the acquire watcher
+    for SQLite's single write lock. Minute granularity is the point."""
+    c = make_client(monkeypatch, tmp_path)
+    login(c)
+    c.get("/api/summary")   # establish the first stamp (login's own row has one too)
+    db = connect()
+    before = db.execute("SELECT last_seen FROM web_sessions").fetchone()["last_seen"]
+    for _ in range(3):
+        c.get("/api/summary")
+    after = db.execute("SELECT last_seen FROM web_sessions").fetchone()["last_seen"]
+    assert before == after
+
+
 def test_logout_revokes_the_token(monkeypatch, tmp_path):
     c = make_client(monkeypatch, tmp_path)
     login(c)

@@ -134,7 +134,11 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
           md5=excluded.md5,sha1=excluded.sha1,matched_item_id=excluded.matched_item_id,
           match_method=excluded.match_method,content=excluded.content,scanned_at=CURRENT_TIMESTAMP""",
           (str(p),st.st_size,st.st_mtime,crc,md5,sha1,item_id,method,content)); count+=1
-        if count%200==0: db.commit()  # interrupted scans keep their progress; unchanged files resume via reuse
+        # Commit per FILE, not per 200: the first write of the loop opens the implicit
+        # transaction, and with batched commits every later file's digest_file — seconds
+        # each for ISO-sized dumps — ran inside it, holding SQLite's single write lock
+        # and freezing the web UI for the length of a scan.
+        db.commit()
     db.commit()
     out={"files":count,"matched":matched,"verified":verified,"reused":reused}
     if adopt:

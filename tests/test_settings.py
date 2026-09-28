@@ -137,3 +137,31 @@ def test_settings_test_endpoint(monkeypatch, tmp_path):
     assert d["indexer"]["ok"] is False
     assert "sekret" not in d["indexer"]["detail"] and "***" in d["indexer"]["detail"]
     assert d["sabnzbd"]["ok"] is True  # one failure doesn't mask the rest
+
+
+def test_community_credentials_never_leak_into_probe_details(monkeypatch, tmp_path):
+    """RA's key and username travel in the request URL (?y=key&z=user) and RAWG's key
+    rides along as ?key= — so a failed probe echoes them unless the mask knows about
+    community's secrets too, not just the indexer/SABnzbd ones."""
+    env_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("RA_USERNAME", "someuser")
+    monkeypatch.setenv("RA_API_KEY", "rasecret")
+    monkeypatch.setenv("RAWG_API_KEY", "rawgsecret")
+    db = connect()
+    with db:
+        db.execute("INSERT INTO app_settings(key,value) VALUES('ra_enabled','true')")
+    invalidate()
+    monkeypatch.setattr("romcom.indexer.ping", lambda: True)
+    monkeypatch.setattr("romcom.sab.queue", lambda: [])
+    monkeypatch.setattr("romcom.webdl.test", lambda: True)
+    c = create_app().test_client()
+
+    def boom():
+        raise RuntimeError("404 for url https://retroachievements.org/API/"
+                           "API_GetConsoleIDs.php?y=rasecret&z=someuser&rawg=rawgsecret")
+    monkeypatch.setattr("romcom.community.test", boom)
+    d = c.post("/api/settings/test").get_json()
+    assert d["community"]["ok"] is False
+    assert "rasecret" not in d["community"]["detail"]
+    assert "rawgsecret" not in d["community"]["detail"]
+    assert "***" in d["community"]["detail"]

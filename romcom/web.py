@@ -131,8 +131,13 @@ def create_app():
         """Live connectivity check for the Settings tab. API keys never appear in
         error details — request errors echo the URL they hit, key included."""
         def _safe(e):
+            # Community credentials ride in request URLs too (RA's ?y=key&z=user,
+            # RAWG's ?key=), so an echoed request leaks them exactly like an echoed
+            # settings value would — they get the same masking.
+            from . import community
             msg = str(e)
-            for k in (settings()["nzb_key"], settings()["sab_key"]):
+            for k in (settings()["nzb_key"], settings()["sab_key"],
+                      community.rawg_key(), *community.ra_credentials()):
                 if k:
                     msg = msg.replace(k, "***")
             return msg
@@ -486,6 +491,13 @@ def create_app():
                              (kind, json.dumps(params)))
         jid = cur.lastrowid
         fn = _job_fn(kind, params)
+        # Identity of THIS run. The watchdog declares a silent run dead and starts a
+        # replacement; the wedged thread may still wake up later (a blocked read
+        # finally errors) and run its `finally`. Without the token, that finally
+        # clears `running` for the replacement too, and a third launch is allowed
+        # while the second is still going — duplicate watchers feeding SABnzbd.
+        with job_lock:
+            rid = j["run_id"] = j.get("run_id", 0) + 1
 
         def run():
             status = "done"
@@ -496,7 +508,9 @@ def create_app():
             except Exception as e:
                 j["error"] = f"{type(e).__name__}: {e}"; status = "error"
             finally:
-                j["running"] = False
+                with job_lock:
+                    if j.get("run_id") == rid:   # only the current run owns the flag
+                        j["running"] = False
                 jdb = connect()
                 with jdb:
                     jdb.execute("UPDATE web_jobs SET status=?,finished_at=CURRENT_TIMESTAMP WHERE id=?", (status, jid))
