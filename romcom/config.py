@@ -67,6 +67,7 @@ ENV_VARS = {
     "rawg_jitter": "ROMCOM_RAWG_JITTER",
     "rawg_timeout": "ROMCOM_RAWG_TIMEOUT",
     "rawg_budget": "ROMCOM_RAWG_BUDGET",
+    "ra_budget": "ROMCOM_RA_BUDGET",
     "ra_enabled": "ROMCOM_RA_ENABLED",
     "ra_delay": "ROMCOM_RA_DELAY",
     "ra_timeout": "ROMCOM_RA_TIMEOUT",
@@ -139,6 +140,7 @@ def _env_settings():
         "rawg_jitter": os.getenv("ROMCOM_RAWG_JITTER", "0.8"),
         "rawg_timeout": os.getenv("ROMCOM_RAWG_TIMEOUT", "30"),
         "rawg_budget": os.getenv("ROMCOM_RAWG_BUDGET", "400"),
+        "ra_budget": os.getenv("ROMCOM_RA_BUDGET", "5000"),
         "ra_enabled": os.getenv("ROMCOM_RA_ENABLED", "false"),
         "ra_delay": os.getenv("ROMCOM_RA_DELAY", "1.0"),
         "ra_timeout": os.getenv("ROMCOM_RA_TIMEOUT", "30"),
@@ -211,6 +213,11 @@ def settings():
         except (TypeError, ValueError): s[k] = dflt
     try: s["rawg_budget"] = max(0, int(s["rawg_budget"]))
     except (TypeError, ValueError): s["rawg_budget"] = 400
+    # RA has no RAWG-style monthly quota (its API just asks for sane pacing), so its
+    # daily cap is its own knob — sharing RAWG's 400 meant one stopped sync starved
+    # the next day's arcade player fetches.
+    try: s["ra_budget"] = max(0, int(s["ra_budget"]))
+    except (TypeError, ValueError): s["ra_budget"] = 5000
     s["ra_enabled"] = str(s["ra_enabled"]).strip().lower() in ("1", "true", "yes", "on")
     for k, dflt in (("ra_delay", 1.0), ("ra_timeout", 30.0)):
         try: s[k] = max(0.0, float(s[k]))

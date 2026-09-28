@@ -139,10 +139,13 @@ def _spend(db, source, n=1):
 
 
 def _budget_left(db, source):
+    """Each provider's daily request cap is its own knob: RAWG's free tier is 20k a
+    MONTH (400/day keeps well clear), while RA has no monthly quota — sharing RAWG's
+    conservative number meant one interrupted sync starved the next day's RA fetches."""
     today = date.today().isoformat()
     if _state(db, source, "date") != today:
-        return settings()["rawg_budget"]
-    cap = settings()["rawg_budget"]
+        return settings()["rawg_budget" if source == "rawg" else "ra_budget"]
+    cap = settings()["rawg_budget" if source == "rawg" else "ra_budget"]
     return max(0, cap - int(_state(db, source, "count") or 0))
 
 
@@ -601,7 +604,9 @@ def status(db=None):
                          " AND COALESCE(is_device,0)=0").fetchone()["c"]
     return {"providers": ready, "covered_items": covered, "by_source": rows,
             "rawg_budget_left": _budget_left(db, "rawg"),
-            "rawg_budget": settings()["rawg_budget"]}
+            "rawg_budget": settings()["rawg_budget"],
+            "ra_budget_left": _budget_left(db, "ra"),
+            "ra_budget": settings()["ra_budget"]}
 
 
 def test():

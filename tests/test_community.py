@@ -419,6 +419,20 @@ def test_percentiles_rank_against_the_whole_console_not_the_batch(monkeypatch, t
     assert row["score"] == 50
 
 
+def test_ra_fetches_do_not_share_rawgs_daily_budget(monkeypatch, tmp_path):
+    """RA's player fetches were counted against RAWG's 400/day — a number sized for
+    RAWG's 20k-a-MONTH free tier — so one interrupted sync could spend the shared
+    cap and starve the next run's RA fetches before a single player count arrived.
+    RA has no monthly quota; its cap is its own knob."""
+    db = setup(monkeypatch, tmp_path, budget="0")   # today's RAWG budget: already gone
+    _fake_ra(monkeypatch)
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status) VALUES('own','In Hand','gb','VERIFIED')")
+    monkeypatch.setattr(community, "ra_players", lambda db_, gid: 40)
+    report = community.sync(db=db)
+    assert report["systems"]["gb"]["ra"] == 1    # the RA fetch ran anyway
+
+
 def test_a_write_failure_costs_one_system_not_the_sync(monkeypatch, tmp_path):
     """_write_scores already rides out locked writes, but anything else it raises must
     become a line in the report instead of unwinding the whole sync — the next
