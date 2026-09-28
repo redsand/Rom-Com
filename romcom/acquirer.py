@@ -360,30 +360,43 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                     sources.append(("vimm", vimm))
                 if s["archive_enabled"]:
                     sources.append(("archive", archive))
-                picked, had_error = None, False
+                picked, had_error, dup_url = None, False, None
                 for sname, mod in sources:
                     _emit(f"{sname} search: {c['title']}")
                     try:
-                        cand = _pick(mod.search(c["title"], c["system"]))
+                        results = mod.search(c["title"], c["system"])
                     except Exception:
                         had_error = True; continue
-                    if cand:
-                        picked = (sname, mod, cand); break
+                    # Walk the ranked list to the first candidate worth fetching. A
+                    # candidate that's already in the ledger ends the SOURCE, not the
+                    # search: romsgames hosts one dump per title, so when a variant
+                    # item ("Cars (Germany)") meets the page its sibling already
+                    # downloaded, the next-ranked page is a different game ("cars
+                    # race-o-rama") — wrong to fetch, right to let the next source try.
+                    for cand in results or []:
+                        cand = _pick([cand])
+                        if not cand:
+                            continue
+                        url = cand["url"]
+                        with lock:
+                            dup = url in direct_inflight or _already_fetched(wdb, url)
+                            if not dup:
+                                direct_inflight.add(url)
+                        if dup:
+                            dup_url = url
+                            break
+                        picked = (sname, mod, cand)
+                        break
+                    if picked:
+                        break
                 if picked is None:
-                    _skip(c, "no usable result anywhere (indexer or direct)", wdb, miss=not had_error)
+                    if dup_url:
+                        _skip(c, f"already downloaded from {dup_url}", wdb, miss=True)
+                    else:
+                        _skip(c, "no usable result anywhere (indexer or direct)", wdb, miss=not had_error)
                     continue
                 sname, mod, direct = picked
-                url = direct.get("url")
-                # Dedup across workers AND across sweeps: the same source page can be the top
-                # pick for several items (a multicart). Claim the url under the lock — if the
-                # ledger already has it, or another worker is fetching it right now, skip.
-                with lock:
-                    dup = url in direct_inflight or _already_fetched(wdb, url)
-                    if not dup:
-                        direct_inflight.add(url)
-                if dup:
-                    _skip(c, f"already downloaded from {url}", wdb, miss=True)
-                    continue
+                url = direct["url"]
                 _emit(f"{sname} download: {c['title']}")
                 try:
                     # romsgames runs several in parallel (transfers overlap; its request

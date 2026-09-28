@@ -478,6 +478,86 @@ def test_direct_duplicate_url_is_not_refetched(monkeypatch, tmp_path):
     assert r["direct"] == 1 and r["skipped"] == 1
 
 
+def test_an_exact_match_buried_under_region_tags_still_clears_the_floor():
+    """Site page titles are bare slugs ("draglade"); a No-Intro European variant query
+    carries six region words the page can never contain, so raw scoring pinned the exact
+    page at 14% — below MIN_SCORE — and the item cycled as "no usable result" forever
+    while its game sat on the site. An exact clean-token match is the item asked for;
+    a near-miss keeps the raw floor."""
+    from romcom import indexer
+    res = indexer.rank(
+        [{"title": "draglade", "url": "https://r/d/"},
+         {"title": "1808 draglade sir vg", "url": "https://r/1808/"}],
+        ["Draglade (Europe) (En,Fr,De,Es,It)"])
+    assert res[0]["title"] == "draglade" and res[0]["score"] >= 20
+    assert _pick(res) is not None                    # the exact page is fetchable again
+    near = indexer.rank([{"title": "1808 draglade sir vg", "url": "https://r/1808/"}],
+                        ["Draglade (Europe) (En,Fr,De,Es,It)"])
+    assert _pick(near) is None                      # near-misses stay behind the floor
+
+
+def test_a_page_already_fetched_falls_through_to_the_next_source(monkeypatch, tmp_path):
+    """A variant item ("Cars (Germany)") meets the romsgames page its sibling already
+    downloaded. The dedup must end the romsgames attempt — NOT fall to the source's
+    next-ranked page, which is a different game — and then let the next source try,
+    instead of writing the item off as a miss. 900+ nds items were stuck in exactly
+    that loop, cycling every six hours."""
+    from romcom.config import invalidate
+    db = client_db(monkeypatch, tmp_path)
+    ddir = tmp_path / "games"; ddir.mkdir()
+    monkeypatch.setenv("ROMCOM_DOWNLOAD_DIR", str(ddir))
+    monkeypatch.setenv("ROMCOM_ARCHIVE_ENABLED", "true")
+    invalidate()
+    seed(db, [{"id": "i1", "title": "Cars (Germany)"}])
+    with db:   # the sibling's fetch, as the ledger recorded it
+        db.execute("INSERT INTO jobs(entity_type,entity_id,result_title,result_url,status,source) "
+                   "VALUES('item','sib','cars','https://r/cars/','DOWNLOADED','romsgames')")
+    search, _ = fake_search([{"title": "junk", "url": "nzb://x", "size": 1, "score": 5}])
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+
+    def webdl_search(q, sys):
+        return [{"title": "cars", "url": "https://r/cars/", "score": 100},
+                {"title": "cars race o rama", "url": "https://r/cars-race-o-rama/", "score": 25}]
+    monkeypatch.setattr("romcom.acquirer.webdl.search", webdl_search)
+    monkeypatch.setattr("romcom.acquirer.archive.search",
+                        lambda q, sys: [{"title": "cars (europe)", "url": "https://a/cars-eu/", "score": 100}])
+    monkeypatch.setattr("romcom.acquirer.archive.fetch", _fake_fetch("Cars (Europe).zip"))
+    monkeypatch.setattr("romcom.actions.sync", lambda db: None)
+    monkeypatch.setattr("romcom.acquirer.scan", lambda *a, **k: {"files": 1})
+
+    r = auto_acquire(poll_interval=0)
+    assert r["direct"] == 1 and r["skipped"] == 0
+    row = db.execute("SELECT source,status FROM jobs WHERE entity_id='i1'").fetchone()
+    assert row["source"] == "archive" and row["status"] == "DOWNLOADED"
+    # the wrong game next in romsgames' ranking was never fetched
+    assert db.execute("SELECT COUNT(*) c FROM jobs WHERE result_url LIKE '%race-o-rama%'"
+                      ).fetchone()["c"] == 0
+
+
+def test_a_dup_everywhere_is_an_honest_miss_that_names_the_page(monkeypatch, tmp_path):
+    """When every source's best page is already in the ledger, the item cools off as a
+    miss whose detail says which page — so the Activity feed explains why a wanted
+    variant keeps deferring instead of showing a bare 'no result'."""
+    db = client_db(monkeypatch, tmp_path)
+    ddir = tmp_path / "games"; ddir.mkdir()
+    monkeypatch.setenv("ROMCOM_DOWNLOAD_DIR", str(ddir))
+    seed(db, [{"id": "i1", "title": "Cars (Germany)"}])
+    with db:
+        db.execute("INSERT INTO jobs(entity_type,entity_id,result_title,result_url,status,source) "
+                   "VALUES('item','sib','cars','https://r/cars/','DOWNLOADED','romsgames')")
+    search, _ = fake_search([])
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.acquirer.webdl.search",
+                        lambda q, sys: [{"title": "cars", "url": "https://r/cars/", "score": 100}])
+    monkeypatch.setattr("romcom.acquirer.archive.search", lambda *a: [])
+    monkeypatch.setattr("romcom.actions.sync", lambda db: None)
+
+    r = auto_acquire(poll_interval=0)
+    assert r["skipped"] == 1
+    ev = db.execute("SELECT event,detail FROM events WHERE item_id='i1'").fetchone()
+    assert ev["event"] == "acquire-miss" and "already downloaded" in ev["detail"]
+
+
 def test_watch_survives_cycle_error(monkeypatch, tmp_path):
     """A watching run must not die when a sweep raises: it records the failure, rests, and
     sweeps again. Here the first _cycle explodes; the second ends the watch cleanly."""

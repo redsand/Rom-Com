@@ -128,6 +128,7 @@ def rank(results,queries,kind="item",min_bytes=None,max_bytes=None):
     """
     qtokens=set().union(*(_tokens(q) for q in queries)) if queries else set()
     required=_required(qtokens)
+    cleans=[set(_tokens(clean_query(q))) for q in (queries or [])]
     ranked=[]
     for r in results:
         if not r.get("url"): continue
@@ -141,6 +142,14 @@ def rank(results,queries,kind="item",min_bytes=None,max_bytes=None):
         recall=hit/max(1,len(qtokens))
         precision=hit/max(1,len(rt))
         score=recall*precision*100
+        # A candidate whose tokens exactly equal the cleaned query's IS the item
+        # asked for. Region/language words in the query can never appear in a bare
+        # site title ("Draglade (Europe) (En,Fr,De,Es,It)" vs the page "draglade"),
+        # so raw scoring buries the exact page below MIN_SCORE and it is refused
+        # while the item re-cycles forever. The boost is exact: a near-miss with
+        # extra or missing tokens keeps its raw score, floor and all.
+        if any(c and rt == c for c in cleans):
+            score=max(score,100.0)
         if kind=="volume":
             score+=sum(12 for w in ("collection","complete","archive","volume","pack","set") if w in rt)
         ranked.append(dict(r,score=score))
