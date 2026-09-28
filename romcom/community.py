@@ -58,8 +58,6 @@ RAWG_SEARCH_MAX = 200
 RA_FETCH_CAP = 600
 # An RA player count older than this is eligible for a refresh.
 RA_STALE_DAYS = 30
-# Popularity with fewer players than this is indistinguishable from noise.
-RA_MIN_PLAYERS = 5
 
 # Our system slugs -> the names these sites call the same hardware. Exact matches are
 # preferred; substring is the fallback for names like "Sega Genesis/Mega Drive".
@@ -531,8 +529,14 @@ def sync(systems=None, db=None, progress=None):
                                 players = ra_players(db, g["gid"])
                             except Exception:
                                 break  # budget/burst — keep what we have
-                            if players >= RA_MIN_PLAYERS:
-                                fetched[iid] = {"players": players, "title": g["title"]}
+                            # Every fetched game is stored, quiet ones too: a dropped
+                            # fetch is invisible to the staleness cut (it reads stored
+                            # rows), so it would be re-fetched on every later sweep and
+                            # the per-sweep cap would never advance past the same quiet
+                            # games — arcade stalled at its first batch exactly that way.
+                            # A one-player game's percentile IS near the bottom, which
+                            # is all the popularity signal says about it anyway.
+                            fetched[iid] = {"players": players, "title": g["title"]}
                         # Percentile within the console (the point is rank: a portable's
                         # player counts live on a different scale than a console's),
                         # over everything KNOWN for it:

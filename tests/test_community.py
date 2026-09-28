@@ -419,6 +419,27 @@ def test_percentiles_rank_against_the_whole_console_not_the_batch(monkeypatch, t
     assert row["score"] == 50
 
 
+def test_low_popularity_games_are_stored_not_refetched(monkeypatch, tmp_path):
+    """A fetched game below any noise threshold used to be dropped unrecorded — but
+    the staleness cut only sees stored rows, so the same quiet game headed every
+    later sweep's fetch list and the per-sweep cap never advanced past it. Arcade
+    stalled at its first batch exactly that way. Every fetch is stored now; the
+    percentile ranks a one-player game near the bottom, which is all the signal
+    says anyway."""
+    db = setup(monkeypatch, tmp_path)
+    _fake_ra(monkeypatch)
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status) VALUES('own','In Hand','gb','VERIFIED')")
+    calls = []
+    monkeypatch.setattr(community, "ra_players", lambda db_, gid: calls.append(gid) or 2)
+    community.sync(db=db)
+    row = db.execute("SELECT score,votes FROM community_scores "
+                     "WHERE item_id='own' AND source='retroachievements'").fetchone()
+    assert row is not None and row["votes"] == 2     # stored despite being quiet
+    community.sync(db=db)
+    assert calls == [9]                              # fresh, so not re-fetched
+
+
 def test_ra_fetches_do_not_share_rawgs_daily_budget(monkeypatch, tmp_path):
     """RA's player fetches were counted against RAWG's 400/day — a number sized for
     RAWG's 20k-a-MONTH free tier — so one interrupted sync could spend the shared
