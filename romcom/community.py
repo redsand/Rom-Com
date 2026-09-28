@@ -383,7 +383,7 @@ def ra_games(db, console_id):
     def fetch():
         user, key = ra_credentials()
         data = _request(f"{RA_BASE}/API_GetGameList.php",
-                        {"y": key, "z": user, "c": console_id}, "ra", db, budget=False)
+                        {"y": key, "z": user, "i": console_id}, "ra", db, budget=False)
         return [{"title": g["Title"], "gid": g["ID"]} for g in data]
     return cached("ra", f"games:{console_id}", fetch, ttl_minutes=60 * 24 * 14)
 
@@ -518,7 +518,7 @@ def sync(systems=None, db=None, progress=None):
                         per["matched"] += len(hits)
                         fresh_cut = f"-{RA_STALE_DAYS} days"
                         recent = {r["item_id"] for r in db.execute(
-                            "SELECT item_id FROM community_scores WHERE source='ra' "
+                            "SELECT item_id FROM community_scores WHERE source='retroachievements' "
                             "AND fetched_at > datetime('now', ?)", (fresh_cut,))}
                         todo = [(iid, g) for iid, g in hits.items() if iid not in recent]
                         fetched = {}

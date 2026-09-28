@@ -363,6 +363,62 @@ def test_a_thin_budget_is_spent_on_owned_games_first(monkeypatch, tmp_path):
     assert calls == ["In Hand"]
 
 
+def test_the_ra_game_list_asks_for_the_console_by_its_id(monkeypatch, tmp_path):
+    """RA's game-list endpoint takes the console in `i` — `c` is the COUNT parameter.
+    The first live RA sync sent c=<console id> and got {"success": false} back — a dict,
+    which the list code iterated as strings ('string indices must be integers'), killing
+    every system's RA pass on day one while the sync still exited 0."""
+    db = setup(monkeypatch, tmp_path)
+    seen = {}
+    def fake_request(url, params, source, db_, budget=True):
+        seen.update(params)
+        return [{"Title": "Game Boy Game", "ID": 5}]
+    monkeypatch.setattr(community, "_request", fake_request)
+    monkeypatch.setattr(community, "ra_credentials", lambda: ("u", "k"))
+    games = community.ra_games(db, 4)
+    assert games == [{"title": "Game Boy Game", "gid": 5}]
+    assert seen.get("i") == 4 and "c" not in seen
+
+
+def _fake_ra(monkeypatch):
+    """An RA provider that is 'on', with the console lookup and game list stubbed so the
+    per-game players fetch is the only thing that can run."""
+    monkeypatch.setenv("RA_USERNAME", "u")
+    monkeypatch.setenv("RA_API_KEY", "k")
+    with connect() as d:
+        d.execute("INSERT INTO app_settings(key,value) VALUES('ra_enabled','true')")
+    from romcom.config import invalidate
+    invalidate()
+    monkeypatch.setattr(community, "_ra_console_id", lambda db_, slug: (4, "Game Boy"))
+    monkeypatch.setattr(community, "ra_games",
+                        lambda db_, cid: [{"title": "In Hand", "gid": 9}])
+
+
+def test_fresh_player_counts_are_not_refetched(monkeypatch, tmp_path):
+    """Scores are stored under source='retroachievements'; the staleness cut that
+    skips re-fetching used to read source='ra' — a spelling that never matched, so
+    every sync re-paid the per-game players budget for scores it already had."""
+    db = setup(monkeypatch, tmp_path)
+    _fake_ra(monkeypatch)
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status) VALUES('own','In Hand','gb','VERIFIED')")
+        db.execute("INSERT INTO community_scores(item_id,source,score,votes,matched_title,fetched_at) "
+                   "VALUES('own','retroachievements',50,40,'In Hand',CURRENT_TIMESTAMP)")
+    calls = []
+    monkeypatch.setattr(community, "ra_players", lambda db_, gid: calls.append(gid) or 40)
+    report = community.sync(db=db)
+    assert calls == []                    # the score is fresh: no re-fetch, no re-spend
+    assert report["scored"] == 0
+    with db:   # past RA_STALE_DAYS the players are fetched again
+        db.execute("UPDATE community_scores SET fetched_at=datetime('now','-40 days')")
+    report = community.sync(db=db)
+    assert calls == [9]
+    assert report["systems"]["gb"]["ra"] == 1
+    row = db.execute("SELECT score,votes FROM community_scores "
+                     "WHERE item_id='own' AND source='retroachievements'").fetchone()
+    assert row["votes"] == 40 and row["score"] == 100   # solo game = top percentile
+
+
 def test_an_interrupted_second_pass_still_leaves_the_first_written(monkeypatch, tmp_path):
     """Owned results persist even if the wishlist pass dies: the pass boundary is a
     commit point, so a crash mid-wishlist never costs the owned games their scores."""
