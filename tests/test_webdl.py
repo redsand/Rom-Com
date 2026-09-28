@@ -81,6 +81,21 @@ def test_search_without_system_map_allows_any_console(monkeypatch, tmp_path):
     assert {r["console"] for r in results} >= {"gameboy", "sega-genesis"}
 
 
+def test_ps3_searches_only_the_playstation_3_console(monkeypatch, tmp_path):
+    """ps3 had no console map, so its searches ran unfiltered and any console's
+    exact-title page could win the pick. The site names its PS3 pages playstation-3,
+    the same convention as its ps1/ps2/psp slugs."""
+    webdl_env(monkeypatch, tmp_path)
+    html = """
+<a href="/playstation-3-rom-metal-gear-solid-4/">Metal Gear Solid 4</a>
+<a href="/playstation-2-rom-metal-gear-solid-3/">Metal Gear Solid 3</a>
+"""
+    fake_requests(monkeypatch, {("GET", "/search/"): FakeResponse(html)})
+    results = webdl.search("Metal Gear Solid 4", "ps3")
+    assert [r["console"] for r in results] == ["playstation-3"]
+    assert results[0]["url"] == "https://roms.example/playstation-3-rom-metal-gear-solid-4/"
+
+
 def test_fetch_downloads_file(monkeypatch, tmp_path):
     webdl_env(monkeypatch, tmp_path)
     dest = tmp_path / "games"

@@ -61,7 +61,10 @@ SYNC_FAILURE_LIMIT = 10         # consecutive failed syncs before the wait phase
 # Search cooldowns, in minutes, keyed by the event a skip leaves behind. A transient
 # failure (indexer hiccup, SABnzbd down, no download dir yet) is worth retrying soon;
 # "nothing found anywhere" is a property of the sources, so those items cool for hours.
-COOLDOWN_EVENTS = {"acquire-skip": 60, "acquire-miss": 360}
+# acquire-fail is a download that broke mid-flight (webdl down, corrupt file): without
+# its own cooldown the item was re-attempted on EVERY sweep with no Activity trace of
+# why, which is how a source outage turned into thousands of refetches a day.
+COOLDOWN_EVENTS = {"acquire-skip": 60, "acquire-miss": 360, "acquire-fail": 60}
 EVENT_KEEP_DAYS = 2             # cooldown-trail rows older than the longest window are pruned
 
 STOP = threading.Event()        # the web UI sets this to cancel the watcher promptly
@@ -325,11 +328,21 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
             pass
         _emit(f"skipped: {item['title']}")
 
-    def _fail(item, reason):
+    def _fail(item, reason, wdb=None):
         with lock:
             stats["failed"] += 1
             if len(failed_items) < 50:
                 failed_items.append({"id": item["id"], "title": item["title"], "reason": reason})
+        # The event is what makes the failure durable: it shows in the Activity trail AND
+        # starts the acquire-fail cooldown, so the item isn't retried on the very next
+        # sweep as if the failure never happened.
+        if wdb is not None:
+            try:
+                with wdb:
+                    wdb.execute("INSERT INTO events(item_id,event,detail) VALUES(?,'acquire-fail',?)",
+                                (item["id"], reason))
+            except Exception:
+                pass  # a busy DB must not fail the item twice
         _emit(f"failed: {item['title']}")
 
     def _refresh():
@@ -361,30 +374,49 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                 if s["archive_enabled"]:
                     sources.append(("archive", archive))
                 picked, had_error, dup_url = None, False, None
+                claimed = None      # the url THIS item added to direct_inflight, so any
+                                   # escape from the happy paths can always release it
+                qt = frozenset(indexer._tokens(indexer.clean_query(c["title"])))
                 for sname, mod in sources:
                     _emit(f"{sname} search: {c['title']}")
                     try:
                         results = mod.search(c["title"], c["system"])
                     except Exception:
                         had_error = True; continue
+                    # archive.org hosts several dumps of the same game (region variants,
+                    # alternate dumps); romsgames/Vimm host one dump per title.
+                    multi = (sname == "archive")
                     # Walk the ranked list to the first candidate worth fetching. A
-                    # candidate that's already in the ledger ends the SOURCE, not the
-                    # search: romsgames hosts one dump per title, so when a variant
-                    # item ("Cars (Germany)") meets the page its sibling already
+                    # candidate that's already in the ledger ends a single-dump SOURCE,
+                    # not the search: romsgames hosts one dump per title, so when a
+                    # variant item ("Cars (Germany)") meets the page its sibling already
                     # downloaded, the next-ranked page is a different game ("cars
                     # race-o-rama") — wrong to fetch, right to let the next source try.
+                    seen_dup = False
                     for cand in results or []:
                         cand = _pick([cand])
                         if not cand:
                             continue
+                        if seen_dup and multi:
+                            # After an already-downloaded dump, only another candidate
+                            # with exactly our clean title can be a second dump of the
+                            # SAME game. The list is ranked descending, so the first
+                            # candidate that isn't exact-title means the rest are other
+                            # games and this source is over too.
+                            ct = frozenset(indexer._tokens(indexer.clean_query(cand.get("title") or "")))
+                            if ct != qt:
+                                break
                         url = cand["url"]
                         with lock:
                             dup = url in direct_inflight or _already_fetched(wdb, url)
                             if not dup:
                                 direct_inflight.add(url)
                         if dup:
-                            dup_url = url
-                            break
+                            dup_url = url; seen_dup = True
+                            if not multi:
+                                break
+                            continue
+                        claimed = url
                         picked = (sname, mod, cand)
                         break
                     if picked:
@@ -406,7 +438,7 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                 except Exception as ex:
                     with lock:
                         direct_inflight.discard(url)   # failed — let it be retried later
-                    _fail(c, f"{sname} download failed: {ex}"); continue
+                    _fail(c, f"{sname} download failed: {ex}", wdb); continue
                 # The file is already on disk here. Losing this write to a transient lock
                 # means the item is fetched all over again on a later sweep, so it is worth
                 # retrying past a long-running writer: a bulk catalog edit can hold the
@@ -420,7 +452,15 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                 if not ok_content:
                     with lock:
                         direct_inflight.discard(url)
-                    _fail(c, f"{sname}: {why}")
+                    # The rejected file's name is deterministic (the fetch writes to the
+                    # site-provided filename), so leaving it on disk means the NEXT
+                    # attempt at the same title truncates and re-writes it — and an
+                    # album keeps sitting in the library directory masquerading as a ROM.
+                    try:
+                        Path(path).unlink()
+                    except OSError:
+                        pass  # can't remove it now; the next scan won't match it either
+                    _fail(c, f"{sname}: {why}", wdb)
                     continue
                 _retry_write(wdb, "UPDATE items SET status='DOWNLOADED' WHERE id=?", (c["id"],))
                 try:
@@ -430,6 +470,7 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                 with lock:
                     stats["direct"] += 1
                     direct_inflight.discard(url)        # the ledger now covers this url
+                    claimed = None
                 _emit(c["title"])
             except Exception as ex:
                 # Without this the thread dies. It happened: three workers were killed by
@@ -438,9 +479,16 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                 # looks like a stall rather than a crash. One lost item is recoverable on
                 # the next sweep; a lost worker is not.
                 try:
-                    _fail(c, f"direct worker error: {type(ex).__name__}: {ex}")
+                    _fail(c, f"direct worker error: {type(ex).__name__}: {ex}", wdb)
                 except Exception:
                     pass
+                # Any escape from the happy paths (the status write, the journal call)
+                # must still release this item's claim, or the url stays inflight forever
+                # and every later attempt at the title dies as a dup against a fetch
+                # that never finished.
+                if claimed is not None:
+                    with lock:
+                        direct_inflight.discard(claimed)
             finally:
                 direct_q.task_done()
 
@@ -482,11 +530,11 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
         try:
             nzo = actions.queue_result(wdb, "item", e, top)
         except Exception as ex:
-            _fail(c, f"SABnzbd error: {ex}"); return
+            _fail(c, f"SABnzbd error: {ex}", wdb); return
         if nzo is None:
             with wdb:
                 wdb.execute("UPDATE items SET status='FAILED' WHERE id=?", (c["id"],))
-            _fail(c, "SABnzbd returned no nzo id"); return
+            _fail(c, "SABnzbd returned no nzo id", wdb); return
         with lock:
             stats["queued"] += 1
         _emit(c["title"])

@@ -153,6 +153,30 @@ def test_sync_reaps_vanished_jobs(monkeypatch, tmp_path):
     assert db.execute("SELECT status FROM jobs WHERE nzo_id='n_fresh'").fetchone()["status"] == "QUEUED"
 
 
+def test_sync_never_drags_a_verified_item_backwards(monkeypatch, tmp_path):
+    """SABnzbd still lists a completed nzo long after the file it produced was scanned
+    in and verified. Syncing that queue state over the item would bounce a VERIFIED
+    game back to DOWNLOADED (or worse, QUEUED) on every sync — the item's status
+    outruns its job row and must never be walked backwards."""
+    db = client_db(monkeypatch, tmp_path)
+    seed(db, [{"id": "v"}, {"id": "q"}, {"id": "fwd"}])
+    with db:
+        db.execute("INSERT INTO jobs(entity_type,entity_id,nzo_id,status) VALUES('item','v','n_done','DOWNLOADING')")
+        db.execute("INSERT INTO jobs(entity_type,entity_id,nzo_id,status) VALUES('item','q','n_go','QUEUED')")
+        db.execute("INSERT INTO jobs(entity_type,entity_id,nzo_id,status) VALUES('item','fwd','n_go2','QUEUED')")
+        db.execute("UPDATE items SET status='VERIFIED' WHERE id IN ('v','q')")
+        db.execute("UPDATE items SET status='QUEUED' WHERE id='fwd'")
+    monkeypatch.setattr("romcom.sab.queue",
+                        lambda: [{"nzo_id": "n_go", "status": "Downloading"},
+                                 {"nzo_id": "n_go2", "status": "Downloading"}])
+    monkeypatch.setattr("romcom.sab.history", lambda: [{"nzo_id": "n_done", "status": "Completed"}])
+    actions.sync(db)
+    assert db.execute("SELECT status FROM items WHERE id='v'").fetchone()["status"] == "VERIFIED"
+    assert db.execute("SELECT status FROM items WHERE id='q'").fetchone()["status"] == "VERIFIED"
+    # the forward direction is untouched: an item still on its way progresses
+    assert db.execute("SELECT status FROM items WHERE id='fwd'").fetchone()["status"] == "DOWNLOADING"
+
+
 def test_pipeline_queues_top_result(monkeypatch, tmp_path):
     db = client_db(monkeypatch, tmp_path)
     seed(db, [{"id": "i1", "title": "Game One"}])
@@ -556,6 +580,159 @@ def test_a_dup_everywhere_is_an_honest_miss_that_names_the_page(monkeypatch, tmp
     assert r["skipped"] == 1
     ev = db.execute("SELECT event,detail FROM events WHERE item_id='i1'").fetchone()
     assert ev["event"] == "acquire-miss" and "already downloaded" in ev["detail"]
+
+
+def test_a_failed_download_cools_off_like_a_skip(monkeypatch, tmp_path):
+    """A download that broke mid-flight used to leave no event at all, so the item was
+    eligible again on the very next sweep — a source outage meant the same paced fetch
+    attempt over and over with nothing in the Activity feed to say why. Failures now
+    leave an acquire-fail event that cools them like any other attempt."""
+    from romcom.config import invalidate
+    db = client_db(monkeypatch, tmp_path)
+    ddir = tmp_path / "games"; ddir.mkdir()
+    monkeypatch.setenv("ROMCOM_DOWNLOAD_DIR", str(ddir))
+    invalidate()
+    seed(db, [{"id": "i1", "title": "Broken"}])
+    search, _ = fake_search([])
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.acquirer.webdl.search",
+                        lambda q, sys: [{"title": "broken", "url": "https://r/broken/", "score": 100}])
+    def boom(pick, dest):
+        raise RuntimeError("connection reset")
+    monkeypatch.setattr("romcom.acquirer.webdl.fetch", boom)
+    monkeypatch.setattr("romcom.actions.sync", lambda db: None)
+    monkeypatch.setattr("romcom.acquirer.scan", lambda *a, **k: {"files": 0})
+    r = auto_acquire(poll_interval=0)
+    assert r["failed"] == 1
+    ev = db.execute("SELECT event,detail FROM events WHERE item_id='i1'").fetchone()
+    assert ev["event"] == "acquire-fail" and "connection reset" in ev["detail"]
+    assert eligible() == []            # cooling, not eligible again immediately
+
+
+def test_a_rejected_download_is_removed_from_disk(monkeypatch, tmp_path):
+    """check_download's rejection used to leave the file where it landed — and since
+    the fetch writes to a deterministic filename, the next attempt at the same title
+    would truncate and rewrite it while a non-game sat in the library directory."""
+    from romcom.config import invalidate
+    db = client_db(monkeypatch, tmp_path)
+    ddir = tmp_path / "games"; ddir.mkdir()
+    monkeypatch.setenv("ROMCOM_DOWNLOAD_DIR", str(ddir))
+    invalidate()
+    seed(db, [{"id": "i1", "title": "Album Bait"}])
+    search, _ = fake_search([])
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.acquirer.webdl.search",
+                        lambda q, sys: [{"title": "album bait", "url": "https://r/bait/", "score": 100}])
+    monkeypatch.setattr("romcom.acquirer.webdl.fetch", _fake_fetch("Album Bait.zip"))
+    monkeypatch.setattr("romcom.verify.check_download", lambda p, sys: (False, "looks like a music album"))
+    monkeypatch.setattr("romcom.actions.sync", lambda db: None)
+    monkeypatch.setattr("romcom.acquirer.scan", lambda *a, **k: {"files": 0})
+    r = auto_acquire(poll_interval=0)
+    assert r["failed"] == 1
+    assert not (ddir / "Album Bait.zip").exists()
+    assert db.execute("SELECT 1 FROM events WHERE item_id='i1' AND event='acquire-fail'").fetchone()
+
+
+def test_an_escaped_error_releases_the_inflight_claim(monkeypatch, tmp_path):
+    """A crash between claiming a url and the happy paths (the status write, the
+    journal) used to leak the claim: the url stayed 'inflight' forever, and every
+    later item in the SAME sweep whose best page was that url died as a dup against
+    a fetch that never finished. The escape hatch must release the claim like any
+    failed path does."""
+    from romcom.config import invalidate
+    db = client_db(monkeypatch, tmp_path)
+    ddir = tmp_path / "games"; ddir.mkdir()
+    monkeypatch.setenv("ROMCOM_DOWNLOAD_DIR", str(ddir))
+    monkeypatch.setenv("ROMCOM_ACQUIRE_DIRECT_PARALLEL", "1")   # one direct worker: i1 then i2
+    invalidate()
+    seed(db, [{"id": "i1", "title": "Shared"}, {"id": "i2", "title": "Shared Too"}])
+    search, _ = fake_search([])
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    same = "https://r/shared/"
+    monkeypatch.setattr("romcom.acquirer.webdl.search",
+                        lambda q, sys: [{"title": "shared", "url": same, "score": 100}])
+    fetches = []
+    def _fetch(pick, dest):
+        fetches.append(pick["url"])
+        return _fake_fetch("Shared.zip")(pick, dest)
+    monkeypatch.setattr("romcom.acquirer.webdl.fetch", _fetch)
+    checks = []
+    def _check(p, sys):
+        checks.append(1)
+        if len(checks) == 1:
+            raise RuntimeError("content check exploded")   # between claim and happy paths
+        return True, ""
+    monkeypatch.setattr("romcom.verify.check_download", _check)
+    monkeypatch.setattr("romcom.actions.sync", lambda db: None)
+    monkeypatch.setattr("romcom.acquirer.scan", lambda *a, **k: {"files": 0})
+
+    r = auto_acquire(poll_interval=0)          # one item escapes, then the other tries the same page
+    assert r["failed"] == 1 and r["direct"] == 1
+    # whichever of the two escaped, it cooled off with a durable reason
+    ev = db.execute("SELECT item_id,detail FROM events WHERE event='acquire-fail'").fetchall()
+    assert len(ev) == 1 and "content check exploded" in ev[0]["detail"]
+    assert fetches == [same, same], "the second item must not see a phantom inflight dup"
+
+
+def test_archive_keeps_looking_after_a_dup_for_another_dump_of_the_same_game(monkeypatch, tmp_path):
+    """romsgames hosts one dump per title, so a dup ends its search — but archive.org
+    hosts several dumps of the same game (region variants), so a dup there must move
+    on to the next EXACT-title candidate instead of writing the item off."""
+    from romcom.config import invalidate
+    db = client_db(monkeypatch, tmp_path)
+    ddir = tmp_path / "games"; ddir.mkdir()
+    monkeypatch.setenv("ROMCOM_DOWNLOAD_DIR", str(ddir))
+    monkeypatch.setenv("ROMCOM_ARCHIVE_ENABLED", "true")
+    invalidate()
+    seed(db, [{"id": "i1", "title": "Cars (Germany)"}])
+    with db:   # the USA dump, already pulled by the sibling item
+        db.execute("INSERT INTO jobs(entity_type,entity_id,result_title,result_url,status,source) "
+                   "VALUES('item','sib','cars','https://a/cars-us/','DOWNLOADED','archive')")
+    search, _ = fake_search([])
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.acquirer.webdl.search", lambda q, sys: [])
+    monkeypatch.setattr("romcom.acquirer.archive.search",
+                        lambda q, sys: [{"title": "cars (usa)", "url": "https://a/cars-us/", "score": 100},
+                                        {"title": "cars (europe)", "url": "https://a/cars-eu/", "score": 100}])
+    fetches = []
+    monkeypatch.setattr("romcom.acquirer.archive.fetch",
+                        lambda pick, dest: fetches.append(pick["url"]) or _fake_fetch("Cars (Europe).zip")(pick, dest))
+    monkeypatch.setattr("romcom.actions.sync", lambda db: None)
+    monkeypatch.setattr("romcom.acquirer.scan", lambda *a, **k: {"files": 1})
+    r = auto_acquire(poll_interval=0)
+    assert r["direct"] == 1 and fetches == ["https://a/cars-eu/"]
+    row = db.execute("SELECT result_url FROM jobs WHERE entity_id='i1'").fetchone()
+    assert row["result_url"] == "https://a/cars-eu/"
+
+
+def test_a_non_exact_candidate_still_ends_an_archive_search_after_a_dup(monkeypatch, tmp_path):
+    """The dup-continue rule is for another dump of the SAME game only: once archive's
+    ranked candidates stop being exact-title matches, the rest of the list is other
+    games and the source is over, exactly like the romsgames rule."""
+    from romcom.config import invalidate
+    db = client_db(monkeypatch, tmp_path)
+    ddir = tmp_path / "games"; ddir.mkdir()
+    monkeypatch.setenv("ROMCOM_DOWNLOAD_DIR", str(ddir))
+    monkeypatch.setenv("ROMCOM_ARCHIVE_ENABLED", "true")
+    invalidate()
+    seed(db, [{"id": "i1", "title": "Cars (Germany)"}])
+    with db:
+        db.execute("INSERT INTO jobs(entity_type,entity_id,result_title,result_url,status,source) "
+                   "VALUES('item','sib','cars','https://a/cars-us/','DOWNLOADED','archive')")
+    search, _ = fake_search([])
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.acquirer.webdl.search", lambda q, sys: [])
+    monkeypatch.setattr("romcom.acquirer.archive.search",
+                        lambda q, sys: [{"title": "cars (usa)", "url": "https://a/cars-us/", "score": 100},
+                                        {"title": "cars race o rama", "url": "https://a/race/", "score": 25}])
+    fetches = []
+    monkeypatch.setattr("romcom.acquirer.archive.fetch",
+                        lambda pick, dest: fetches.append(pick["url"]) or _fake_fetch("x.zip")(pick, dest))
+    monkeypatch.setattr("romcom.actions.sync", lambda db: None)
+    r = auto_acquire(poll_interval=0)
+    assert fetches == [] and r["failed"] == 0
+    ev = db.execute("SELECT event,detail FROM events WHERE item_id='i1'").fetchone()
+    assert ev["event"] == "acquire-miss" and "https://a/cars-us/" in ev["detail"]
 
 
 def test_watch_survives_cycle_error(monkeypatch, tmp_path):

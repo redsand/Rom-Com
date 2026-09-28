@@ -65,14 +65,29 @@ def sync(db=None):
                 mapped = "DOWNLOADING" if st not in ("QUEUED", "PAUSED") else "QUEUED"
                 if mapped != j["status"]: updated += 1
                 db.execute("UPDATE jobs SET status=? WHERE id=?", (mapped, j["id"]))
-                db.execute(f"UPDATE {table} SET status=? WHERE id=?", (mapped, j["entity_id"]))
+                if table == "items":
+                    # An item's status outruns its job row once the file is scanned in
+                    # (DOWNLOADED → VERIFIED and beyond) while SAB still lists the nzo.
+                    # Syncing the queue must never drag a verified item back to QUEUED —
+                    # the guard on the FAILED branch below exists for the same reason.
+                    db.execute(f"UPDATE {table} SET status=? WHERE id=? AND status IN ('QUEUED','DOWNLOADING')",
+                               (mapped, j["entity_id"]))
+                else:
+                    db.execute(f"UPDATE {table} SET status=? WHERE id=?", (mapped, j["entity_id"]))
             elif n in hist:
                 st = (hist[n].get("status") or "UNKNOWN").upper()
                 mapped = "DOWNLOADED" if st == "COMPLETED" else ("FAILED" if st == "FAILED" else st)
                 updated += 1
                 db.execute("UPDATE jobs SET status=?,completed_at=? WHERE id=?",
                            (mapped, datetime.now().isoformat(timespec="seconds"), j["id"]))
-                db.execute(f"UPDATE {table} SET status=? WHERE id=?", (mapped, j["entity_id"]))
+                if table == "items":
+                    # DOWNLOADED is pre-verification: it may only be written while the
+                    # item is still on its way there, never over a status a scan or the
+                    # audit already advanced past it.
+                    db.execute(f"UPDATE {table} SET status=? WHERE id=? AND status IN ('QUEUED','DOWNLOADING')",
+                               (mapped, j["entity_id"]))
+                else:
+                    db.execute(f"UPDATE {table} SET status=? WHERE id=?", (mapped, j["entity_id"]))
                 if j["entity_type"] == "volume" and mapped == "DOWNLOADED":
                     for c in db.execute("SELECT item_id FROM volume_covers WHERE volume_id=?", (j["entity_id"],)):
                         db.execute("""UPDATE items SET status='FOUND' WHERE id=? AND status IN ('CATALOGED','MISSING','FAILED')""",

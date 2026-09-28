@@ -36,6 +36,7 @@ SYSTEM_SLUGS = {
     "n64": ("nintendo-64",), "nds": ("nintendo-ds",),
     "neogeopocket": ("neo-geo-pocket",), "neogeopocketcolor": ("neo-geo-pocket-color",),
     "nes": ("nintendo",), "ps1": ("playstation",), "ps2": ("playstation-2",),
+    "ps3": ("playstation-3",),
     "psp": ("playstation-portable",), "saturn": ("sega-saturn",),
     "snes": ("super-nintendo",), "virtualboy": ("nintendo-virtual-boy",),
     "wii": ("nintendo-wii",), "wonderswan": ("wonderswan",), "x68000": ("sharp-x68000",),
