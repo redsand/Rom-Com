@@ -66,6 +66,47 @@ def test_a_subset_match_picks_the_smallest_record(monkeypatch, tmp_path):
     assert "sm" not in m
 
 
+def test_matching_strips_mame_variant_groups(monkeypatch, tmp_path):
+    """MAME's descriptions carry mixed variant groups — '(World, set 1)', '(Revision
+    B)', '(Euro)' — that clean_query keeps as bare words (it drops only PURE
+    region/language groups), so the item had MORE tokens than the provider's plain
+    title and never matched: RA's 2,331 arcade records reached 1,146 of ~10.7k arcade
+    items. A group of only regions (incl. MAME's abbreviations), revision markers,
+    numbers or single letters is the same game."""
+    records = [{"title": "10-Yard Fight", "players": 900},
+               {"title": "1942", "players": 500},
+               {"title": "1943: The Battle of Midway", "players": 700},
+               {"title": "4-D Warriors", "players": 30},
+               {"title": "Super Baseball 2020", "players": 120}]
+    m = community._match_items(
+        [item("a", "10-Yard Fight (World, set 1)"),
+         item("b", "1942 (Revision B)"),
+         item("c", "1943: The Battle of Midway (Euro)"),
+         item("d", "4-D Warriors (315-5162)"),
+         item("e", "2020 Super Baseball (set 1)")], records)
+    assert m["a"]["title"] == "10-Yard Fight"
+    assert m["b"]["title"] == "1942"
+    assert m["c"]["title"] == "1943: The Battle of Midway"
+    assert m["d"]["title"] == "4-D Warriors"
+    assert m["e"]["title"] == "Super Baseball 2020"  # word order differs; token set doesn't
+
+
+def test_matching_keeps_identity_bearing_groups(monkeypatch, tmp_path):
+    """The variant-group strip must not make different games look alike: one real word
+    in a group keeps it whole, so '10-Yard Fight '85 (US, Taito license)' — a different
+    game whose group names its licensor — must not inherit 10-Yard Fight's score."""
+    records = [{"title": "10-Yard Fight", "players": 900}]
+    m = community._match_items(
+        [item("x", "10-Yard Fight '85 (US, Taito license)")], records)
+    assert m == {}
+    # 'Super Mario' claiming 'Super Mario Bros. 3' is the same failure mode from the
+    # other side; it stays impossible after the strip.
+    bad = community._match_items(
+        [item("sm", "Super Mario (Demo)")],
+        [{"title": "Super Mario Bros. 3", "players": 900}])
+    assert bad == {}
+
+
 def test_the_daily_budget_stops_the_sync_at_its_cap(monkeypatch, tmp_path):
     """RAWG's free tier is 20k requests a month; an unmetered per-item search over even a
     tenth of the library would burn it in one sync. The counter must actually stop work."""

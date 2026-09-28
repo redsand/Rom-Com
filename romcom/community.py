@@ -38,7 +38,7 @@ import requests
 from .config import settings
 from .db import connect
 from .searchcache import cached
-from .indexer import clean_query, _tokens
+from .indexer import clean_query, _tokens, _REGIONS, _LANGS
 
 UA = "Rom-Com/1.0 (personal ROM library manager)"
 RAWG_BASE = "https://api.rawg.io/api"
@@ -211,8 +211,42 @@ def _match_platform(names, slug):
     return best
 
 
+# MAME describes an arcade item as "<game> (World, set 1)" / "(Revision B)" / "(Euro)"
+# — variant metadata, the same game. clean_query drops only groups that are PURELY
+# regions or languages, so a mixed group survives as bare words and the item ends up
+# with MORE tokens than a provider's plain title. Matching never lets the record be
+# the smaller side (without that guard 'Super Mario' claimed 'Super Mario Bros. 3'),
+# so every set/region/revision clone looked like a different game: RA's 2,331 arcade
+# records reached 1,146 of the ~10.7k arcade items. A group is variant metadata when
+# EVERY word in it is a region or language (MAME's abbreviations included — indexer's
+# region list has 'europe'/'uk' but not the 'Euro'/'US' the dat actually uses), a
+# revision/bootleg marker, a number (PCB codes, set ids), or a single version letter.
+# One real word keeps the group: '(US, Taito license)' survives, so a genuinely
+# different title ('10-Yard Fight '85') stays unmatchable.
+_GROUP = re.compile(r"[(\[]([^)\]]*)[)\]]")
+_GROUP_WORD = re.compile(r"[a-z0-9]+")
+_DECO_REGION = set(w for r in _REGIONS.split("|") for w in r.split()) | set(_LANGS.split("|")) | set(
+    "us eur euro wor jpn ger fra spa ita kor eng asi aus nl hk tw chn bra mex can".split())
+_DECO_MARKERS = frozenset(
+    "set rev revision ver version alt alternate bootleg hack proto prototype beta alpha"
+    " demo sample test license licensed unlicensed oem ngm nog update original official"
+    " kiosk newer older real deluxe".split())
+
+
+def _strip_deco_groups(title):
+    """Drop parenthetical groups that are pure variant metadata; keep every group a
+    real word appears in (the same identity-bearing rule clean_query applies)."""
+    def repl(m):
+        words = _GROUP_WORD.findall(m.group(1).lower())
+        if words and all(w in _DECO_REGION or w in _DECO_MARKERS
+                         or w.isdigit() or len(w) == 1 for w in words):
+            return " "
+        return m.group(0)
+    return _GROUP.sub(repl, title or "")
+
+
 def _norm_title(title):
-    return clean_query((title or "").lower())
+    return clean_query(_strip_deco_groups(title).lower())
 
 
 def _compact(title):
