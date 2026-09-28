@@ -23,6 +23,7 @@ within-console percentile so a portable's player count can be compared to a cons
 Neither score ever touches status/verification: community opinion ranks games, it does
 not prove them, and an item with no file stays exactly as unclaimed as it was.
 """
+import bisect
 import json
 import os
 import random
@@ -529,20 +530,39 @@ def sync(systems=None, db=None, progress=None):
                                 break  # budget/burst — keep what we have
                             if players >= RA_MIN_PLAYERS:
                                 fetched[iid] = {"players": players, "title": g["title"]}
-                        # Percentile within the console: the point is rank, and a portable's
-                        # player counts live on a different scale than a console's.
-                        ordered = sorted(fetched.items(), key=lambda kv: kv[1]["players"])
-                        for pos, (iid, rec) in enumerate(ordered, 1):
+                        # Percentile within the console (the point is rank: a portable's
+                        # player counts live on a different scale than a console's),
+                        # over everything KNOWN for it:
+                        # this sweep's fetches plus the player counts already stored for
+                        # the console. RA_FETCH_CAP means a big console's first sweep
+                        # fetches only a slice (600 of arcade's 2,331), and percentiling
+                        # that slice alone scored a mid-pack game as the console's very
+                        # best — a score the 30-day staleness window then froze in place.
+                        # Player counts are the raw signal, so re-deriving percentiles
+                        # from them converges as later sweeps fill the batch in.
+                        stored = [r["votes"] for r in db.execute(
+                            "SELECT cs.item_id, cs.votes FROM community_scores cs"
+                            " JOIN items i ON i.id=cs.item_id"
+                            " WHERE cs.source='retroachievements' AND i.system=?", (slug,))
+                            if r["item_id"] not in fetched]
+                        counts = sorted(stored + [rec["players"] for rec in fetched.values()])
+                        for iid, rec in fetched.items():
+                            pos = bisect.bisect_right(counts, rec["players"])
                             all_rows.append({"item_id": iid, "source": "retroachievements",
-                                             "score": round(100.0 * pos / max(1, len(ordered))),
+                                             "score": round(100.0 * pos / max(1, len(counts))),
                                              "votes": rec["players"],
                                              "matched_title": rec["title"]})
                         per["ra"] += len(fetched)
                 except Exception as ex:
                     report["errors"].append(f"ra/{slug}: {ex}")
             # Scores land as each system completes, so the Crowd column fills in while
-            # the sync runs instead of only at the end.
-            report["scored"] += _write_scores(db, all_rows)
+            # the sync runs instead of only at the end. A write failure is one system's
+            # line in the report — the sync keeps going, since the next system's fetches
+            # cost a slice of the day's budget and must not be thrown away with it.
+            try:
+                report["scored"] += _write_scores(db, all_rows)
+            except Exception as ex:
+                report["errors"].append(f"write/{slug}: {ex}")
             all_rows = []
         # ---- The day's search budget, spent on the misses the owner cares about:
         # owned games first, newest to oldest.
@@ -562,7 +582,10 @@ def sync(systems=None, db=None, progress=None):
                                  "matched_title": rec["title"]})
                 report["systems"].setdefault(
                     i["system"], {"matched": 0, "rawg": 0, "ra": 0})["rawg"] += 1
-        report["scored"] += _write_scores(db, all_rows)
+        try:
+            report["scored"] += _write_scores(db, all_rows)
+        except Exception as ex:
+            report["errors"].append(f"write/search: {ex}")
         report["scored_rows"] = report["scored"]
     return report
 

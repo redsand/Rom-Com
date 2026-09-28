@@ -394,6 +394,54 @@ def _fake_ra(monkeypatch):
                         lambda db_, cid: [{"title": "In Hand", "gid": 9}])
 
 
+def test_percentiles_rank_against_the_whole_console_not_the_batch(monkeypatch, tmp_path):
+    """RA_FETCH_CAP means a big console's first sweep fetches only a slice (600 of
+    arcade's 2,331). Percentiling that slice alone crowned the batch's most popular
+    game as the console's very best — a score the 30-day staleness window then froze.
+    The percentile must rank against every player count known for the console,
+    including what earlier sweeps already stored, so it converges as batches land."""
+    db = setup(monkeypatch, tmp_path)
+    _fake_ra(monkeypatch)
+    monkeypatch.setattr(community, "ra_games",
+                        lambda db_, cid: [{"title": "Second Game", "gid": 10}])
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status) VALUES('top','In Hand','gb','VERIFIED')")
+        db.execute("INSERT INTO items(id,title,system,status) VALUES('mid','Second Game','gb','VERIFIED')")
+        # an earlier sweep already recorded a far more popular game on this console
+        db.execute("INSERT INTO community_scores(item_id,source,score,votes,matched_title,fetched_at) "
+                   "VALUES('top','retroachievements',90,1000,'In Hand',CURRENT_TIMESTAMP)")
+    monkeypatch.setattr(community, "ra_players", lambda db_, gid: 500)
+    community.sync(db=db)
+    row = db.execute("SELECT score FROM community_scores "
+                     "WHERE item_id='mid' AND source='retroachievements'").fetchone()
+    # 500 players against a known distribution of [500, 1000]: half the console,
+    # not the top of a one-game batch (which the old slice-only math scored 100).
+    assert row["score"] == 50
+
+
+def test_a_write_failure_costs_one_system_not_the_sync(monkeypatch, tmp_path):
+    """_write_scores already rides out locked writes, but anything else it raises must
+    become a line in the report instead of unwinding the whole sync — the next
+    system's player fetches spend a slice of the day's budget and must not be thrown
+    away with the broken system."""
+    db = setup(monkeypatch, tmp_path)
+    _fake_ra(monkeypatch)
+    monkeypatch.setattr(community, "ra_players", lambda db_, gid: 40)
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status) VALUES('g1','In Hand','gb','VERIFIED')")
+    real = community._write_scores
+    calls = []
+    def flaky(db_, rows):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("disk exploded")
+        return real(db_, rows)
+    monkeypatch.setattr(community, "_write_scores", flaky)
+    report = community.sync(db=db)          # must not raise
+    assert any(e.startswith("write/") for e in report["errors"])
+    assert report["systems"]["gb"]["ra"] == 1   # the system was still fetched and counted
+
+
 def test_fresh_player_counts_are_not_refetched(monkeypatch, tmp_path):
     """Scores are stored under source='retroachievements'; the staleness cut that
     skips re-fetching used to read source='ra' — a spelling that never matched, so
