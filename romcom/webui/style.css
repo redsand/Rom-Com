@@ -310,3 +310,9 @@ details .label { color: var(--muted); padding: 6px 12px 0; font-size: 11px; text
 .org-sys .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .org-sys .sub { margin-left: auto; white-space: nowrap; }
 #org-stop { margin-top: 8px; }
+.org-sys.toobig .sub { color: var(--critical); }
+.org-help { margin: 10px 0 4px; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: 8px; font-size: 13px; }
+.org-help p { margin: 4px 0; }
+.org-help .bad { color: var(--critical); }
+.org-gates { gap: 10px; }

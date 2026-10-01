@@ -1,5 +1,5 @@
 """Local web UI: `romcom web` serves this Flask app on 127.0.0.1."""
-import json, os, string, threading, time
+import json, os, shutil, string, threading, time
 from flask import Flask, jsonify, request, send_from_directory
 from pathlib import Path
 from .config import load_yaml, settings, ENV_VARS, invalidate as invalidate_settings
@@ -462,14 +462,12 @@ def create_app():
                                      adopt=params.get("adopt", True),
                                      recursive=params.get("recursive", True), progress=prog)
         if kind == "organize":
-            # The curation gate reads its threshold from settings, not the request, so a
-            # stale browser tab can't silently export the whole library with an old default.
-            s = settings()
+            g = _export_gates(params.get("gates"))
             return lambda prog: organize(params["path"], systems=params.get("systems") or None,
                                           progress=prog,
-                                          wanted_only=bool(s["export_wanted_only"]),
-                                          keep_only=bool(s["export_curated_only"]),
-                                          rating_min=s["export_rating_min"],
+                                          wanted_only=g["wanted_only"],
+                                          keep_only=g["keep_only"],
+                                          rating_min=g["rating_min"],
                                           stop=stops["organize"],
                                           fill=bool(params.get("fill")))
         if kind == "acquire":
@@ -479,6 +477,19 @@ def create_app():
             from . import community
             return lambda prog: community.sync(systems=params.get("systems") or None, progress=prog)
         return lambda prog: adopt_unmatched(root=params.get("path") or None, progress=prog)
+
+    def _export_gates(given=None):
+        """The curation gates for an export. A profile's own gates come in the request and
+        are shown on the export card beside the button, so what the owner sees is what runs.
+        Without them, the global settings apply — never a hard-coded "everything"."""
+        s = settings()
+        if isinstance(given, dict):
+            return {"wanted_only": bool(given.get("wanted_only")),
+                    "keep_only": bool(given.get("keep_only")),
+                    "rating_min": max(0, min(10, int(given.get("rating_min") or 0)))}
+        return {"wanted_only": bool(s["export_wanted_only"]),
+                "keep_only": bool(s["export_curated_only"]),
+                "rating_min": int(s["export_rating_min"] or 0)}
 
     def _launch(kind, params):
         """Start a job thread; the request is journaled so an interrupted job resumes on server start."""
@@ -702,21 +713,55 @@ def create_app():
             return jsonify({"error": "destination path is required"}), 400
         systems = [s for s in (body.get("systems") or []) if s]
         return start_job("organize", {"path": path, "systems": systems,
-                                      "fill": bool(body.get("fill"))})
+                                      "fill": bool(body.get("fill")),
+                                      "gates": _export_gates(body.get("gates"))})
 
-    @app.get("/api/organize/systems")
-    def api_organize_systems():
-        """Platforms an export can include, with the file count and size each would copy
-        under the current curation gates, plus free space at ?path= when given."""
-        from .organizer import export_systems, _free_bytes, _reserve_bytes
-        s = settings()
-        out = {"systems": export_systems(wanted_only=bool(s["export_wanted_only"]),
-                                         keep_only=bool(s["export_curated_only"]),
-                                         rating_min=s["export_rating_min"])}
-        path = (request.args.get("path") or "").strip().strip('"')
+    @app.post("/api/organize/plan")
+    def api_organize_plan():
+        """Smart help for the export card: per-platform sizes under the gates, and how best
+        to fill a card. Card size comes from `capacity_gb` (a card's marketed size) or, when
+        that is absent, from the mounted volume at `path`."""
+        from . import exportplan
+        from .organizer import _free_bytes, _volume
+        body = request.get_json(force=True, silent=True) or {}
+        gates = _export_gates(body.get("gates"))
+        path = (body.get("path") or "").strip().strip('"')
+        out = {"gates": gates, "card_total_bytes": None, "card_free_bytes": None}
         if path:
-            out |= {"free_bytes": _free_bytes(path), "reserve_bytes": _reserve_bytes(path)}
-        return jsonify(out)
+            try:
+                du = shutil.disk_usage(_volume(path))
+                out |= {"card_total_bytes": du.total, "card_free_bytes": _free_bytes(path)}
+            except OSError:
+                pass
+        try:
+            cap = float(body.get("capacity_gb") or 0) * exportplan.GB
+        except (TypeError, ValueError):
+            cap = 0
+        cap = cap or out["card_total_bytes"]
+        return jsonify(out | {"capacity_bytes": cap} | exportplan.plan(
+            capacity_bytes=cap, selected=body.get("systems") or [], gates=gates))
+
+    @app.get("/api/export/profiles")
+    def api_export_profiles():
+        from . import exportplan
+        return jsonify(exportplan.list_profiles())
+
+    @app.post("/api/export/profiles")
+    def api_export_profile_create():
+        from . import exportplan
+        return jsonify(exportplan.save_profile(request.get_json(force=True, silent=True) or {}))
+
+    @app.put("/api/export/profiles/<pid>")
+    def api_export_profile_update(pid):
+        from . import exportplan
+        return jsonify(exportplan.save_profile(request.get_json(force=True, silent=True) or {}, pid))
+
+    @app.delete("/api/export/profiles/<pid>")
+    def api_export_profile_delete(pid):
+        from . import exportplan
+        if not exportplan.delete_profile(pid):
+            return jsonify({"error": "no such profile"}), 404
+        return jsonify({"deleted": pid})
 
     @app.post("/api/job/<kind>/cancel")
     def api_job_cancel(kind):

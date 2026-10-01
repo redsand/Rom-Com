@@ -205,10 +205,31 @@
     <div class="card">
       <h2 id="org-card">Organize &amp; export to SD card <span class="hint">step 2 — copy matched files into &lt;dest&gt;\&lt;system&gt;\ folders</span></h2>
       <div class="filters">
+        <select id="org-profile" title="A saved recipe for one card"><option value="">— new card —</option></select>
+        <button class="ghost small" id="org-save">Save profile</button>
+        <button class="ghost small" id="org-saveas">Save as&hellip;</button>
+        <button class="ghost small" id="org-delete" disabled>Delete</button>
+      </div>
+      <div class="filters">
         <input id="org-path" type="search" placeholder="E:\ (SD card or staging folder)" spellcheck="false" style="width:340px">
         <button class="ghost browse" data-target="#org-path">Browse&hellip;</button>
+        <select id="org-capacity" title="Card size to plan for">
+          <option value="">Card size: detect</option>
+          <option value="32">32 GB card</option><option value="64">64 GB card</option>
+          <option value="128">128 GB card</option><option value="256">256 GB card</option>
+          <option value="512">512 GB card</option><option value="1000">1 TB card</option>
+          <option value="2000">2 TB drive</option>
+        </select>
         <button id="org-start" class="primary" disabled>Export</button>
       </div>
+      <div class="filters org-gates">
+        <span class="sub">Only:</span>
+        <label class="sub"><input type="checkbox" id="org-g-wanted"> wanted</label>
+        <label class="sub"><input type="checkbox" id="org-g-keep"> kept</label>
+        <label class="sub">or rated ≥ <input type="number" id="org-g-rating" min="0" max="10" value="0" style="width:52px"></label>
+        <span class="sub">(0 = off)</span>
+      </div>
+      <div id="org-help" class="org-help" hidden></div>
       <div class="org-pick-head">
         <b>Platforms</b>
         <button class="ghost small" id="org-all">All</button>
@@ -218,9 +239,9 @@
           <input type="checkbox" id="org-fill"> fill the card if it won't all fit</label>
       </div>
       <div id="org-systems" class="org-pick"></div>
-      <p class="sub">Copies every scanned-and-matched file into a per-system folder layout. Nothing is moved
-        or deleted; files already present at the destination are skipped, so re-running just tops up.
-        Curation gates apply (wanted-only / kept &amp; rated ≥ min rating) — see Settings → Export curation.</p>
+      <p class="sub">Copies the ticked platforms into &lt;dest&gt;\&lt;system&gt;\ folders. Nothing is moved or
+        deleted; files already on the card are skipped, so re-running tops up. An export that would not
+        fit is refused before anything is written, and a card is never filled past its last 1 GB (or 1%).</p>
       <div id="org-progress" hidden>
         <div class="meter big"><i id="org-bar" style="width:0%"></i></div>
         <div class="sub" id="org-current"></div>

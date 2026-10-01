@@ -564,7 +564,7 @@ function loadImport() {
   $("#imp-path").value ||= localStorage.getItem("romcom-dat-path") || "";
   $("#scan-path").value ||= localStorage.getItem("romcom-rom-path") || "";
   $("#org-path").value ||= localStorage.getItem("romcom-sd-path") || "";
-  loadOrgSystems();
+  loadOrgProfiles().then(loadOrgPlan);
   for (const kind of Object.keys(JOBS)) pollJob(kind, false);
 }
 
@@ -617,7 +617,7 @@ async function pollJob(kind, loop) {
     return;
   }
   $(j.btn).disabled = false;
-  if (kind === "organize") orgUpdateTotal();
+  if (kind === "organize") orgRender();
   $(j.wrap).hidden = true;
   if (!loop && !s.result && !s.error) return;
   if (s.error) {
@@ -644,47 +644,164 @@ $("#scan-start").addEventListener("click", () => {
   startJob("scan", "/api/scan", {path, name_match: $("#scan-name").checked, adopt: $("#scan-adopt").checked, recursive: $("#scan-recursive").checked});
 });
 
-/* Export platform picker. Nothing is selected by default: an empty selection used to mean
-   "everything", which is how a whole library ended up pouring onto one SD card. The
-   selection is remembered per destination, since each card holds its own platforms. */
-let orgFree = null, orgReserve = 0;
-const orgKey = () => "romcom-org-systems:" + $("#org-path").value.trim().toLowerCase();
+/* Export card: profiles, platform picker and smart help.
+   Nothing is ticked by default: an empty selection used to mean "everything", which is how a
+   whole library poured onto one SD card. A profile is one card's recipe and is stored on the
+   server; the plan (sizes, best fill, top-up) is worked out there too, so the numbers shown
+   are the ones the export itself uses. */
+let orgProfiles = [], orgPlan = null, orgPlanTimer = null;
 const orgPicked = () => $$("#org-systems input:checked").map(x => x.value);
+const orgGates = () => ({wanted_only: $("#org-g-wanted").checked, keep_only: $("#org-g-keep").checked,
+                         rating_min: Number($("#org-g-rating").value || 0)});
+function orgSetGates(g) {
+  $("#org-g-wanted").checked = !!g.wanted_only; $("#org-g-keep").checked = !!g.keep_only;
+  $("#org-g-rating").value = g.rating_min || 0;
+}
+const orgCurrent = () => orgProfiles.find(p => p.id === $("#org-profile").value) || null;
+const orgForm = () => ({name: orgCurrent()?.name, path: $("#org-path").value.trim(), systems: orgPicked(),
+                        fill: $("#org-fill").checked, capacity_gb: $("#org-capacity").value || null,
+                        gates: orgGates()});
+let orgPendingSystems = null;     // a profile's ticks, applied once the plan has drawn the list
+let orgGatesKnown = false;        // gates come from Settings until the owner or a profile sets them
 
-async function loadOrgSystems() {
-  const path = $("#org-path").value.trim();
+async function loadOrgProfiles(selectId) {
+  try { orgProfiles = await api("/api/export/profiles"); } catch { orgProfiles = []; }
+  const keep = selectId ?? $("#org-profile").value;
+  $("#org-profile").innerHTML = `<option value="">— new card —</option>`
+    + orgProfiles.map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join("");
+  $("#org-profile").value = orgProfiles.some(p => p.id === keep) ? keep : "";
+  $("#org-delete").disabled = !$("#org-profile").value;
+}
+
+function orgApplyProfile(p) {
+  $("#org-path").value = p.path || "";
+  $("#org-capacity").value = p.capacity_gb ? String(Math.round(p.capacity_gb)) : "";
+  $("#org-fill").checked = !!p.fill;
+  orgSetGates(p.gates || {}); orgGatesKnown = true;
+  orgPendingSystems = p.systems || [];
+  $("#org-delete").disabled = false;
+  loadOrgPlan();
+}
+
+async function loadOrgPlan() {
+  const picked = orgPendingSystems ?? orgPicked();
+  const body = {path: $("#org-path").value.trim(), capacity_gb: $("#org-capacity").value || null,
+                systems: picked};
+  if (orgGatesKnown) body.gates = orgGates();
   let d;
-  try { d = await api("/api/organize/systems" + (path ? "?path=" + encodeURIComponent(path) : "")); }
+  try { d = await post("/api/organize/plan", body); }
   catch (e) { $("#org-systems").innerHTML = `<p class="sub">${esc(e.message)}</p>`; return; }
-  orgFree = d.free_bytes ?? null; orgReserve = d.reserve_bytes || 0;
-  let saved = [];
-  try { saved = JSON.parse(localStorage.getItem(orgKey()) || "[]"); } catch { /* none */ }
-  $("#org-systems").innerHTML = d.systems.length ? d.systems.map(s => `<label class="org-sys">
-      <input type="checkbox" value="${esc(s.system)}" data-bytes="${s.bytes}"${saved.includes(s.system) ? " checked" : ""}>
+  orgPlan = d;
+  if (!orgGatesKnown) { orgSetGates(d.gates); orgGatesKnown = true; }
+  const fits = new Set((d.systems || []).filter(s => d.usable_bytes != null && s.bytes <= d.usable_bytes).map(s => s.system));
+  $("#org-systems").innerHTML = d.systems.length ? d.systems.map(s => `<label class="org-sys${d.usable_bytes != null && !fits.has(s.system) ? " toobig" : ""}">
+      <input type="checkbox" value="${esc(s.system)}" data-bytes="${s.bytes}"${picked.includes(s.system) ? " checked" : ""}>
       <span class="n">${esc(s.system)}</span>
       <span class="sub">${s.files.toLocaleString()} · ${fmtBytes(s.bytes)}</span></label>`).join("")
-    : `<p class="sub">Nothing passes the export curation gates — see Settings → Export curation.</p>`;
-  orgUpdateTotal();
+    : `<p class="sub">Nothing passes these filters — loosen “Only:” above.</p>`;
+  orgPendingSystems = null;
+  orgRender();
+}
+// Selection changes re-plan (the top-up depends on it), debounced so ticking fast stays smooth.
+const orgReplan = () => { clearTimeout(orgPlanTimer); orgPlanTimer = setTimeout(loadOrgPlan, 250); };
+
+function orgTick(systems, add) {
+  const want = new Set(systems);
+  $$("#org-systems input").forEach(x => { if (add ? want.has(x.value) : true) x.checked = add ? true : want.has(x.value); });
+  orgRender(); orgReplan();
 }
 
-function orgUpdateTotal() {
+function orgRender() {
+  const d = orgPlan; if (!d) return;
   const picked = $$("#org-systems input:checked");
   const bytes = picked.reduce((a, x) => a + Number(x.dataset.bytes || 0), 0);
-  const room = orgFree == null ? null : orgFree - orgReserve;
-  const over = room != null && bytes > room;
+  const usable = d.usable_bytes;
+  const over = usable != null && bytes > usable;
   $("#org-total").innerHTML = `${picked.length} selected · ${fmtBytes(bytes)}`
-    + (orgFree == null ? "" : ` of ${fmtBytes(Math.max(room, 0))} usable on the card`)
+    + (usable != null ? ` of ${fmtBytes(usable)} usable` : "")
     + (over ? ` <b class="bad">— won't fit${$("#org-fill").checked ? ", will copy until nearly full" : ""}</b>` : "");
-  // Files already on the card are skipped, so a top-up can fit when this total does not;
-  // the server makes the exact call. This only blocks the empty selection.
   $("#org-start").disabled = !picked.length || jobRunning.organize;
-  try { localStorage.setItem(orgKey(), JSON.stringify(picked.map(x => x.value))); } catch { /* private mode */ }
+
+  const help = [];
+  const size = $("#org-capacity").value
+    ? `${$("#org-capacity").selectedOptions[0].textContent}`
+    : d.card_total_bytes ? `this ${fmtBytes(d.card_total_bytes)} card` : null;
+  if (usable == null) {
+    help.push(`<p class="sub">Pick a card size, or a destination that is plugged in, to get fill suggestions.</p>`);
+  } else {
+    help.push(`<p><b>${esc(size)}</b> holds about <b>${fmtBytes(usable)}</b> of games
+      <span class="sub">(after formatting, with 1 GB or 1% kept free${d.card_free_bytes != null ? ` · ${fmtBytes(d.card_free_bytes)} free right now` : ""})</span></p>`);
+    const best = d.best;
+    if (best && best.add.length) {
+      const pct = Math.round(100 * best.add_bytes / usable);
+      help.push(`<p>Fullest fit: <b>${best.add.map(esc).join(", ")}</b> — ${fmtBytes(best.add_bytes)} (${pct}% of the card)
+        <button class="ghost small" data-org-use="best">Use this</button></p>`);
+    }
+    const top = d.top_up;
+    if (picked.length && top) {
+      const left = usable - bytes;
+      if (over) {
+        help.push(`<p class="bad">Your pick is ${fmtBytes(bytes - usable)} over. Untick a platform, tighten “Only:”, or tick “fill the card”.</p>`);
+      } else if (top.add.length) {
+        help.push(`<p>Your pick leaves ${fmtBytes(left)}. To fill it, add <b>${top.add.map(esc).join(", ")}</b>
+          (${fmtBytes(top.add_bytes)}) <button class="ghost small" data-org-use="top">Add these</button></p>`);
+      } else {
+        help.push(`<p class="sub">Your pick leaves ${fmtBytes(left)}; no other whole platform fits in that.</p>`);
+      }
+    }
+    for (const t of d.too_big || []) {
+      help.push(`<p class="sub"><b>${esc(t.system)}</b> is ${fmtBytes(t.bytes)} — too big for this card on its own.`
+        + (t.curated_fits ? ` Just the games you kept or rated 7+ come to ${fmtBytes(t.curated_bytes)}, which fits: tick “kept” and set rating ≥ 7.`
+           : t.curated_bytes ? ` Even the kept / 7+ games are ${fmtBytes(t.curated_bytes)}.`
+           : ` Mark keepers or rate games to carve out a set that fits, or use “fill the card”.`) + `</p>`);
+    }
+  }
+  $("#org-help").innerHTML = help.join("");
+  $("#org-help").hidden = !help.length;
 }
-$("#org-systems").addEventListener("change", orgUpdateTotal);
-$("#org-all").addEventListener("click", () => { $$("#org-systems input").forEach(x => x.checked = true); orgUpdateTotal(); });
-$("#org-none").addEventListener("click", () => { $$("#org-systems input").forEach(x => x.checked = false); orgUpdateTotal(); });
-$("#org-path").addEventListener("change", loadOrgSystems);
-$("#org-fill").addEventListener("change", orgUpdateTotal);
+
+$("#org-help").addEventListener("click", e => {
+  const b = e.target.closest("[data-org-use]"); if (!b || !orgPlan) return;
+  if (b.dataset.orgUse === "best") orgTick(orgPlan.best.add, false);
+  else orgTick(orgPlan.top_up.add, true);
+});
+$("#org-systems").addEventListener("change", () => { orgRender(); orgReplan(); });
+$("#org-all").addEventListener("click", () => { $$("#org-systems input").forEach(x => x.checked = true); orgRender(); orgReplan(); });
+$("#org-none").addEventListener("click", () => { $$("#org-systems input").forEach(x => x.checked = false); orgRender(); orgReplan(); });
+$("#org-path").addEventListener("change", loadOrgPlan);
+$("#org-capacity").addEventListener("change", loadOrgPlan);
+$("#org-fill").addEventListener("change", orgRender);
+for (const id of ["#org-g-wanted", "#org-g-keep", "#org-g-rating"])
+  $(id).addEventListener("change", () => { orgGatesKnown = true; loadOrgPlan(); });
+
+$("#org-profile").addEventListener("change", () => {
+  const p = orgCurrent();
+  if (p) orgApplyProfile(p);
+  else { $("#org-delete").disabled = true; }
+});
+async function orgSave(asNew) {
+  const cur = orgCurrent();
+  let name = cur?.name;
+  if (asNew || !cur) {
+    name = prompt("Name this card profile (e.g. “Odin 2 – 3DS card”)", cur ? cur.name + " copy" : "");
+    if (!name) return;
+  }
+  const body = {...orgForm(), name};
+  try {
+    const saved = (cur && !asNew) ? await api(`/api/export/profiles/${encodeURIComponent(cur.id)}`,
+                    {method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)})
+                  : await post("/api/export/profiles", body);
+    await loadOrgProfiles(saved.id);
+    toast(`Saved “${saved.name}”`);
+  } catch (e) { toast(e.message, true); }
+}
+$("#org-save").addEventListener("click", () => orgSave(false));
+$("#org-saveas").addEventListener("click", () => orgSave(true));
+$("#org-delete").addEventListener("click", async () => {
+  const p = orgCurrent(); if (!p || !confirm(`Delete the profile “${p.name}”? Nothing on any card is touched.`)) return;
+  try { await api(`/api/export/profiles/${encodeURIComponent(p.id)}`, {method: "DELETE"}); await loadOrgProfiles(""); toast("Profile deleted"); }
+  catch (e) { toast(e.message, true); }
+});
 
 $("#org-start").addEventListener("click", () => {
   const path = $("#org-path").value.trim();
@@ -692,7 +809,7 @@ $("#org-start").addEventListener("click", () => {
   const systems = orgPicked();
   if (!systems.length) { toast("Pick at least one platform to export", true); return; }
   localStorage.setItem("romcom-sd-path", path);
-  startJob("organize", "/api/organize", {path, systems, fill: $("#org-fill").checked});
+  startJob("organize", "/api/organize", {path, systems, fill: $("#org-fill").checked, gates: orgGates()});
 });
 
 $("#org-stop").addEventListener("click", async () => {
