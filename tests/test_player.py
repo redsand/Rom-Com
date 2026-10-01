@@ -252,10 +252,12 @@ def test_arcade_export_is_delegated_to_the_set_builder(monkeypatch, tmp_path):
         db.execute("INSERT INTO files(path,bytes,matched_item_id,content) VALUES(?,1,'a',1)",
                    (str(src / "gg1.3p"),))
     seen = {}
-    monkeypatch.setattr(mameset, "build",
-                        lambda sets, dest, db=None, dry_run=False:
-                        seen.update(sets=list(sets), dest=str(dest)) or
-                        {"sets": {}, "copied": 3, "bytes": 0, "complete": 1, "incomplete": 0})
+    def build(sets, dest, db=None, dry_run=False, **kw):
+        if not dry_run:  # the dry run is organize's free-space preflight
+            seen.update(sets=list(sets), dest=str(dest))
+        return {"sets": {}, "copied": 3, "bytes": 0, "bytes_needed": 0,
+                "complete": 1, "incomplete": 0}
+    monkeypatch.setattr(mameset, "build", build)
     r = organize(str(tmp_path / "card"), keep_only=True)
     assert seen["sets"] == ["galaga"]
     assert seen["dest"].endswith("arcade")

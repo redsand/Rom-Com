@@ -558,11 +558,13 @@ const JOBS = {
   community:{wrap: "#community-progress", bar: "#community-bar", cur: "#community-current", btn: "#community-sync", out: "#community-result", render: renderCommunityResult, doneMsg: "Crowd scores synced"},
 };
 const jobTimers = {};
+const jobRunning = {};
 
 function loadImport() {
   $("#imp-path").value ||= localStorage.getItem("romcom-dat-path") || "";
   $("#scan-path").value ||= localStorage.getItem("romcom-rom-path") || "";
   $("#org-path").value ||= localStorage.getItem("romcom-sd-path") || "";
+  loadOrgSystems();
   for (const kind of Object.keys(JOBS)) pollJob(kind, false);
 }
 
@@ -602,6 +604,8 @@ async function pollJob(kind, loop) {
   clearTimeout(jobTimers[kind]);
   let s;
   try { s = await api(`/api/job/${kind}/status`); } catch { return; }
+  jobRunning[kind] = !!s.running;
+  if (kind === "organize") $("#org-stop").disabled = !s.running;
   if (s.running) {
     $(j.wrap).hidden = false;
     $(j.btn).disabled = true;
@@ -613,6 +617,7 @@ async function pollJob(kind, loop) {
     return;
   }
   $(j.btn).disabled = false;
+  if (kind === "organize") orgUpdateTotal();
   $(j.wrap).hidden = true;
   if (!loop && !s.result && !s.error) return;
   if (s.error) {
@@ -639,12 +644,61 @@ $("#scan-start").addEventListener("click", () => {
   startJob("scan", "/api/scan", {path, name_match: $("#scan-name").checked, adopt: $("#scan-adopt").checked, recursive: $("#scan-recursive").checked});
 });
 
+/* Export platform picker. Nothing is selected by default: an empty selection used to mean
+   "everything", which is how a whole library ended up pouring onto one SD card. The
+   selection is remembered per destination, since each card holds its own platforms. */
+let orgFree = null, orgReserve = 0;
+const orgKey = () => "romcom-org-systems:" + $("#org-path").value.trim().toLowerCase();
+const orgPicked = () => $$("#org-systems input:checked").map(x => x.value);
+
+async function loadOrgSystems() {
+  const path = $("#org-path").value.trim();
+  let d;
+  try { d = await api("/api/organize/systems" + (path ? "?path=" + encodeURIComponent(path) : "")); }
+  catch (e) { $("#org-systems").innerHTML = `<p class="sub">${esc(e.message)}</p>`; return; }
+  orgFree = d.free_bytes ?? null; orgReserve = d.reserve_bytes || 0;
+  let saved = [];
+  try { saved = JSON.parse(localStorage.getItem(orgKey()) || "[]"); } catch { /* none */ }
+  $("#org-systems").innerHTML = d.systems.length ? d.systems.map(s => `<label class="org-sys">
+      <input type="checkbox" value="${esc(s.system)}" data-bytes="${s.bytes}"${saved.includes(s.system) ? " checked" : ""}>
+      <span class="n">${esc(s.system)}</span>
+      <span class="sub">${s.files.toLocaleString()} · ${fmtBytes(s.bytes)}</span></label>`).join("")
+    : `<p class="sub">Nothing passes the export curation gates — see Settings → Export curation.</p>`;
+  orgUpdateTotal();
+}
+
+function orgUpdateTotal() {
+  const picked = $$("#org-systems input:checked");
+  const bytes = picked.reduce((a, x) => a + Number(x.dataset.bytes || 0), 0);
+  const room = orgFree == null ? null : orgFree - orgReserve;
+  const over = room != null && bytes > room;
+  $("#org-total").innerHTML = `${picked.length} selected · ${fmtBytes(bytes)}`
+    + (orgFree == null ? "" : ` of ${fmtBytes(Math.max(room, 0))} usable on the card`)
+    + (over ? ` <b class="bad">— won't fit${$("#org-fill").checked ? ", will copy until nearly full" : ""}</b>` : "");
+  // Files already on the card are skipped, so a top-up can fit when this total does not;
+  // the server makes the exact call. This only blocks the empty selection.
+  $("#org-start").disabled = !picked.length || jobRunning.organize;
+  try { localStorage.setItem(orgKey(), JSON.stringify(picked.map(x => x.value))); } catch { /* private mode */ }
+}
+$("#org-systems").addEventListener("change", orgUpdateTotal);
+$("#org-all").addEventListener("click", () => { $$("#org-systems input").forEach(x => x.checked = true); orgUpdateTotal(); });
+$("#org-none").addEventListener("click", () => { $$("#org-systems input").forEach(x => x.checked = false); orgUpdateTotal(); });
+$("#org-path").addEventListener("change", loadOrgSystems);
+$("#org-fill").addEventListener("change", orgUpdateTotal);
+
 $("#org-start").addEventListener("click", () => {
   const path = $("#org-path").value.trim();
   if (!path) { toast("Enter the destination (SD card) path first", true); return; }
+  const systems = orgPicked();
+  if (!systems.length) { toast("Pick at least one platform to export", true); return; }
   localStorage.setItem("romcom-sd-path", path);
-  const systems = $("#org-systems").value.split(",").map(s => s.trim()).filter(Boolean);
-  startJob("organize", "/api/organize", {path, systems});
+  startJob("organize", "/api/organize", {path, systems, fill: $("#org-fill").checked});
+});
+
+$("#org-stop").addEventListener("click", async () => {
+  $("#org-stop").disabled = true;
+  try { await post("/api/job/organize/cancel"); toast("Stopping after the current file…"); }
+  catch (e) { toast(e.message, true); $("#org-stop").disabled = false; }
 });
 
 $("#community-sync").addEventListener("click", () => startJob("community", "/api/community/sync", {}));
@@ -761,7 +815,8 @@ function renderOrganizeResult(r) {
     .map(([s, n]) => `<tr><td>${esc(s)}</td><td class="r">${n.toLocaleString()}</td></tr>`).join("");
   const errs = r.errors.map(x => `<div class="check bad"><span class="mark">✕</span>
     <span class="d">${esc(x.file)} — ${esc(x.error)}</span></div>`).join("");
-  $("#org-result").innerHTML = `<div class="tiles" style="margin-top:12px">
+  $("#org-result").innerHTML = (r.stopped ? `<p class="sub" style="margin-top:12px"><b>Export stopped early</b> — what was copied stays; re-running tops up the rest.</p>` : "")
+    + `<div class="tiles" style="margin-top:12px">
       <div class="tile"><div class="v">${r.copied.toLocaleString()}</div><div class="l">Copied</div></div>
       <div class="tile"><div class="v">${r.skipped.toLocaleString()}</div><div class="l">Already there</div></div>
       <div class="tile"><div class="v">${r.missing.toLocaleString()}</div><div class="l">Source missing</div><div class="d">re-scan to fix</div></div>

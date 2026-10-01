@@ -85,17 +85,28 @@ def _index(db, roms):
     return by_crc, by_sha
 
 
-def build(setnames, dest, db=None, dry_run=False):
-    """Write <dest>/<set>/<canonical rom name> for each set. Returns a per-set report."""
+def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None):
+    """Write <dest>/<set>/<canonical rom name> for each set. Returns a per-set report.
+
+    `stop` (a threading.Event) is checked between sets; the report then says `stopped`.
+    `room_for(nbytes)` is asked before each set is written; when it says no, the build stops
+    before writing any of that set and the report says `out_of_room`. `bytes_needed` is what
+    a real run would write (targets missing or a different size) — what a free-space check
+    wants; `bytes` is the size of everything found, whether already present or not."""
     db = db or connect()
     roms = set_roms(setnames)
     if not roms:
-        return {"sets": {}, "error": "no MAME dat found under DAT/MAME", "copied": 0}
+        return {"sets": {}, "error": "no MAME dat found under DAT/MAME", "copied": 0,
+                "bytes_needed": 0}
     by_crc, by_sha = _index(db, roms)
     dest = Path(dest)
-    report, copied, total_bytes = {}, 0, 0
+    report, copied, total_bytes, needed_bytes = {}, 0, 0, 0
+    stopped = out_of_room = False
     import shutil
     for name, chips in sorted(roms.items()):
+        if stop is not None and stop.is_set():
+            stopped = True
+            break
         found, missing = [], []
         for chip in chips:
             src = by_sha.get(chip["sha1"]) or by_crc.get(chip["crc"])
@@ -103,22 +114,30 @@ def build(setnames, dest, db=None, dry_run=False):
                 missing.append(chip["name"])
                 continue
             found.append((src, chip["name"]))
-        if not dry_run and found:
-            folder = dest / name
+        folder = dest / name
+        todo = []
+        for src, canonical in found:
+            target, size = folder / canonical, Path(src).stat().st_size
+            total_bytes += size
+            if not (target.exists() and target.stat().st_size == size):
+                todo.append((src, target, size))
+        set_need = sum(size for _, _, size in todo)
+        needed_bytes += set_need
+        if not dry_run and todo:
+            if room_for is not None and not room_for(set_need):
+                stopped = out_of_room = True
+                break
             folder.mkdir(parents=True, exist_ok=True)
-            for src, canonical in found:
-                target = folder / canonical
-                s = Path(src)
-                if target.exists() and target.stat().st_size == s.stat().st_size:
-                    continue
-                shutil.copy2(s, target)
+            for src, target, _ in todo:
+                shutil.copy2(src, target)
                 copied += 1
-        total_bytes += sum(Path(s).stat().st_size for s, _ in found if Path(s).exists())
         report[name] = {"roms": len(chips), "found": len(found), "missing": missing[:8],
                         "complete": not missing}
     return {"sets": report, "copied": copied, "bytes": total_bytes,
+            "bytes_needed": needed_bytes,
             "complete": sum(1 for v in report.values() if v["complete"]),
-            "incomplete": sum(1 for v in report.values() if not v["complete"])}
+            "incomplete": sum(1 for v in report.values() if not v["complete"]),
+            "stopped": stopped, "out_of_room": out_of_room}
 
 
 def assemblable(db=None, path=None):

@@ -301,3 +301,12 @@ details .label { color: var(--muted); padding: 6px 12px 0; font-size: 11px; text
 /* Sortable library headers: click to sort, click again to flip. */
 #lib-table th[data-sort] { cursor: pointer; user-select: none; }
 #lib-table th[data-sort]:hover { color: var(--ink); }
+
+/* Export platform picker */
+.org-pick-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 12px 0 6px; }
+.org-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 4px 12px;
+  max-height: 280px; overflow-y: auto; }
+.org-sys { display: flex; align-items: baseline; gap: 6px; font-size: 13px; cursor: pointer; min-width: 0; }
+.org-sys .n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.org-sys .sub { margin-left: auto; white-space: nowrap; }
+#org-stop { margin-top: 8px; }

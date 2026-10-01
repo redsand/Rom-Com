@@ -448,6 +448,9 @@ def create_app():
                 "result": None, "error": None, "last_beat": None}
             for k in ("import", "scan", "organize", "adopt", "acquire", "community")}
     job_lock = threading.Lock()
+    # Jobs the UI can stop. Acquire is stopped through the watcher toggle (acquirer.STOP),
+    # which the watchdog also reads, so it is deliberately not here.
+    stops = {"organize": threading.Event()}
 
     def _job_fn(kind, params):
         if kind == "import":
@@ -466,7 +469,9 @@ def create_app():
                                           progress=prog,
                                           wanted_only=bool(s["export_wanted_only"]),
                                           keep_only=bool(s["export_curated_only"]),
-                                          rating_min=s["export_rating_min"])
+                                          rating_min=s["export_rating_min"],
+                                          stop=stops["organize"],
+                                          fill=bool(params.get("fill")))
         if kind == "acquire":
             return lambda prog: acquirer.auto_acquire(progress=prog, watch=bool(params.get("watch")),
                                                       stop=acquirer.STOP)
@@ -483,6 +488,8 @@ def create_app():
                 return False
             if kind == "acquire":
                 acquirer.STOP.clear()
+            if kind in stops:
+                stops[kind].clear()
             j.update(running=True, done=0, total=0, current="starting…", stats=None,
                      result=None, error=None, last_beat=time.monotonic())
         db = connect()
@@ -505,6 +512,10 @@ def create_app():
                 j["result"] = fn(lambda i, total, name, stats=None:
                                  j.update(done=i, total=total, current=name, stats=stats,
                                           last_beat=time.monotonic()))
+                if isinstance(j["result"], dict) and j["result"].get("error"):
+                    j["error"] = j["result"]["error"]; status = "error"
+                elif kind in stops and stops[kind].is_set():
+                    status = "cancelled"
             except Exception as e:
                 j["error"] = f"{type(e).__name__}: {e}"; status = "error"
             finally:
@@ -584,7 +595,11 @@ def create_app():
             latest[r["kind"]] = json.loads(r["params"])
         for kind, params in latest.items():
             if kind not in jobs: continue
-            if kind != "organize" and params.get("path") and not Path(params["path"]).exists(): continue
+            # Never resume an export. It writes to a device the owner may have pulled or
+            # swapped, and restarting the service was the only way to stop one — so resuming
+            # turned "stop this" into "start it again".
+            if kind == "organize": continue
+            if params.get("path") and not Path(params["path"]).exists(): continue
             _launch(kind, params)
 
     def _checked_path(body, must_exist=True):
@@ -686,7 +701,32 @@ def create_app():
         if not path:
             return jsonify({"error": "destination path is required"}), 400
         systems = [s for s in (body.get("systems") or []) if s]
-        return start_job("organize", {"path": path, "systems": systems})
+        return start_job("organize", {"path": path, "systems": systems,
+                                      "fill": bool(body.get("fill"))})
+
+    @app.get("/api/organize/systems")
+    def api_organize_systems():
+        """Platforms an export can include, with the file count and size each would copy
+        under the current curation gates, plus free space at ?path= when given."""
+        from .organizer import export_systems, _free_bytes, _reserve_bytes
+        s = settings()
+        out = {"systems": export_systems(wanted_only=bool(s["export_wanted_only"]),
+                                         keep_only=bool(s["export_curated_only"]),
+                                         rating_min=s["export_rating_min"])}
+        path = (request.args.get("path") or "").strip().strip('"')
+        if path:
+            out |= {"free_bytes": _free_bytes(path), "reserve_bytes": _reserve_bytes(path)}
+        return jsonify(out)
+
+    @app.post("/api/job/<kind>/cancel")
+    def api_job_cancel(kind):
+        """Stop a running job at its next file/set boundary."""
+        if kind not in stops:
+            return jsonify({"error": f"{kind} jobs cannot be cancelled"}), 400
+        running = jobs[kind]["running"]
+        if running:
+            stops[kind].set()
+        return jsonify({"cancelled": running})
 
     @app.post("/api/adopt")
     def api_adopt():

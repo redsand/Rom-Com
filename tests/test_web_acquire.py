@@ -323,3 +323,43 @@ def test_watchdog_restarts_a_wedged_watcher(monkeypatch, tmp_path):
     finally:
         release.set()
         acquirer.STOP.clear()
+
+
+def test_an_interrupted_export_is_never_resumed(monkeypatch, tmp_path):
+    """Restarting the service was the only way to stop an export, and recovery started it
+    again. An export writes to a removable device; it must not come back on its own."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
+    db = connect()
+    with db:
+        db.execute("INSERT INTO web_jobs(kind,params,status) VALUES('organize',?, 'running')",
+                   ('{"path": "J:\\\\", "systems": []}',))
+    launched = []
+    monkeypatch.setattr("romcom.web.organize", lambda *a, **k: launched.append(1) or {})
+    app = create_app()
+    app.recover_interrupted()
+    time.sleep(0.2)
+    assert not launched
+    assert db.execute("SELECT status FROM web_jobs").fetchone()["status"] == "interrupted"
+
+
+def test_cancel_endpoint_stops_a_running_export(monkeypatch, tmp_path):
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
+    connect()
+    started = threading.Event()
+
+    def fake(dest, stop=None, **kw):
+        started.set()
+        assert stop.wait(5), "cancel never reached the export"
+        return {"stopped": True}
+    monkeypatch.setattr("romcom.web.organize", fake)
+    c = create_app().test_client()
+    assert c.post("/api/organize", json={"path": str(tmp_path / "sd"), "systems": ["nes"]}).status_code == 200
+    assert started.wait(2)
+    assert c.post("/api/job/organize/cancel").get_json() == {"cancelled": True}
+    for _ in range(40):
+        if not c.get("/api/job/organize/status").get_json()["running"]:
+            break
+        time.sleep(0.05)
+    db = connect()
+    assert db.execute("SELECT status FROM web_jobs WHERE kind='organize'").fetchone()["status"] == "cancelled"
+    assert c.post("/api/job/scan/cancel").status_code == 400

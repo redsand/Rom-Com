@@ -207,15 +207,24 @@
       <div class="filters">
         <input id="org-path" type="search" placeholder="E:\ (SD card or staging folder)" spellcheck="false" style="width:340px">
         <button class="ghost browse" data-target="#org-path">Browse&hellip;</button>
-        <input id="org-systems" type="search" placeholder="systems: nes, snes (blank = all)" spellcheck="false" style="width:220px">
-        <button id="org-start" class="primary">Export</button>
+        <button id="org-start" class="primary" disabled>Export</button>
       </div>
+      <div class="org-pick-head">
+        <b>Platforms</b>
+        <button class="ghost small" id="org-all">All</button>
+        <button class="ghost small" id="org-none">None</button>
+        <span class="sub" id="org-total"></span>
+        <label class="sub" title="Instead of refusing an export that will not fit, copy until the card is nearly full (1 GB or 1% is always left free)">
+          <input type="checkbox" id="org-fill"> fill the card if it won't all fit</label>
+      </div>
+      <div id="org-systems" class="org-pick"></div>
       <p class="sub">Copies every scanned-and-matched file into a per-system folder layout. Nothing is moved
         or deleted; files already present at the destination are skipped, so re-running just tops up.
         Curation gates apply (wanted-only / kept &amp; rated ≥ min rating) — see Settings → Export curation.</p>
       <div id="org-progress" hidden>
         <div class="meter big"><i id="org-bar" style="width:0%"></i></div>
         <div class="sub" id="org-current"></div>
+        <button id="org-stop" class="ghost">Stop export</button>
       </div>
       <div id="org-result"></div>
     </div>
