@@ -887,6 +887,37 @@ def test_vimm_not_tried_when_disabled(monkeypatch, tmp_path):
     assert r["skipped"] == 1 and not called
 
 
+def test_direct_source_order_rotates_per_item(monkeypatch, tmp_path):
+    """Which source gets first shot round-robins per item. With CDRomance enabled and
+    BOTH sources carrying every title, romsgames always-first would win every download
+    and cdromance would never be asked — with rotation the second item's first search
+    is cdromance's, and it takes the win."""
+    from romcom.config import invalidate
+    db = client_db(monkeypatch, tmp_path)
+    ddir = tmp_path / "games"; ddir.mkdir()
+    monkeypatch.setenv("ROMCOM_DOWNLOAD_DIR", str(ddir))
+    monkeypatch.setenv("ROMCOM_CDR_ENABLED", "true")
+    invalidate()
+    seed(db, [{"id": "i1", "title": "Alpha Game"}, {"id": "i2", "title": "Beta Game"}])
+    search, _ = fake_search([])  # indexer has nothing: both items go down the direct path
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.acquirer.webdl.search",
+                        lambda q, sys: [{"title": q.lower(), "score": 100,
+                                         "url": f"https://roms.example/{q}", "source": "romsgames"}])
+    monkeypatch.setattr("romcom.acquirer.cdromance.search",
+                        lambda q, sys: [{"title": q.lower(), "score": 100,
+                                         "url": f"https://cdr.example/{q}", "source": "cdromance"}])
+    monkeypatch.setattr("romcom.acquirer.webdl.fetch", _fake_fetch("a.zip"))
+    monkeypatch.setattr("romcom.acquirer.cdromance.fetch", _fake_fetch("b.zip"))
+    monkeypatch.setattr("romcom.actions.sync", lambda db: None)
+    monkeypatch.setattr("romcom.acquirer.scan", lambda *a, **k: {"files": 1})
+
+    r = auto_acquire(poll_interval=0)
+    assert r["direct"] == 2
+    won = {row["source"] for row in db.execute("SELECT source FROM jobs")}
+    assert won == {"romsgames", "cdromance"}  # the wheel handed one item to each
+
+
 def test_cdromance_used_when_enabled_and_earlier_sources_miss(monkeypatch, tmp_path):
     """With CDRomance enabled, romsgames and Vimm empty, the item is fetched from
     cdromance.org and journaled with source='cdromance'."""

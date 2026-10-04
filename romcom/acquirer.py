@@ -27,6 +27,7 @@ the queue while unattempted titles wait behind it.
 import queue
 import threading
 import time
+import itertools
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from .config import settings
@@ -368,13 +369,22 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                     return
                 if stop and stop.is_set():
                     continue
-                sources = [("romsgames", webdl)]
+                # Round-robin which source gets first shot per item, so no single host
+                # gates the whole sweep: with romsgames always first, its 30s politeness
+                # pace is a queue every item waits in before the other sources are even
+                # asked, and they only ever see its leftovers. Item 1 tries romsgames
+                # first, item 2 cdromance, ... wrapping — the miss falls through to the
+                # rest as before. Vimm stays last however the wheel lands: browser-gated
+                # and single-slot, it is never worth a first shot.
+                cands = [("romsgames", webdl)]
+                if s["cdromance_enabled"]:
+                    cands.append(("cdromance", cdromance))
+                if s["archive_enabled"]:
+                    cands.append(("archive", archive))
+                k = next(robin) % len(cands)   # itertools.count: thread-safe handout
+                sources = cands[k:] + cands[:k]
                 if s["vimm_enabled"]:
                     sources.append(("vimm", vimm))
-                if s["cdromance_enabled"]:
-                    sources.append(("cdromance", cdromance))
-                if s["archive_enabled"]:
-                    sources.append(("archive", archive))
                 picked, had_error, dup_url = None, False, None
                 claimed = None      # the url THIS item added to direct_inflight, so any
                                    # escape from the happy paths can always release it
@@ -495,6 +505,7 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                 direct_q.task_done()
 
     n_direct = max(1, int(s["acquire_direct_parallel"]))
+    robin = itertools.count()   # shared by the workers: hands each item its first source
     direct_threads = [threading.Thread(target=_direct_worker, daemon=True) for _ in range(n_direct)]
     for _t in direct_threads:
         _t.start()

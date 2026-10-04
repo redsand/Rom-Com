@@ -361,9 +361,10 @@ queues the best result in SABnzbd, waits for the downloads to finish, and then s
   DOWNLOADED; the scan phase matches it like any other file). Every request to the
   site is spaced `ROMCOM_WEBDL_DELAY` seconds plus up to `ROMCOM_WEBDL_JITTER` of
   random offset — a deliberately human pace so their rate limiting never trips.
-  If romsgames misses, the same direct pipeline then tries the enabled opt-in
-  sources in order — CDRomance (`ROMCOM_CDR_ENABLED`), then archive.org
-  (`ROMCOM_ARCHIVE_ENABLED`) — and journals the win under that source's name.
+  If romsgames misses, the same direct pipeline walks the other enabled sources
+  (CDRomance, archive.org) — and which source gets the *first* try rotates per item,
+  so no single host's politeness pace gates the sweep and every source gets first
+  shots at titles it carries. The win is journaled under the source that had it.
   Single-item equivalent: `romcom webdl <item-id>` (add `--result N` to override
   the automatic pick).
 
