@@ -77,3 +77,33 @@ def test_an_unknown_sort_value_falls_back_to_the_system_order(monkeypatch, tmp_p
         {"id": "x", "title": "Another", "system": "arcade"},
     ])
     assert ids(c, "sort=title;DROP TABLE items") == ["x", "y"]   # snes sorts after arcade
+
+
+def test_rank_sort_uses_the_higher_of_your_verdict_and_the_crowd(monkeypatch, tmp_path):
+    """The card export's score as a browse order: rating 9 -> 90 beats a crowd 40, and a
+    game nobody has an opinion about stays at the bottom whichever way it's flipped."""
+    c = make_client(monkeypatch, tmp_path, [
+        {"id": "mine", "title": "My pick", "rating": 9},
+        {"id": "theirs", "title": "Crowd pick", "community_score": 40},
+        {"id": "mystery", "title": "No opinion"},
+    ])
+    assert ids(c, "sort=rank") == ["mine", "theirs", "mystery"]
+    assert ids(c, "sort=rank&dir=asc") == ["theirs", "mine", "mystery"]
+
+
+def test_summary_counts_held_games_with_an_opinion(monkeypatch, tmp_path):
+    """The dashboard's Ranked numbers answer "are all games rated yet?": of the games
+    actually in hand, how many the crowd or the owner has said anything about."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "items.db"))
+    db = connect()
+    with db:
+        for iid, score in (("scored", 80), ("quiet", None)):
+            db.execute("INSERT INTO items(id,title,system,community_score) VALUES(?,?,?,?)",
+                       (iid, iid, "nes", score))
+        for iid in ("scored", "quiet"):
+            db.execute("INSERT INTO files(path,bytes,matched_item_id,content) VALUES(?,?,?,1)",
+                       (f"x:/{iid}", 10, iid))
+    s = create_app().test_client().get("/api/summary").get_json()
+    [row] = s["by_system"]
+    assert row["have"] == 2 and row["ranked"] == 1
+    assert s["on_disk"] == 2 and s["ranked"] == 1

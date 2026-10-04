@@ -19,14 +19,21 @@ def summary():
     total=db.execute("SELECT COUNT(*) c FROM items").fetchone()["c"]
     wanted=db.execute("SELECT COUNT(*) c FROM items WHERE wanted=1").fetchone()["c"]
     on_disk=_load_on_disk(db)
+    # "Ranked" = a game in hand somebody has an opinion about: the crowd scored it or the
+    # owner rated it. Coverage is the dashboard's answer to "are all games rated yet?"
+    ranked=db.execute("""SELECT COUNT(*) c FROM _od od JOIN items i ON i.id=od.id
+      WHERE COALESCE(i.community_score,0)>0 OR COALESCE(i.rating,0)>0""").fetchone()["c"]
     by_status={r["status"]:r["c"] for r in db.execute("SELECT status,COUNT(*) c FROM items GROUP BY status")}
     by_system=[dict(r) for r in db.execute("""SELECT COALESCE(i.system,'unknown') system,COUNT(*) total,
       SUM(CASE WHEN i.wanted=1 THEN 1 ELSE 0 END) wanted,
       SUM(CASE WHEN i.status IN ('VERIFIED','NORMALIZED','INSTALLED','TESTED') THEN 1 ELSE 0 END) satisfied,
-      SUM(CASE WHEN od.id IS NOT NULL THEN 1 ELSE 0 END) have
+      SUM(CASE WHEN od.id IS NOT NULL THEN 1 ELSE 0 END) have,
+      SUM(CASE WHEN od.id IS NOT NULL AND (COALESCE(i.community_score,0)>0 OR COALESCE(i.rating,0)>0)
+        THEN 1 ELSE 0 END) ranked
       FROM items i LEFT JOIN _od od ON od.id=i.id
       GROUP BY i.system ORDER BY i.system""")]
-    return {"cataloged":total,"wanted":wanted,"on_disk":on_disk,"by_status":by_status,"by_system":by_system}
+    return {"cataloged":total,"wanted":wanted,"on_disk":on_disk,"ranked":ranked,
+            "by_status":by_status,"by_system":by_system}
 
 def render_text():
     s=summary(); lines=[f"Cataloged: {s['cataloged']}",f"Wanted:    {s['wanted']}","", "By status:"]

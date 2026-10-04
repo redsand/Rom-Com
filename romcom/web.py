@@ -248,6 +248,12 @@ def create_app():
         "year":      ("year", "desc"),
         "community": ("community_score", "desc"),
         "rating":    ("rating", "desc"),
+        # The card export's score (organizer._SCORE), as a browse order: a game ranks by
+        # the higher of the crowd's 0-100 score and the owner's 1-10 rating x10. No
+        # opinion yet is NULL, so NULLS LAST keeps the unranked wall at the bottom
+        # whichever way the column is flipped — same rule as crowd/rating.
+        "rank":      ("CASE WHEN COALESCE(community_score,0)>0 OR COALESCE(rating,0)>0"
+                      " THEN MAX(COALESCE(community_score,0), COALESCE(rating,0)*10) END", "desc"),
         "recent":    ("last_played", "desc"),
     }
 

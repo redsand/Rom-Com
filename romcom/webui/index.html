@@ -30,6 +30,7 @@
       <div class="card">
         <h2>Collection by system</h2>
         <div id="system-meters"></div>
+        <p class="sub" id="rank-coverage"></p>
       </div>
       <div class="card">
         <h2>Items by status</h2>
@@ -67,6 +68,7 @@
         <option value="title">Sort: title</option>
         <option value="year">Sort: year</option>
         <option value="community">Sort: crowd score</option>
+        <option value="rank">Sort: best (you + crowd)</option>
         <option value="rating">Sort: my rating</option>
         <option value="recent">Sort: recently played</option>
       </select>
@@ -92,6 +94,7 @@
           <th data-sort="year" data-label="Year">Year</th>
           <th>Status</th>
           <th class="c" data-sort="community" data-label="Crowd" title="Crowd score 0-100 from public pools (romcom community sync)">Crowd</th>
+          <th class="c" data-sort="rank" data-label="Best" title="Best of your rating and the crowd's score — the score the card export ranks by">Best</th>
           <th class="c" data-sort="rating" data-label="Rating" title="Your 1-10 verdict after playing — drives export alongside Keep">Rating</th>
           <th class="c">Authorized</th><th class="c">Wanted</th><th class="c" title="Marked for export to the card">Keep</th><th></th>
         </tr></thead>

@@ -82,8 +82,11 @@ main { max-width: 1100px; margin: 0 auto; padding: 20px; }
 
 /* System meters */
 #system-meters { max-height: 380px; overflow-y: auto; }
-.meter-row { display: grid; grid-template-columns: 130px 1fr 70px 70px 80px; gap: 10px; align-items: center; padding: 5px 0; }
+.meter-row { display: grid; grid-template-columns: 130px 1fr 70px 90px 80px; gap: 10px; align-items: center; padding: 5px 0; }
 .meter-row .name { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A system row opens that collection's review in the Library — it must read as clickable. */
+.meter-row[data-system] { cursor: pointer; }
+.meter-row[data-system]:hover .name { color: var(--ink); text-decoration: underline; }
 .meter-row .nums { text-align: right; color: var(--ink-2); font-variant-numeric: tabular-nums; font-size: 12px; }
 .meter-row.head .nums { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
 .meter { height: 6px; border-radius: 4px; background: var(--hairline); overflow: hidden; }

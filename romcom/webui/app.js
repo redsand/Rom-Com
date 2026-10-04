@@ -103,23 +103,27 @@ async function refreshDashboardStats() {
     const pct = s.wanted ? (100 * s.satisfied / s.wanted) : 0;
     $("#stat-tiles").innerHTML = `
       <div class="tile"><div class="v">${(s.on_disk || 0).toLocaleString()}</div><div class="l">On disk</div><div class="d">your actual collection</div></div>
+      <div class="tile"><div class="v">${(s.ranked || 0).toLocaleString()}<span class="sub">/${(s.on_disk || 0).toLocaleString()}</span></div><div class="l">Ranked</div><div class="d">scored by you or the crowd</div></div>
       <div class="tile"><div class="v">${s.cataloged.toLocaleString()}</div><div class="l">Cataloged</div><div class="d">known titles (reference)</div></div>
       <div class="tile"><div class="v">${s.wanted.toLocaleString()}</div><div class="l">Wanted</div></div>
       <div class="tile"><div class="v">${s.satisfied.toLocaleString()}</div><div class="l">Satisfied</div><div class="d">${pct.toFixed(1)}% of wanted</div></div>
       <div class="tile"><div class="v">${s.active_jobs}</div><div class="l">Active downloads</div></div>`;
     const systems = [...s.by_system].sort((a, b) => (b.have - a.have) || (b.wanted - a.wanted) || (b.total - a.total));
     $("#system-meters").innerHTML = `<div class="meter-row head">
-        <span></span><span></span><span class="nums">wanted</span><span class="nums">on disk</span><span class="nums">cataloged</span></div>` +
+        <span></span><span></span><span class="nums">wanted</span><span class="nums">ranked/on disk</span><span class="nums">cataloged</span></div>` +
       systems.map(x => {
         // The bar is collection completeness: how much of the known catalog is on disk.
         const p = x.total ? 100 * (x.have || 0) / x.total : 0;
-        return `<div class="meter-row">
-          <span class="name" title="${esc(x.system)}">${esc(x.system)}</span>
+        return `<div class="meter-row" data-system="${esc(x.system)}" title="Review the ${esc(x.system)} collection — best games first">
+          <span class="name">${esc(x.system)}</span>
           <span class="meter" title="${p.toFixed(1)}% of cataloged titles on disk"><i style="width:${p.toFixed(1)}%"></i></span>
           <span class="nums">${x.wanted ? `${x.satisfied}/${x.wanted}` : "—"}</span>
-          <span class="nums">${(x.have || 0).toLocaleString()}</span>
+          <span class="nums">${(x.ranked || 0).toLocaleString()}/${(x.have || 0).toLocaleString()}</span>
           <span class="nums">${x.total.toLocaleString()}</span></div>`;
       }).join("");
+    const covPct = s.on_disk ? (100 * (s.ranked || 0) / s.on_disk).toFixed(1) : "0";
+    $("#rank-coverage").textContent =
+      `Click a system to review it · ${(s.ranked || 0).toLocaleString()} of ${(s.on_disk || 0).toLocaleString()} games on disk (${covPct}%) have a score — yours or the crowd's`;
     $("#status-table").innerHTML = Object.entries(s.by_status).sort()
       .map(([k, v]) => `<tr><td>${badge(k)}</td><td class="r">${v}</td></tr>`).join("");
   } catch (e) { toast("Summary failed: " + e.message, true); }
@@ -162,6 +166,23 @@ setInterval(() => {
   if (!document.hidden && pane && pane.classList.contains("active")) refreshDashboardStats();
 }, 15000);
 
+// A system row is the door into reviewing that collection: the Library opens on the
+// whole platform, best games first, where a game can be rated and flagged wanted/keep.
+// Delegation matters here — refreshDashboardStats() re-renders the rows every 15s.
+$("#system-meters").addEventListener("click", e => {
+  const row = e.target.closest(".meter-row[data-system]");
+  if (!row) return;
+  const sys = row.dataset.system;
+  $("#f-view").value = "all";                      // review the catalog, not just the wishlist
+  if (![...$("#f-system").options].some(o => o.value === sys))
+    $("#f-system").add(new Option(sys, sys));      // a system missing from the dropdown is still drillable
+  $("#f-system").value = sys;
+  lib.sort = "rank"; lib.dir = "desc"; $("#f-sort").value = "rank";
+  renderSortArrows();
+  refreshSystemCounts();
+  showTab("library");                              // the loader registry runs loadLibrary() with these filters
+});
+
 /* ---------- Library ---------- */
 const lib = { offset: 0, limit: 200, total: 0, sort: "system", dir: "asc" };
 
@@ -169,7 +190,7 @@ const lib = { offset: 0, limit: 200, total: 0, sort: "system", dir: "asc" };
 // column answers the question the column implies (crowd desc = best first, year desc =
 // newest first), and the second click flips it.
 const NATURAL_DIR = { system: "asc", title: "asc", year: "desc",
-                      community: "desc", rating: "desc", recent: "desc" };
+                      community: "desc", rank: "desc", rating: "desc", recent: "desc" };
 
 async function initFacets() {
   try {
@@ -230,6 +251,10 @@ function itemRow(r) {
   // Crowd score from public pools; the tooltip says who vouched for the number.
   const crowd = r.community_score == null ? `<span class="sub">—</span>` :
     `<span title="${esc(r.community_source || "community")}">${r.community_score}</span>`;
+  // The card export's score: the higher of the crowd's and the owner's rating x10. 0 is
+  // "nobody has said anything about this game", shown as nothing rather than zero.
+  const best = Math.max(r.community_score || 0, (r.rating || 0) * 10);
+  const bestCell = best ? `<span title="max(crowd ${r.community_score == null ? "—" : r.community_score}, you ${r.rating == null ? "—" : r.rating * 10})">${best}</span>` : `<span class="sub">—</span>`;
   // The owner's own 1-10 verdict; empty is "never auditioned", not zero.
   const ratingSel = `<select class="rating-edit" data-id="${esc(r.id)}" title="Your 1-10 verdict (blank = unrated)">` +
     `<option value="" ${r.rating == null ? "selected" : ""}>—</option>` +
@@ -241,6 +266,7 @@ function itemRow(r) {
     <td class="r">${r.year || "—"}</td>
     <td>${badge(r.status)} ${statusSel}</td>
     <td class="c">${crowd}</td>
+    <td class="c">${bestCell}</td>
     <td class="c">${ratingSel}</td>
     <td class="c"><input type="checkbox" class="flag" data-field="authorized" data-id="${esc(r.id)}" ${r.authorized ? "checked" : ""}></td>
     <td class="c"><input type="checkbox" class="flag" data-field="wanted" data-id="${esc(r.id)}" ${r.wanted ? "checked" : ""}></td>
@@ -271,7 +297,7 @@ async function loadLibrary(append = false) {
       // The filters (not the catalog) are hiding everything — say so and offer the way out.
       const p = libQuery(); p.set("view", "all"); p.set("limit", "1");
       const all = await api("/api/items?" + p);
-      if (all.total) body.innerHTML = `<tr><td colspan="9" class="sub" style="padding:20px">
+      if (all.total) body.innerHTML = `<tr><td colspan="10" class="sub" style="padding:20px">
         No <b>${esc($("#f-view").selectedOptions[0].text)}</b> items match — but ${all.total.toLocaleString()}
         cataloged items do. Imported catalogs start as not-wanted; switch to
         <button class="small ghost" id="lib-showall">All items</button> and use the bulk action to flag what you want.</td></tr>`;
