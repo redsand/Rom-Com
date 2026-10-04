@@ -104,6 +104,19 @@ def test_dry_run_writes_nothing(monkeypatch, tmp_path):
     assert not (tmp / "out").exists()
 
 
+def test_fresh_sizes_the_full_rebuild_not_the_delta(monkeypatch, tmp_path):
+    """A wipe clears the arcade folder before rebuilding it, so its sizing pass must
+    count every rom again — fresh=True. Measuring the delta over the sets about to
+    be deleted once sized a whole 70 GB rebuild as a few GB of missing chips, the
+    fit check passed, and the export died at the free-space reserve mid-copy."""
+    db, tmp = _setup(monkeypatch, tmp_path)
+    mameset.build(["galaga"], tmp / "out", db=db)          # the old sets are all there
+    delta = mameset.build(["galaga"], tmp / "out", db=db, dry_run=True)["bytes_needed"]
+    fresh = mameset.build(["galaga"], tmp / "out", db=db, dry_run=True, fresh=True)["bytes_needed"]
+    assert delta == 0                                        # nothing missing from the old sets
+    assert fresh == 3 * 16                                   # galaga + namco54, every rom counted
+
+
 def test_no_dat_degrades_instead_of_failing(monkeypatch, tmp_path):
     db, tmp = _setup(monkeypatch, tmp_path)
     monkeypatch.setattr(mameset, "dat_path", lambda: None)

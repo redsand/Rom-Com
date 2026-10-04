@@ -320,7 +320,13 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         need = (sum(r["bytes"] or 0 for r in rows) if wipe else _bytes_to_copy(rows, dest))
         if arcade_sets:
             from . import mameset
+            # A wipe clears the arcade folder before rebuilding it, so the sizing pass
+            # must measure the FULL build — fresh=True — not the delta over the old
+            # sets it is about to delete. The delta once let a whole 70 GB rebuild
+            # past the fit check as a few GB of missing chips, and the run then hit
+            # the free-space reserve and stopped mid-copy.
             need += mameset.build(arcade_sets, dest / "arcade", db=db, dry_run=True,
+                                  fresh=bool(wipe and arcade_wanted),
                                   progress=None if progress is None else
                                   lambda i, total, name: progress(i, total, f"measuring arcade: {name}")
                                   ).get("bytes_needed", 0)

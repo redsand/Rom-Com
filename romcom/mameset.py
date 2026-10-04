@@ -85,7 +85,8 @@ def _index(db, roms):
     return by_crc, by_sha
 
 
-def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, progress=None):
+def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, progress=None,
+          fresh=False):
     """Write <dest>/<set>/<canonical rom name> for each set. Returns a per-set report.
 
     `stop` (a threading.Event) is checked between sets; the report then says `stopped`.
@@ -93,8 +94,11 @@ def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, prog
     before writing any of that set and the report says `out_of_room`. `bytes_needed` is what
     a real run would write (targets missing or a different size) — what a free-space check
     wants; `bytes` is the size of everything found, whether already present or not.
-    `progress(i, total, setname)` fires per set, so the export's job status says where the
-    (long, otherwise silent) build is instead of sitting on "starting…"."""
+    `fresh=True` counts every target as missing: the sizing pass for a wipe run, whose
+    folder is about to be cleared, must measure the full rebuild — not the delta over
+    the old sets it is about to delete. `progress(i, total, setname)` fires per set, so the
+    export's job status says where the (long, otherwise silent) build is instead of sitting
+    on "starting…"."""
     db = db or connect()
     roms = set_roms(setnames)
     if not roms:
@@ -122,7 +126,7 @@ def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, prog
         for src, canonical in found:
             target, size = folder / canonical, Path(src).stat().st_size
             total_bytes += size
-            if not (target.exists() and target.stat().st_size == size):
+            if fresh or not (target.exists() and target.stat().st_size == size):
                 todo.append((src, target, size))
         set_need = sum(size for _, _, size in todo)
         needed_bytes += set_need

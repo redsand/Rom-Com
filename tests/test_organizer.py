@@ -203,7 +203,8 @@ def test_export_narrates_its_phases(tmp_path, monkeypatch):
         db.execute("UPDATE items SET external_id='mame/galaga', system='arcade' "
                    "WHERE id='nes-Game (USA).nes'")
     calls = []
-    def fake_build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, progress=None):
+    def fake_build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, progress=None,
+                   fresh=False):
         if progress: progress(0, len(setnames), "galaga")
         calls.append(dry_run)
         return {"sets": {}, "copied": 0, "bytes": 0, "bytes_needed": 0,
@@ -216,6 +217,29 @@ def test_export_narrates_its_phases(tmp_path, monkeypatch):
     assert "measuring arcade: galaga" in seen and "arcade: galaga" in seen
     assert calls == [True, False]   # the sizing pass, then the real build
     assert seen[-1] == "done"
+
+
+def test_a_wipe_sizes_the_arcade_rebuild_in_full(tmp_path, monkeypatch):
+    """The sizing pass runs BEFORE the wipe, against the old sets still on the card — so
+    under a wipe it must ask mameset for the full build, not the delta over the sets it
+    is about to delete. The delta once passed a 70 GB rebuild the card could not hold,
+    and the run stopped at the free-space reserve mid-copy (ps3 got 12 files, psp 8)."""
+    _one_rom(tmp_path, monkeypatch, system="arcade", name="Game (USA).nes")
+    db = connect()
+    with db:
+        db.execute("UPDATE items SET external_id='mame/galaga' WHERE id='arcade-Game (USA).nes'")
+    calls = []
+    def fake_build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, progress=None,
+                   fresh=False):
+        calls.append((dry_run, fresh))
+        return {"sets": {}, "copied": 0, "bytes": 0, "bytes_needed": 0,
+                "complete": 0, "incomplete": 0}
+    monkeypatch.setattr("romcom.mameset.build", fake_build)
+    organize(tmp_path / "sd", systems=["arcade"], wipe=True)
+    assert calls == [(True, True), (False, False)]    # size the FULL rebuild, then build it
+    calls.clear()
+    organize(tmp_path / "sd2", systems=["arcade"])
+    assert calls == [(True, False), (False, False)]  # no wipe: the delta is the truth
 
 
 def _files_for(tmp_path, monkeypatch, item, system, title, copies):
