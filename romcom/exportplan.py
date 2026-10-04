@@ -39,7 +39,8 @@ def _clean(p):
             "gates": {"wanted_only": bool(gates.get("wanted_only")),
                       "keep_only": bool(gates.get("keep_only")),
                       "rating_min": max(0, min(10, int(gates.get("rating_min") or 0)))},
-            "distinct_games": bool(p.get("distinct_games"))}
+            "distinct_games": bool(p.get("distinct_games")),
+            "wipe": bool(p.get("wipe"))}
 
 
 def list_profiles():

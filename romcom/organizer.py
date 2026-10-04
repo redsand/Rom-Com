@@ -184,7 +184,7 @@ def _safe(name):
 
 def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
              dry_run=False, keep_only=False, rating_min=None, stop=None, fill=False,
-             distinct_games=False):
+             distinct_games=False, wipe=False):
     """Copy files matched to a catalog item into <dest>/<system>/<score>/<filename> — the
     score folder (90, 80, ... 0) is the ranking the copy order sorts by, made visible to
     RetroArch, which cannot show a rating.
@@ -230,6 +230,13 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     copied regardless — they are the same file wearing different names. Both layers are
     counted by `dupes_skipped` in the result, and `export_systems` applies the same rules,
     so the picker's numbers stay honest.
+
+    `wipe` clears the card first: every <dest>/<system> folder for a ticked platform (and
+    arcade, when ticked) is deleted before anything is copied — a clean card instead of a
+    top-up. Nothing outside those folders is ever touched, and without an explicit
+    platform list it refuses rather than clear an unfiltered destination. Re-running was
+    the old "clean": skip-if-present silently kept games that had fallen out of the
+    recipe, and a layout change left the old copy behind beside the new one.
     """
     db = connect()
     rows = _selection(wanted_only, keep_only, rating_min)
@@ -261,6 +268,37 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     dest = Path(dest)
     stopped = False
     errors = []
+
+    # `wipe` runs before the space preflight, because deleting the old copy is what makes
+    # room for the new one. Only a ticked platform's own folder is ever deleted — never the
+    # card root, never a folder the export is not about to write, never a file sitting
+    # loose on the card. Without an explicit platform list it refuses: "clear everything"
+    # is not a thing to guess at.
+    wiped = None
+    if wipe:
+        if wanted_systems is None:
+            return {"error": "wipe needs an explicit platform list — refusing to clear an "
+                             "unfiltered destination",
+                    "copied": 0, "matched_files": len(rows), "by_system": {}, "errors": [],
+                    "dupes_skipped": dupes_skipped, "stopped": False}
+        targets = set(wanted_systems)
+        if arcade_wanted:
+            targets.add("arcade")
+        wiped = {"folders": [], "files": 0, "bytes": 0}
+        if dest.exists():
+            for child in dest.iterdir():
+                if not child.is_dir() or child.name.lower() not in targets:
+                    continue
+                for p in child.rglob("*"):
+                    try:
+                        if p.is_file():
+                            wiped["files"] += 1
+                            wiped["bytes"] += p.stat().st_size
+                    except OSError:
+                        pass
+                if not dry_run:
+                    shutil.rmtree(child, ignore_errors=True)
+                wiped["folders"].append(child.name)
 
     reserve = _reserve_bytes(dest)
     if not dry_run:
@@ -343,7 +381,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             planned_bytes += arcade_report.get("bytes_needed", 0)
     out = {"matched_files": len(rows), "copied": copied, "skipped": skipped,
            "missing": missing, "by_system": by_system, "errors": errors,
-           "arcade": arcade_report, "dupes_skipped": dupes_skipped,
+           "arcade": arcade_report, "dupes_skipped": dupes_skipped, "wiped": wiped,
            "wanted_only": bool(wanted_only), "keep_only": bool(keep_only),
            "sources": sorted(sources) if sources else None, "stopped": stopped}
     if dry_run:

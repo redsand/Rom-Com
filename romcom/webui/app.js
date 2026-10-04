@@ -674,7 +674,8 @@ function orgSetGates(g) {
 const orgCurrent = () => orgProfiles.find(p => p.id === $("#org-profile").value) || null;
 const orgForm = () => ({name: orgCurrent()?.name, path: $("#org-path").value.trim(), systems: orgPicked(),
                         fill: $("#org-fill").checked, capacity_gb: $("#org-capacity").value || null,
-                        distinct_games: $("#org-distinct").checked, gates: orgGates()});
+                        distinct_games: $("#org-distinct").checked, wipe: $("#org-wipe").checked,
+                        gates: orgGates()});
 let orgPendingSystems = null;     // a profile's ticks, applied once the plan has drawn the list
 let orgGatesKnown = false;        // gates come from Settings until the owner or a profile sets them
 
@@ -692,6 +693,7 @@ function orgApplyProfile(p) {
   $("#org-capacity").value = p.capacity_gb ? String(Math.round(p.capacity_gb)) : "";
   $("#org-fill").checked = !!p.fill;
   $("#org-distinct").checked = !!p.distinct_games;
+  $("#org-wipe").checked = !!p.wipe;
   orgSetGates(p.gates || {}); orgGatesKnown = true;
   orgPendingSystems = p.systems || [];
   $("#org-delete").disabled = false;
@@ -824,9 +826,13 @@ $("#org-start").addEventListener("click", () => {
   if (!path) { toast("Enter the destination (SD card) path first", true); return; }
   const systems = orgPicked();
   if (!systems.length) { toast("Pick at least one platform to export", true); return; }
+  if ($("#org-wipe").checked &&
+      !confirm(`Clear the ${systems.join(", ")} folder(s) on ${path} first? Everything in them is deleted before the copy.`))
+    return;
   localStorage.setItem("romcom-sd-path", path);
   startJob("organize", "/api/organize", {path, systems, fill: $("#org-fill").checked,
-                                          distinct_games: $("#org-distinct").checked, gates: orgGates()});
+                                          distinct_games: $("#org-distinct").checked,
+                                          wipe: $("#org-wipe").checked, gates: orgGates()});
 });
 
 $("#org-stop").addEventListener("click", async () => {
@@ -952,6 +958,7 @@ function renderOrganizeResult(r) {
   $("#org-result").innerHTML = (r.stopped ? `<p class="sub" style="margin-top:12px"><b>Export stopped early</b> — what was copied stays; re-running tops up the rest.</p>` : "")
     + `<div class="tiles" style="margin-top:12px">
       <div class="tile"><div class="v">${r.copied.toLocaleString()}</div><div class="l">Copied</div></div>
+      ${r.wiped ? `<div class="tile"><div class="v">${(r.wiped.files || 0).toLocaleString()}</div><div class="l">Cleared first</div><div class="d">${fmtBytes(r.wiped.bytes || 0)}</div></div>` : ""}
       <div class="tile"><div class="v">${r.skipped.toLocaleString()}</div><div class="l">Already there</div></div>
       <div class="tile"><div class="v">${(r.dupes_skipped || 0).toLocaleString()}</div><div class="l">Duplicate copies skipped</div><div class="d">same game, one copy</div></div>
       <div class="tile"><div class="v">${r.missing.toLocaleString()}</div><div class="l">Source missing</div><div class="d">re-scan to fix</div></div>

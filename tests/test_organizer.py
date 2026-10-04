@@ -321,3 +321,45 @@ def test_export_files_games_into_score_folders(tmp_path, monkeypatch):
     assert (tmp_path / "sd" / "nes" / "80" / "Golden.zip").exists()   # 87 -> 80
     assert (tmp_path / "sd" / "nes" / "70" / "Silver.zip").exists()   # rating 7 -> 70
     assert (tmp_path / "sd" / "nes" / "0" / "Mystery.zip").exists()
+
+
+def test_wipe_clears_the_ticked_platforms_folder(tmp_path, monkeypatch):
+    """A top-up silently kept games that had fallen out of the recipe (and a layout
+    change left the old copy beside the new one). Wipe makes a clean card first — but
+    only the ticked platforms' own folders go."""
+    _one_rom(tmp_path, monkeypatch, system="nes", name="New.nes")
+    dest = tmp_path / "sd"
+    (dest / "nes").mkdir(parents=True)
+    (dest / "nes" / "Stale.nes").write_bytes(b"stale!")
+    (dest / "snes").mkdir(parents=True)
+    (dest / "snes" / "Keepme.sfc").write_bytes(b"keep")
+    (dest / "notes.txt").write_bytes(b"x")
+    r = organize(dest, systems=["nes"], wipe=True)
+    assert r["copied"] == 1 and not r["skipped"]
+    assert r["wiped"]["folders"] == ["nes"] and r["wiped"]["files"] == 1
+    assert not (dest / "nes" / "Stale.nes").exists()
+    assert (dest / "nes" / "0" / "New.nes").exists()
+    assert (dest / "snes" / "Keepme.sfc").exists()    # unticked: untouched
+    assert (dest / "notes.txt").exists()              # loose file: untouched
+
+
+def test_wipe_without_a_platform_list_is_refused(tmp_path, monkeypatch):
+    """"Clear the card" with no filter would mean deleting folders the request never
+    named — refused rather than guessed at."""
+    _one_rom(tmp_path, monkeypatch)
+    dest = tmp_path / "sd"
+    (dest / "nes").mkdir(parents=True)
+    (dest / "nes" / "Old.nes").write_bytes(b"old")
+    r = organize(dest, wipe=True)
+    assert "error" in r and (dest / "nes" / "Old.nes").exists()
+
+
+def test_a_wipe_dry_run_counts_without_deleting(tmp_path, monkeypatch):
+    """Dry run never touches the destination, wipe included: it says what would be
+    cleared, and clears nothing."""
+    _one_rom(tmp_path, monkeypatch, name="New.nes")
+    dest = tmp_path / "sd"
+    (dest / "nes").mkdir(parents=True)
+    (dest / "nes" / "Stale.nes").write_bytes(b"stale!")
+    r = organize(dest, systems=["nes"], wipe=True, dry_run=True)
+    assert r["wiped"]["files"] == 1 and (dest / "nes" / "Stale.nes").exists()

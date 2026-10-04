@@ -470,7 +470,8 @@ def create_app():
                                           rating_min=g["rating_min"],
                                           stop=stops["organize"],
                                           fill=bool(params.get("fill")),
-                                          distinct_games=bool(params.get("distinct_games")))
+                                          distinct_games=bool(params.get("distinct_games")),
+                                          wipe=bool(params.get("wipe")))
         if kind == "acquire":
             return lambda prog: acquirer.auto_acquire(progress=prog, watch=bool(params.get("watch")),
                                                       stop=acquirer.STOP)
@@ -716,6 +717,7 @@ def create_app():
         return start_job("organize", {"path": path, "systems": systems,
                                       "fill": bool(body.get("fill")),
                                       "distinct_games": bool(body.get("distinct_games")),
+                                      "wipe": bool(body.get("wipe")),
                                       "gates": _export_gates(body.get("gates"))})
 
     @app.post("/api/organize/plan")

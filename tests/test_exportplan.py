@@ -71,15 +71,16 @@ def test_profiles_round_trip_and_are_cleaned(monkeypatch, tmp_path):
     c = create_app().test_client()
     made = c.post("/api/export/profiles", json={
         "name": "Odin 2 – 3DS card", "path": "J:\\", "systems": ["3ds", "3ds", ""],
-        "capacity_gb": "256", "gates": {"rating_min": 99}, "distinct_games": 1,
+        "capacity_gb": "256", "gates": {"rating_min": 99}, "distinct_games": 1, "wipe": 1,
         "junk": 1}).get_json()
     assert made["systems"] == ["3ds"] and made["capacity_gb"] == 256.0
     assert made["gates"]["rating_min"] == 10 and made["distinct_games"] is True
-    assert "junk" not in made
+    assert made["wipe"] is True and "junk" not in made
     c.put(f"/api/export/profiles/{made['id']}", json={**made, "systems": ["3ds", "gba"],
-                                                      "distinct_games": False})
+                                                      "distinct_games": False, "wipe": False})
     [got] = c.get("/api/export/profiles").get_json()
     assert got["systems"] == ["3ds", "gba"] and got["distinct_games"] is False
+    assert got["wipe"] is False
     assert c.delete(f"/api/export/profiles/{made['id']}").status_code == 200
     assert c.delete(f"/api/export/profiles/{made['id']}").status_code == 404
 
