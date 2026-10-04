@@ -112,6 +112,19 @@ def cmd_dupes(a):
         print(f'{r["duplicate_copies"]} copy/copies would be reclaimed '
               f'({r["reclaimable_bytes"]/gb:.1f} GB); re-run with --apply')
 
+def cmd_prune(a):
+    from . import prune
+    r=prune.cleanup(apply=a.apply, systems=a.system or None)
+    print(json.dumps({k:v for k,v in r.items() if k!="sample"},indent=2))
+    if r["sample"]:
+        print("largest removals:")
+        for d in r["sample"]:
+            print(f'  [{d["system"]}] {d["title"]} ({d["reason"]}, {d["files"]} file(s))')
+    if not a.apply and r["items"]:
+        gb=1024**3
+        print(f'{r["items"]} item(s) would go ({r["junk"]} junk, {r["variants"]} variants, '
+              f'{r["bytes"]/gb:.1f} GB); re-run with --apply --system <system>')
+
 def cmd_cache(a):
     from . import searchcache
     if a.action=="clear":
@@ -421,6 +434,10 @@ def main():
     dr=s.add_parser("doctor"); dr.add_argument("--no-sab",action="store_true"); dr.set_defaults(fn=cmd_doctor)
     dd=s.add_parser("dedupe"); dd.add_argument("--apply",action="store_true"); dd.set_defaults(fn=cmd_dedupe)
     du=s.add_parser("dupes"); du.add_argument("--apply",action="store_true"); du.add_argument("--system",action="append"); du.set_defaults(fn=cmd_dupes)
+    pr=s.add_parser("prune", help="drop dump-variant junk and keep the best dump per game")
+    pr.add_argument("--apply",action="store_true")
+    pr.add_argument("--system",action="append",help="limit to these systems (required with --apply)")
+    pr.set_defaults(fn=cmd_prune)
     w=s.add_parser("web"); w.add_argument("--host",default="127.0.0.1"); w.add_argument("--port",type=int,default=8927); w.add_argument("--no-browser",action="store_true"); w.set_defaults(fn=cmd_web)
     cs=s.add_parser("catalog-status"); cs.add_argument("--strict",action="store_true"); cs.set_defaults(fn=cmd_catalog_status)
     cc=s.add_parser("cache"); cc.add_argument("action",choices=["stats","clear"],nargs="?",default="stats"); cc.add_argument("--source"); cc.set_defaults(fn=cmd_cache)
