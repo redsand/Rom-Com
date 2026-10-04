@@ -356,10 +356,17 @@ def test_cancel_endpoint_stops_a_running_export(monkeypatch, tmp_path):
     assert c.post("/api/organize", json={"path": str(tmp_path / "sd"), "systems": ["nes"]}).status_code == 200
     assert started.wait(2)
     assert c.post("/api/job/organize/cancel").get_json() == {"cancelled": True}
-    for _ in range(40):
-        if not c.get("/api/job/organize/status").get_json()["running"]:
+    # run()'s finally flips `running` off BEFORE it writes the cancelled status to the
+    # web_jobs row, so polling `running` and then reading the row races that write —
+    # on a loaded shared CI runner the job thread can lag the poll loop. Poll the row
+    # itself, with a budget a starved thread cannot miss.
+    db = connect()
+    status = "running"
+    for _ in range(200):                    # ~10s worst case
+        status = db.execute(
+            "SELECT status FROM web_jobs WHERE kind='organize'").fetchone()["status"]
+        if status != "running":
             break
         time.sleep(0.05)
-    db = connect()
-    assert db.execute("SELECT status FROM web_jobs WHERE kind='organize'").fetchone()["status"] == "cancelled"
+    assert status == "cancelled"
     assert c.post("/api/job/scan/cancel").status_code == 400
