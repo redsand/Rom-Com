@@ -479,3 +479,20 @@ Arcade is assembled rather than copied. A MAME set is many chip images that only
 anything together, and a flattened dump renames collisions, so sets are rebuilt from the dat
 by hash into `<rompath>/<set>/` with the names MAME expects — device dependencies included,
 because galaga will not boot without namco54.
+
+Handhelds and frontends do not scan loose chip folders: they read one zip per game, and each
+emulator core speaks its own romset version. `romcom romset` builds one core's romset onto a
+card — every set its dat can assemble from the dump, one `<set>.zip` each, plus the bios
+parents (neogeo.zip, pgm.zip…) its games reference but its dat never defines, taken from the
+current MAME dat:
+
+```bash
+romcom romset mame      J:\arcade        --leave-gb 35   # current MAME, room held back for:
+romcom romset fbneo    J:\arcade-fbneo  --leave-gb 14   # FBNeo
+romcom romset mame2003 J:\arcade-mame2003               # MAME 2003-Plus (last: takes the rest)
+```
+
+Dats live under `DAT/` (gitignored): `DAT/MAME` (the file whose name says "arcade"),
+`DAT/FBNeo`, `DAT/MAME2003-Plus`. `--leave-gb` is how several cores share one card: run
+biggest-first holding room back for the rest; the build fills to the free-space reserve and
+stops cleanly, and a re-run tops up (complete zips are skipped).

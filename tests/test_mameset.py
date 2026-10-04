@@ -32,7 +32,7 @@ def _setup(monkeypatch, tmp_path):
     invalidate()
     dat = tmp_path / "arcade.dat"
     dat.write_text(DAT, encoding="utf-8")
-    monkeypatch.setattr(mameset, "dat_path", lambda: dat)
+    monkeypatch.setattr(mameset, "dat_path", lambda profile="mame": dat)
     flat = tmp_path / "flat"
     flat.mkdir()
     db = connect()
@@ -160,9 +160,65 @@ def test_a_complete_zip_is_skipped_an_incomplete_one_is_rebuilt_whole(monkeypatc
 
 def test_no_dat_degrades_instead_of_failing(monkeypatch, tmp_path):
     db, tmp = _setup(monkeypatch, tmp_path)
-    monkeypatch.setattr(mameset, "dat_path", lambda: None)
+    monkeypatch.setattr(mameset, "dat_path", lambda profile="mame": None)
     r = mameset.build(["galaga"], tmp / "out", db=db)
-    assert r["copied"] == 0 and "no MAME dat" in r["error"]
+    assert r["copied"] == 0 and "no romset dat" in r["error"]
+
+
+def test_dat_path_finds_each_core_profile(monkeypatch, tmp_path):
+    """Each core speaks its own romset version, so each profile resolves its own dat:
+    mame filters its folder for the arcade dat, the others take the one dat their
+    project ships."""
+    import shutil
+    monkeypatch.setattr(mameset, "ROOT", tmp_path)
+    (tmp_path / "DAT/MAME").mkdir(parents=True)
+    (tmp_path / "DAT/MAME/full.dat").write_text("x", encoding="utf-8")
+    (tmp_path / "DAT/MAME/MAME 0.289 (arcade).dat").write_text("x", encoding="utf-8")
+    (tmp_path / "DAT/FBNeo").mkdir()
+    (tmp_path / "DAT/FBNeo/FinalBurn Neo.dat").write_text("x", encoding="utf-8")
+    (tmp_path / "DAT/MAME2003-Plus").mkdir()
+    (tmp_path / "DAT/MAME2003-Plus/mame2003-plus.xml").write_text("x", encoding="utf-8")
+    assert mameset.dat_path("mame").name.endswith("(arcade).dat")   # not the full dat
+    assert mameset.dat_path("fbneo").name == "FinalBurn Neo.dat"
+    assert mameset.dat_path("mame2003").name == "mame2003-plus.xml"
+    assert mameset.dat_path("nope") is None                         # unknown core
+    shutil.rmtree(tmp_path / "DAT/FBNeo")
+    assert mameset.dat_path("fbneo") is None                        # dat not installed
+
+
+FBNEO_DAT = """<?xml version="1.0"?><datafile>
+<game name="mslug" romof="neogeo">
+<rom name="m1.bin" size="16" crc="aaaa1111"/>
+</game>
+</datafile>"""
+
+
+def test_a_crc_only_logiqx_dat_builds(monkeypatch, tmp_path):
+    """The FBNeo dat carries crc but no sha1 — the hash index must find roms by crc alone."""
+    db, tmp = _setup(monkeypatch, tmp_path)
+    fdat = tmp / "fbneo.dat"
+    fdat.write_text(FBNEO_DAT, encoding="utf-8")
+    monkeypatch.setattr(mameset, "dat_path", lambda profile="mame": fdat)
+    r = mameset.build(["mslug"], tmp / "out", db=db, zipped=True, profile="fbneo")
+    assert r["sets"]["mslug"]["complete"] is True
+    import zipfile
+    with zipfile.ZipFile(tmp / "out" / "mslug.zip") as z:
+        assert z.namelist() == ["m1.bin"]
+
+
+def test_romof_gaps_names_the_bios_parents_a_dat_never_defines(monkeypatch, tmp_path):
+    """A core dat's games say romof="neogeo" without defining neogeo — the core still
+    looks for neogeo.zip, so a romset build has to know that parent must come from
+    somewhere else. A romof target the dat itself defines is not a gap."""
+    db, tmp = _setup(monkeypatch, tmp_path)
+    fdat = tmp / "fbneo.dat"
+    fdat.write_text(FBNEO_DAT, encoding="utf-8")
+    assert mameset.romof_gaps(fdat) == {"neogeo": 1}
+    defined = tmp / "defined.dat"
+    defined.write_text(FBNEO_DAT + '<game name="neogeo">\n'
+                       '<rom name="bios.bin" size="16" crc="bbbb2222"/>\n</game>\n',
+                       encoding="utf-8")
+    assert mameset.romof_gaps(defined) == {}
 
 
 def test_playable_is_assembly_not_status(monkeypatch, tmp_path):

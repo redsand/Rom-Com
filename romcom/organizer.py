@@ -479,3 +479,69 @@ def _discard_partial(target):
         target.unlink()
     except OSError:
         pass
+
+
+def romset(profile, dest, leave_bytes=0, progress=None, db=None):
+    """Build one emulator core's romset onto a folder: every set its dat can assemble from
+    the dump, as one zip per set, plus the bios parents (neogeo.zip, pgm.zip…) its games
+    reference but its dat never defines — the cores look for those as their own zips, and
+    without them a card full of games still refuses to boot.
+
+    A zip that satisfies one core can fail on another: MAME current, FBNeo and
+    MAME 2003-Plus each speak their own romset version, so each gets its own dat
+    (DAT/MAME, DAT/FBNeo, DAT/MAME2003-Plus) and its own folder on the card —
+    `romcom romset fbneo J:\arcade-fbneo`. `leave_bytes` is room to hold back for what
+    comes after, so several cores can share one card by running biggest-first with a
+    floor for the rest. The build never refuses — filling the folder is the point — and
+    stops cleanly at the free-space reserve; complete zips are skipped, so a re-run is a
+    top-up. Bios parents missing from the dump are reported, not guessed at."""
+    from . import mameset
+    db = db or connect()
+    dest = Path(dest)
+    empty = {"copied": 0, "bytes": 0, "bytes_needed": 0, "complete": 0, "incomplete": 0,
+             "stopped": False, "out_of_room": False, "sets": {}}
+    dat = mameset.dat_path(profile)
+    if not dat:
+        where = f"DAT/{mameset.PROFILES[profile][0]}" if profile in mameset.PROFILES else "DAT/"
+        return {"error": f"no romset dat for {profile!r} — put its dat under {where}", **empty}
+    if progress:
+        progress(0, 0, f"{profile}: finding what the dump can assemble…")
+    sets = sorted(mameset.assemblable(db, dat))
+    if not sets:
+        return {"error": f"{profile}: nothing assemblable from what is on disk", **empty}
+
+    def room_for(nbytes):
+        free = _free_bytes(dest)
+        return free is not None and free - nbytes >= _reserve_bytes(dest) + leave_bytes
+
+    # Bios parents first: they are small, they are shared by dozens of games, and a card
+    # built out of room wants them on it before the games that need them.
+    bios_built, bios_unavailable = [], {}
+    gaps = mameset.romof_gaps(dat)
+    if gaps:
+        mame_dat = mameset.dat_path("mame")
+        hold = sorted(set(gaps) & mameset.assemblable(db, mame_dat)) if mame_dat else []
+        if hold:
+            if progress:
+                progress(0, 0, f"{profile}: {len(hold)} bios sets ({', '.join(hold[:5])}…)")
+            r = mameset.build(hold, dest, db=db, zipped=True, dat=mame_dat,
+                              room_for=room_for,
+                              progress=None if progress is None else
+                              lambda i, total, name: progress(i, total, f"bios: {name}"))
+            bios_built = [s for s, v in (r.get("sets") or {}).items() if v.get("complete")]
+            if r.get("out_of_room"):
+                return {"profile": profile, "dat": dat.name, "assemblable": len(sets),
+                        "bios_built": bios_built, "bios_unavailable": {},
+                        "error": f"{dest} reached its free-space reserve during the bios "
+                                 f"build — nothing else written", **{k: v for k, v in r.items()
+                                                                   if k != "sets"}}
+        bios_unavailable = {k: v for k, v in gaps.items() if k not in set(hold)}
+    if progress:
+        progress(0, len(sets), f"{profile}: building {len(sets)} sets…")
+    r = mameset.build(sets, dest, db=db, zipped=True, dat=dat, room_for=room_for,
+                      progress=None if progress is None else
+                      lambda i, total, name: progress(i, total, name))
+    return {"profile": profile, "dat": dat.name, "assemblable": len(sets),
+            "bios_built": bios_built, "bios_unavailable": bios_unavailable,
+            **{k: v for k, v in r.items() if k != "sets"},
+            "stopped": bool(r.get("stopped") or r.get("out_of_room"))}

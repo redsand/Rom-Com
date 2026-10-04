@@ -453,3 +453,79 @@ def test_a_wipe_that_makes_it_fit_clears_and_copies(tmp_path, monkeypatch):
     assert r["copied"] == 1 and r["wiped"]["files"] == 1
     assert not (dest / "nes" / "Stale.nes").exists()
     assert (dest / "nes" / "0" / "New.nes").exists()
+
+
+def _romset_env(monkeypatch, tmp_path, dats, disk):
+    """One romset profile environment: a dump of `disk` {filename: crc} files in the
+    scan table, and a dat_path that answers from the `dats` {profile: path} map."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
+    from romcom.config import invalidate
+    invalidate()
+    from romcom import mameset
+    flat = tmp_path / "flat"
+    flat.mkdir(exist_ok=True)
+    db = connect()
+    with db:
+        for name, crc in disk.items():
+            (flat / name).write_bytes(b"x" * 16)
+            db.execute("INSERT INTO files(path,bytes,crc32,sha1) VALUES(?,?,?,?)",
+                       (str(flat / name), 16, crc, chr(ord('a') + len(name)) * 40))
+    monkeypatch.setattr(mameset, "dat_path", lambda profile="mame": dats.get(profile))
+    return db
+
+
+CORE_DAT = """<?xml version="1.0"?><datafile>
+<game name="mslug" romof="neogeo">
+<rom name="m1.bin" size="16" crc="aaaa1111"/>
+</game>
+<game name="kof97" romof="ghost">
+<rom name="k.bin" size="16" crc="dddd4444"/>
+</game>
+</datafile>"""
+
+MAME_DAT = """<?xml version="1.0"?><datafile>
+<machine name="neogeo">
+<rom name="bios.bin" size="16" crc="aaaa1111"/>
+</machine>
+</datafile>"""
+
+
+def test_romset_builds_every_assemblable_set_and_the_bios_parents(tmp_path, monkeypatch):
+    """A core's games romof-reference bios parents (neogeo, pgm…) its own dat never
+    defines — the core looks for them as their own zips, so the build must supply them
+    from the MAME dat before any game lands on the card. A parent the dump cannot build
+    is reported, not guessed at."""
+    from romcom.organizer import romset
+    core = tmp_path / "core.dat"; core.write_text(CORE_DAT, encoding="utf-8")
+    mame = tmp_path / "mame.dat"; mame.write_text(MAME_DAT, encoding="utf-8")
+    _romset_env(monkeypatch, tmp_path, {"fbneo": core, "mame": mame},
+                {"m1.bin": "aaaa1111", "k.bin": "dddd4444"})
+    dest = tmp_path / "card"
+    r = romset("fbneo", dest)
+    assert r["profile"] == "fbneo" and r["assemblable"] == 2
+    assert (dest / "neogeo.zip").exists()                    # the bios parent, first
+    assert (dest / "mslug.zip").exists() and (dest / "kof97.zip").exists()
+    assert r["bios_built"] == ["neogeo"]
+    assert r["bios_unavailable"] == {"ghost": 1}             # kof97's parent: not in the dump
+
+
+def test_romset_stops_at_the_leave_bytes_floor(tmp_path, monkeypatch):
+    """`leave_bytes` is how three cores share one 64 GB card: the biggest runs first
+    holding room back for the rest, and stops cleanly at the floor instead of eating it."""
+    from romcom.organizer import romset
+    core = tmp_path / "core.dat"
+    core.write_text(CORE_DAT.replace(' romof="neogeo"', '').replace(' romof="ghost"', ''),
+                   encoding="utf-8")
+    _romset_env(monkeypatch, tmp_path, {"fbneo": core},
+                {"m1.bin": "aaaa1111", "k.bin": "dddd4444"})
+    r = romset("fbneo", tmp_path / "card", leave_bytes=1024 ** 5)   # a floor no disk clears
+    assert r["stopped"] and r["out_of_room"]
+    assert not (tmp_path / "card").exists() or not any((tmp_path / "card").iterdir())
+
+
+def test_romset_without_a_dat_names_the_folder(tmp_path, monkeypatch):
+    """A profile whose dat is not installed must say where it expected it, not just fail."""
+    from romcom.organizer import romset
+    _romset_env(monkeypatch, tmp_path, {"mame2003": None}, {"m1.bin": "aaaa1111"})
+    r = romset("mame2003", tmp_path / "card")
+    assert "DAT/MAME2003-Plus" in r["error"] and r["copied"] == 0

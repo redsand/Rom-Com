@@ -27,18 +27,38 @@ from .config import ROOT
 from .db import connect
 
 
-def dat_path():
-    d = ROOT / "DAT" / "MAME"
+# Each emulator core speaks its own romset version: current MAME, FBNeo, MAME 2003-Plus.
+# A zip that satisfies one core can fail on another — chip versions and set names drift —
+# so each profile has its own dat folder under DAT/. `mame` filters the folder for the
+# file whose name says "arcade" (the full MAME dat ships beside it); the others take the
+# first dat in their folder, because each project publishes exactly one.
+PROFILES = {"mame": ("MAME", "arcade"),
+            "fbneo": ("FBNeo", None),
+            "mame2003": ("MAME2003-Plus", None)}
+
+
+def dat_path(profile="mame"):
+    """The romset dat for an emulator core profile, or None when it is not installed.
+    `mame` is the current-MAME arcade dat (the file whose name says 'arcade'); the others
+    take the first dat in their own folder, because each project ships exactly one."""
+    spec = PROFILES.get(profile)
+    if not spec:
+        return None
+    d = ROOT / "DAT" / spec[0]
     if not d.exists():
         return None
-    return next((p for p in sorted(d.glob("*.dat")) if "arcade" in p.name.lower()), None)
+    if spec[1]:
+        return next((p for p in sorted(d.glob("*.dat")) if spec[1] in p.name.lower()), None)
+    return next(iter(sorted(list(d.glob("*.dat")) + list(d.glob("*.xml")))), None)
 
 
 def set_roms(setnames, path=None):
     """{setname: [{name, crc, sha1}]} for the machines asked for, plus their device sets.
 
     Device refs are followed one level, which is what MAME itself needs: galaga cannot boot
-    without namco54's roms, and the dat is where that dependency is written down.
+    without namco54's roms, and the dat is where that dependency is written down. The
+    FBNeo and MAME 2003-Plus dats carry everything inline instead — every set is
+    self-contained, bios chips included — so there is nothing to follow there.
     """
     path = path or dat_path()
     if not path:
@@ -76,6 +96,21 @@ def set_roms(setnames, path=None):
     return out
 
 
+def romof_gaps(path):
+    """Bios/device sets the dat's games depend on via romof= but never define — the
+    cores look for them as their own zips (neogeo.zip, pgm.zip), so a romset build must
+    supply them or the games referencing them will not boot. {setname: games needing it}."""
+    names, refs = set(), {}
+    for line in Path(path).open(encoding="utf-8", errors="replace"):
+        m = re.search(r'<(?:game|machine)\s+name="([^"]+)"', line)
+        if m:
+            names.add(m.group(1))
+            r = re.search(r'\bromof="([^"]+)"', line)
+            if r:
+                refs[r.group(1)] = refs.get(r.group(1), 0) + 1
+    return {t: n for t, n in refs.items() if t not in names}
+
+
 def _index(db, roms):
     """hash -> a path on disk, for every rom wanted. One query, not one per chip."""
     crcs = {r["crc"] for rs in roms.values() for r in rs if r["crc"]}
@@ -93,25 +128,29 @@ def _index(db, roms):
 
 
 def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, progress=None,
-          fresh=False, zipped=False):
+          fresh=False, zipped=False, profile="mame", dat=None):
     """Write <dest>/<set>/<canonical rom name> for each set — or <dest>/<set>.zip when
     `zipped`, the shape every handheld emulator and frontend scans. Returns a per-set report.
 
-    `stop` (a threading.Event) is checked between sets; the report then says `stopped`.
-    `room_for(nbytes)` is asked before each set is written; when it says no, the build stops
-    before writing any of that set and the report says `out_of_room`. `bytes_needed` is what
-    a real run would write (targets missing or a different size) — what a free-space check
-    wants; `bytes` is the size of everything found, whether already present or not.
-    `fresh=True` counts every target as missing: the sizing pass for a wipe run, whose
-    folder is about to be cleared, must measure the full rebuild — not the delta over
-    the old sets it is about to delete. A zip is rewritten whole or not at all (temp file
-    + replace), so a card never holds a half-written set. `progress(i, total, setname)`
-    fires per set, so the export's job status says where the (long, otherwise silent)
-    build is instead of sitting on "starting…"."""
+    The romset is `profile`'s (mame / fbneo / mame2003 — each core its own dat), or an
+    explicit `dat` path. `stop` (a threading.Event) is checked between sets; the report
+    then says `stopped`. `room_for(nbytes)` is asked before each set is written; when it
+    says no, the build stops before writing any of that set and the report says
+    `out_of_room`. `bytes_needed` is what a real run would write (targets missing or a
+    different size) — what a free-space check wants; `bytes` is the size of everything
+    found, whether already present or not. `fresh=True` counts every target as missing:
+    the sizing pass for a wipe run, whose folder is about to be cleared, must measure
+    the full rebuild — not the delta over the old sets it is about to delete. A zip is
+    rewritten whole or not at all (temp file + replace), so a card never holds a
+    half-written set. `progress(i, total, setname)` fires per set, so the export's job
+    status says where the (long, otherwise silent) build is instead of sitting on
+    "starting…"."""
     db = db or connect()
-    roms = set_roms(setnames)
+    roms = set_roms(setnames, dat or dat_path(profile))
     if not roms:
-        return {"sets": {}, "error": "no MAME dat found under DAT/MAME", "copied": 0,
+        where = f"DAT/{PROFILES.get(profile, (profile,))[0]}/" if profile in PROFILES else str(dat)
+        return {"sets": {}, "error": f"no romset dat found for {profile!r} — put its dat "
+                                     f"under {where}", "copied": 0,
                 "bytes_needed": 0}
     by_crc, by_sha = _index(db, roms)
     dest = Path(dest)

@@ -267,6 +267,18 @@ def cmd_playable(a):
     from .mameset import refresh_playable
     print(json.dumps({"playable": refresh_playable()}, indent=2))
 
+
+def cmd_romset(a):
+    from .organizer import romset
+    last = [0]
+    def progress(i, total, name):
+        if i == 0 or i >= last[0] + 200 or i >= total:
+            last[0] = i
+            print(f"[{i}/{total}] {name}")
+    r = romset(a.profile, a.dest, leave_bytes=int(float(a.leave_gb) * 1024 ** 3),
+               progress=progress)
+    print(json.dumps({k: v for k, v in r.items() if k != "sets"}, indent=2))
+
 def cmd_cores(a):
     from . import cores
     if a.install:
@@ -388,6 +400,13 @@ def main():
     dp.set_defaults(fn=cmd_displays)
     pb=s.add_parser("playable", help="recompute which arcade sets can be assembled")
     pb.set_defaults(fn=cmd_playable)
+    rs=s.add_parser("romset", help="build one core's arcade romset onto a folder, one zip per set")
+    rs.add_argument("profile", choices=["mame", "fbneo", "mame2003"],
+                    help="which core's romset: mame (current MAME dat), fbneo, mame2003 (MAME 2003-Plus)")
+    rs.add_argument("dest", help="target folder on the card, e.g. J:\\arcade-fbneo")
+    rs.add_argument("--leave-gb", default="0",
+                    help="gigabytes to leave free on the volume for what comes after")
+    rs.set_defaults(fn=cmd_romset)
     cr=s.add_parser("cores", help="which libretro cores this library needs, and fetch them")
     cr.add_argument("--install", action="store_true", help="download the missing ones")
     cr.add_argument("--all", action="store_true", help="every system, not just those with files")
