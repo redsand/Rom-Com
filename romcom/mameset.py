@@ -12,8 +12,15 @@ ordinary export model wrong for arcade:
 So arcade sets are built from the dat instead: it lists every rom a machine needs, with a
 crc and a sha1, and the scan table already knows which file on disk has which hash. Match by
 hash, write under the name the dat gives.
+
+Two shapes, two consumers: a directory per set is a PC MAME rompath (what `play` stages
+into, because MAME assembles it itself), but no emulator on an Android handheld scans
+loose chip folders — every one of them (MAME4droid, FBNeo, RetroArch's MAME/FBNeo cores,
+the frontends) reads one zip per game, so the card export builds `dest/<set>.zip`.
 """
+import os
 import re
+import zipfile
 from pathlib import Path
 
 from .config import ROOT
@@ -86,8 +93,9 @@ def _index(db, roms):
 
 
 def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, progress=None,
-          fresh=False):
-    """Write <dest>/<set>/<canonical rom name> for each set. Returns a per-set report.
+          fresh=False, zipped=False):
+    """Write <dest>/<set>/<canonical rom name> for each set — or <dest>/<set>.zip when
+    `zipped`, the shape every handheld emulator and frontend scans. Returns a per-set report.
 
     `stop` (a threading.Event) is checked between sets; the report then says `stopped`.
     `room_for(nbytes)` is asked before each set is written; when it says no, the build stops
@@ -96,9 +104,10 @@ def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, prog
     wants; `bytes` is the size of everything found, whether already present or not.
     `fresh=True` counts every target as missing: the sizing pass for a wipe run, whose
     folder is about to be cleared, must measure the full rebuild — not the delta over
-    the old sets it is about to delete. `progress(i, total, setname)` fires per set, so the
-    export's job status says where the (long, otherwise silent) build is instead of sitting
-    on "starting…"."""
+    the old sets it is about to delete. A zip is rewritten whole or not at all (temp file
+    + replace), so a card never holds a half-written set. `progress(i, total, setname)`
+    fires per set, so the export's job status says where the (long, otherwise silent)
+    build is instead of sitting on "starting…"."""
     db = db or connect()
     roms = set_roms(setnames)
     if not roms:
@@ -122,22 +131,49 @@ def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, prog
                 continue
             found.append((src, chip["name"]))
         folder = dest / name
-        todo = []
-        for src, canonical in found:
-            target, size = folder / canonical, Path(src).stat().st_size
+        sized = [(src, canonical, Path(src).stat().st_size) for src, canonical in found]
+        for _, _, size in sized:
             total_bytes += size
-            if fresh or not (target.exists() and target.stat().st_size == size):
-                todo.append((src, target, size))
-        set_need = sum(size for _, _, size in todo)
+        if zipped:
+            # A zip is all-or-nothing: it is complete or it is rebuilt whole, so a card
+            # can never hold a half-written set. Entries are STORED — rom chips are
+            # high-entropy, deflate would only burn CPU on the card.
+            target = dest / f"{name}.zip"
+            have = {}
+            if not fresh and target.exists():
+                try:
+                    with zipfile.ZipFile(target) as z:
+                        have = {i.filename: i.file_size for i in z.infolist()}
+                except (OSError, zipfile.BadZipFile):
+                    have = {}            # unreadable: rebuild rather than trust it
+            todo = [(src, canonical, size) for src, canonical, size in sized
+                    if have.get(canonical) != size]
+            set_need = sum(size for _, _, size in sized) if todo else 0
+        else:
+            todo = []
+            for src, canonical, size in sized:
+                t = folder / canonical
+                if fresh or not (t.exists() and t.stat().st_size == size):
+                    todo.append((src, t, size))
+            set_need = sum(size for _, _, size in todo)
         needed_bytes += set_need
         if not dry_run and todo:
             if room_for is not None and not room_for(set_need):
                 stopped = out_of_room = True
                 break
-            folder.mkdir(parents=True, exist_ok=True)
-            for src, target, _ in todo:
-                shutil.copy2(src, target)
-                copied += 1
+            if zipped:
+                dest.mkdir(parents=True, exist_ok=True)
+                partial = target.with_suffix(".zip.partial")
+                with zipfile.ZipFile(partial, "w", compression=zipfile.ZIP_STORED) as z:
+                    for src, canonical, _ in sized:
+                        z.write(src, canonical)
+                os.replace(partial, target)
+                copied += len(sized)
+            else:
+                folder.mkdir(parents=True, exist_ok=True)
+                for src, target, _ in todo:
+                    shutil.copy2(src, target)
+                    copied += 1
         report[name] = {"roms": len(chips), "found": len(found), "missing": missing[:8],
                         "complete": not missing}
     return {"sets": report, "copied": copied, "bytes": total_bytes,

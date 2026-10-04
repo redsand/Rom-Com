@@ -204,7 +204,7 @@ def test_export_narrates_its_phases(tmp_path, monkeypatch):
                    "WHERE id='nes-Game (USA).nes'")
     calls = []
     def fake_build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, progress=None,
-                   fresh=False):
+                   fresh=False, zipped=False):
         if progress: progress(0, len(setnames), "galaga")
         calls.append(dry_run)
         return {"sets": {}, "copied": 0, "bytes": 0, "bytes_needed": 0,
@@ -230,16 +230,17 @@ def test_a_wipe_sizes_the_arcade_rebuild_in_full(tmp_path, monkeypatch):
         db.execute("UPDATE items SET external_id='mame/galaga' WHERE id='arcade-Game (USA).nes'")
     calls = []
     def fake_build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, progress=None,
-                   fresh=False):
-        calls.append((dry_run, fresh))
+                   fresh=False, zipped=False):
+        calls.append((dry_run, fresh, zipped))
         return {"sets": {}, "copied": 0, "bytes": 0, "bytes_needed": 0,
                 "complete": 0, "incomplete": 0}
     monkeypatch.setattr("romcom.mameset.build", fake_build)
     organize(tmp_path / "sd", systems=["arcade"], wipe=True)
-    assert calls == [(True, True), (False, False)]    # size the FULL rebuild, then build it
+    # size the FULL rebuild as zips, then build the zips
+    assert calls == [(True, True, True), (False, False, True)]
     calls.clear()
     organize(tmp_path / "sd2", systems=["arcade"])
-    assert calls == [(True, False), (False, False)]  # no wipe: the delta is the truth
+    assert calls == [(True, False, True), (False, False, True)]  # no wipe: the delta is the truth
 
 
 def _files_for(tmp_path, monkeypatch, item, system, title, copies):

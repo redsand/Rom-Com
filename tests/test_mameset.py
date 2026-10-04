@@ -117,6 +117,47 @@ def test_fresh_sizes_the_full_rebuild_not_the_delta(monkeypatch, tmp_path):
     assert fresh == 3 * 16                                   # galaga + namco54, every rom counted
 
 
+def test_zipped_builds_one_zip_per_set(monkeypatch, tmp_path):
+    """No emulator on a handheld scans a folder of loose chip files — every Android
+    emulator and frontend reads one zip per game. The card export must therefore
+    write <set>.zip with the canonical names inside, not <set>/<loose roms>."""
+    import zipfile
+    db, tmp = _setup(monkeypatch, tmp_path)
+    r = mameset.build(["galaga"], tmp / "out", db=db, zipped=True)
+    assert r["sets"]["galaga"]["complete"] is True
+    assert not (tmp / "out" / "galaga").exists()             # no loose-chip folder
+    z = tmp / "out" / "galaga.zip"
+    assert z.exists()
+    with zipfile.ZipFile(z) as f:
+        assert sorted(f.namelist()) == ["gg1_1b.3p", "prom-2.5c"]   # its own chips only
+        assert f.read("prom-2.5c") == b"x" * 16              # canonical name, real bytes
+    # device sets come along as their own zips, the way MAME looks for them
+    assert (tmp / "out" / "namco54.zip").exists()
+
+
+def test_a_complete_zip_is_skipped_an_incomplete_one_is_rebuilt_whole(monkeypatch, tmp_path):
+    """A zip is all-or-nothing: complete on the card means skipped (a top-up costs
+    nothing), and anything short of complete is rewritten whole — a card can never
+    hold a half-written set."""
+    import zipfile
+    db, tmp = _setup(monkeypatch, tmp_path)
+    mameset.build(["galaga"], tmp / "out", db=db, zipped=True)
+    again = mameset.build(["galaga"], tmp / "out", db=db, zipped=True, dry_run=True)
+    assert again["bytes_needed"] == 0                          # nothing to do
+    # A truncated zip — one entry removed — is not trusted and not patched:
+    z = tmp / "out" / "galaga.zip"
+    with zipfile.ZipFile(z) as f:
+        names = [n for n in f.namelist() if n != "prom-2.5c"]
+        entries = [(n, f.read(n)) for n in names]
+    with zipfile.ZipFile(z, "w") as f:
+        for n, data in entries:
+            f.writestr(n, data)
+    r = mameset.build(["galaga"], tmp / "out", db=db, zipped=True)
+    assert r["copied"] == 2                                    # the whole set rewritten
+    with zipfile.ZipFile(z) as f:
+        assert "prom-2.5c" in f.namelist()                    # complete again
+
+
 def test_no_dat_degrades_instead_of_failing(monkeypatch, tmp_path):
     db, tmp = _setup(monkeypatch, tmp_path)
     monkeypatch.setattr(mameset, "dat_path", lambda: None)

@@ -324,9 +324,11 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             # must measure the FULL build — fresh=True — not the delta over the old
             # sets it is about to delete. The delta once let a whole 70 GB rebuild
             # past the fit check as a few GB of missing chips, and the run then hit
-            # the free-space reserve and stopped mid-copy.
+            # the free-space reserve and stopped mid-copy. Zipped because the card is
+            # for a handheld: no emulator there scans loose chip folders — they all
+            # read one zip per game.
             need += mameset.build(arcade_sets, dest / "arcade", db=db, dry_run=True,
-                                  fresh=bool(wipe and arcade_wanted),
+                                  fresh=bool(wipe and arcade_wanted), zipped=True,
                                   progress=None if progress is None else
                                   lambda i, total, name: progress(i, total, f"measuring arcade: {name}")
                                   ).get("bytes_needed", 0)
@@ -360,7 +362,8 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     if arcade_sets:
         from . import mameset
         arcade_report = mameset.build(arcade_sets, dest / "arcade", db=db, dry_run=dry_run,
-                                      stop=stop, room_for=None if dry_run else room_for,
+                                      stop=stop, zipped=True,
+                                      room_for=None if dry_run else room_for,
                                       progress=None if progress is None else
                                       lambda i, total, name: progress(i, total, f"arcade: {name}"))
         stopped = bool(arcade_report.get("stopped"))
