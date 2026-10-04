@@ -242,6 +242,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     one.
     """
     db = connect()
+    if progress: progress(0, 0, "selecting items…")
     rows = _selection(wanted_only, keep_only, rating_min)
     wanted_systems = {s.lower() for s in systems} if systems else None
     # Arcade is built, not copied. One physical file belongs to many sets, and
@@ -294,6 +295,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             for child in dest.iterdir():
                 if not child.is_dir() or child.name.lower() not in targets:
                     continue
+                if progress: progress(0, 0, f"measuring {child.name} (to clear it)…")
                 files = nbytes = 0
                 for p in child.rglob("*"):
                     try:
@@ -314,11 +316,14 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         # After a wipe nothing at the targets survives to be reused, so the copy needs the
         # selection's full bytes; without one, present same-size files are skipped and the
         # need reflects that. Clearing the ticked platforms counts as room the copy may use.
+        if progress: progress(0, 0, "measuring what's left to copy…")
         need = (sum(r["bytes"] or 0 for r in rows) if wipe else _bytes_to_copy(rows, dest))
         if arcade_sets:
             from . import mameset
-            need += mameset.build(arcade_sets, dest / "arcade", db=db,
-                                  dry_run=True).get("bytes_needed", 0)
+            need += mameset.build(arcade_sets, dest / "arcade", db=db, dry_run=True,
+                                  progress=None if progress is None else
+                                  lambda i, total, name: progress(i, total, f"measuring arcade: {name}")
+                                  ).get("bytes_needed", 0)
         free = _free_bytes(dest)
         if free is None:
             return {"error": f"cannot read free space on {dest} — is the card mounted?",
@@ -339,6 +344,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                     "dupes_skipped": dupes_skipped, "stopped": False}
         # The refusal is past: the plan's deletions can go ahead and make the room real.
         for child, _, _ in wipe_plan:
+            if progress: progress(0, 0, f"clearing {child.name}…")
             shutil.rmtree(child, ignore_errors=True)
 
     def room_for(nbytes):
@@ -348,7 +354,9 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     if arcade_sets:
         from . import mameset
         arcade_report = mameset.build(arcade_sets, dest / "arcade", db=db, dry_run=dry_run,
-                                      stop=stop, room_for=None if dry_run else room_for)
+                                      stop=stop, room_for=None if dry_run else room_for,
+                                      progress=None if progress is None else
+                                      lambda i, total, name: progress(i, total, f"arcade: {name}"))
         stopped = bool(arcade_report.get("stopped"))
         if arcade_report.get("out_of_room"):
             errors.append({"file": "", "error": f"{dest} reached its free-space reserve "

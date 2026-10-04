@@ -85,14 +85,16 @@ def _index(db, roms):
     return by_crc, by_sha
 
 
-def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None):
+def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, progress=None):
     """Write <dest>/<set>/<canonical rom name> for each set. Returns a per-set report.
 
     `stop` (a threading.Event) is checked between sets; the report then says `stopped`.
     `room_for(nbytes)` is asked before each set is written; when it says no, the build stops
     before writing any of that set and the report says `out_of_room`. `bytes_needed` is what
     a real run would write (targets missing or a different size) — what a free-space check
-    wants; `bytes` is the size of everything found, whether already present or not."""
+    wants; `bytes` is the size of everything found, whether already present or not.
+    `progress(i, total, setname)` fires per set, so the export's job status says where the
+    (long, otherwise silent) build is instead of sitting on "starting…"."""
     db = db or connect()
     roms = set_roms(setnames)
     if not roms:
@@ -103,7 +105,8 @@ def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None):
     report, copied, total_bytes, needed_bytes = {}, 0, 0, 0
     stopped = out_of_room = False
     import shutil
-    for name, chips in sorted(roms.items()):
+    for i, (name, chips) in enumerate(sorted(roms.items())):
+        if progress: progress(i, len(roms), name)
         if stop is not None and stop.is_set():
             stopped = True
             break

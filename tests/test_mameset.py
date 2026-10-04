@@ -77,6 +77,17 @@ def test_one_file_can_serve_two_sets(monkeypatch, tmp_path):
     assert (tmp / "out" / "other" / "prom-2.5c").exists()
 
 
+def test_build_reports_per_set_progress(monkeypatch, tmp_path):
+    """The export's job status must say where the (long, otherwise silent) set build is:
+    one (i, total, setname) per set — device sets like namco54 included in the count."""
+    db, tmp = _setup(monkeypatch, tmp_path)
+    seen = []
+    mameset.build(["galaga"], tmp / "out", db=db,
+                   progress=lambda i, total, name: seen.append((i, total, name)))
+    assert [s[2] for s in seen] == ["galaga", "namco54"]  # sorted; the device came along
+    assert seen[0][1] == 2 and seen[1] == (1, 2, "namco54")  # i/total are the build's own scale
+
+
 def test_a_missing_rom_is_reported_not_hidden(monkeypatch, tmp_path):
     db, tmp = _setup(monkeypatch, tmp_path)
     with db:

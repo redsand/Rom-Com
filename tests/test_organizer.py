@@ -151,7 +151,8 @@ def test_export_copies_best_rated_games_first(tmp_path, monkeypatch):
         db.execute("UPDATE items SET rating=9 WHERE id='nes-Aardvark.nes'")
     order = []
     organize(tmp_path / "sd", progress=lambda i, n, name: order.append(name))
-    assert order[0] == "Aardvark.nes" and order[1] == "Zebra.nes"  # rating 9 -> 90 beats 80
+    files = [x for x in order if x.endswith(".nes")]  # phase labels are not file copies
+    assert files[0] == "Aardvark.nes" and files[1] == "Zebra.nes"  # rating 9 -> 90 beats 80
 
 
 def test_fill_mode_keeps_top_games_when_space_runs_out(tmp_path, monkeypatch):
@@ -188,7 +189,33 @@ def test_unranked_games_sort_last(tmp_path, monkeypatch):
         db.execute("UPDATE items SET community_score=5 WHERE id='nes-Scored.nes'")
     order = []
     organize(tmp_path / "sd", progress=lambda i, n, name: order.append(name))
-    assert order.index("Scored.nes") < order.index("Mystery.nes")
+    files = [x for x in order if x.endswith(".nes")]  # phase labels are not file copies
+    assert files.index("Scored.nes") < files.index("Mystery.nes")
+
+
+def test_export_narrates_its_phases(tmp_path, monkeypatch):
+    """The job status must tell the story of an export — selecting, measuring, the arcade
+    build — instead of sitting on 'starting…' for the whole silent stretch before the
+    first copy. (The arcade build is the longest phase and the one that used to be mute.)"""
+    _one_rom(tmp_path, monkeypatch)
+    db = connect()
+    with db:
+        db.execute("UPDATE items SET external_id='mame/galaga', system='arcade' "
+                   "WHERE id='nes-Game (USA).nes'")
+    calls = []
+    def fake_build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, progress=None):
+        if progress: progress(0, len(setnames), "galaga")
+        calls.append(dry_run)
+        return {"sets": {}, "copied": 0, "bytes": 0, "bytes_needed": 0,
+                "complete": 0, "incomplete": 0}
+    monkeypatch.setattr("romcom.mameset.build", fake_build)
+    seen = []
+    organize(tmp_path / "sd", progress=lambda i, n, name: seen.append(name))
+    assert seen[0] == "selecting items…"
+    assert "measuring what's left to copy…" in seen
+    assert "measuring arcade: galaga" in seen and "arcade: galaga" in seen
+    assert calls == [True, False]   # the sizing pass, then the real build
+    assert seen[-1] == "done"
 
 
 def _files_for(tmp_path, monkeypatch, item, system, title, copies):
