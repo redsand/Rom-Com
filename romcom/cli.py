@@ -114,7 +114,7 @@ def cmd_dupes(a):
 
 def cmd_prune(a):
     from . import prune
-    r=prune.cleanup(apply=a.apply, systems=a.system or None)
+    r=prune.cleanup(apply=a.apply, systems=a.system or None, per_region=a.per_region)
     print(json.dumps({k:v for k,v in r.items() if k!="sample"},indent=2))
     if r["sample"]:
         print("largest removals:")
@@ -122,8 +122,8 @@ def cmd_prune(a):
             print(f'  [{d["system"]}] {d["title"]} ({d["reason"]}, {d["files"]} file(s))')
     if not a.apply and r["items"]:
         gb=1024**3
-        print(f'{r["items"]} item(s) would go ({r["junk"]} junk, {r["variants"]} variants, '
-              f'{r["bytes"]/gb:.1f} GB); re-run with --apply --system <system>')
+        print(f'{r["items"]} item(s) would go ({r["junk"]} junk, {r["pre_releases"]} pre-release, '
+              f'{r["variants"]} variants, {r["bytes"]/gb:.1f} GB); re-run with --apply --system <system>')
 
 def cmd_cache(a):
     from . import searchcache
@@ -437,6 +437,8 @@ def main():
     pr=s.add_parser("prune", help="drop dump-variant junk and keep the best dump per game")
     pr.add_argument("--apply",action="store_true")
     pr.add_argument("--system",action="append",help="limit to these systems (required with --apply)")
+    pr.add_argument("--per-region",action="store_true",
+                    help="official mode: keep the best dump per REGION per game (latest revision, no betas)")
     pr.set_defaults(fn=cmd_prune)
     w=s.add_parser("web"); w.add_argument("--host",default="127.0.0.1"); w.add_argument("--port",type=int,default=8927); w.add_argument("--no-browser",action="store_true"); w.set_defaults(fn=cmd_web)
     cs=s.add_parser("catalog-status"); cs.add_argument("--strict",action="store_true"); cs.set_defaults(fn=cmd_catalog_status)

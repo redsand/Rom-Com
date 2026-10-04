@@ -181,6 +181,93 @@ def test_a_filenames_extension_folds_away(monkeypatch, tmp_path):
     assert (tmp_path / "e/e1.z64").exists()      # the download survives
 
 
+def test_per_region_keeps_one_per_region(monkeypatch, tmp_path):
+    """Official mode: every regional retail release survives — one keeper per
+    region, not one per game."""
+    db = seed(monkeypatch, tmp_path, [
+        ("r1", "FIFA 15 (Europe)", "vita", {}),
+        ("r2", "FIFA 15 (France)", "vita", {}),
+        ("r3", "FIFA 15 (Germany)", "vita", {}),
+        ("r4", "FIFA 15 (Japan)", "vita", {}),
+        ("r5", "FIFA 15 (USA)", "vita", {}),
+    ])
+    out = prune.cleanup(apply=True, systems=["vita"], per_region=True, db=db)
+    assert out["deleted"] == 0 and db.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 5
+
+
+def test_per_region_keeps_the_latest_revision(monkeypatch, tmp_path):
+    """Within a region, the newest revision wins and the old ones fold away."""
+    db = seed(monkeypatch, tmp_path, [
+        ("v1", "Spider-Man (USA) (v1.00)", "ps2", {}),
+        ("v2", "Spider-Man (USA) (v2.01)", "ps2", {}),
+        ("v3", "Spider-Man (USA)", "ps2", {}),
+        ("v4", "Spider-Man (Europe) (Rev 1)", "ps2", {}),
+        ("v5", "Spider-Man (Europe)", "ps2", {}),
+    ])
+    out = prune.cleanup(apply=True, systems=["ps2"], per_region=True, db=db)
+    assert out["deleted"] == 3
+    left = {t[0] for t in db.execute("SELECT title FROM items").fetchall()}
+    assert left == {"Spider-Man (USA) (v2.01)", "Spider-Man (Europe) (Rev 1)"}
+
+
+def test_per_region_drops_betas_when_retail_exists(monkeypatch, tmp_path):
+    """A region keeps its retail release; the beta of the same region goes.
+    A region whose only entry is a beta keeps it — there is nothing official
+    to prefer."""
+    db = seed(monkeypatch, tmp_path, [
+        ("b1", "Eternal Champions (Europe)", "genesis", {}),
+        ("b2", "Eternal Champions (Europe) (Beta)", "genesis", {}),
+        ("b3", "Secret of Evermore (USA) (Beta)", "snes", {}),
+    ])
+    out = prune.cleanup(apply=True, systems=["genesis", "snes"],
+                        per_region=True, db=db)
+    assert out["deleted"] == 1
+    left = {t[0] for t in db.execute("SELECT title FROM items").fetchall()}
+    assert "Eternal Champions (Europe) (Beta)" not in left
+    assert "Secret of Evermore (USA) (Beta)" in left
+
+
+def test_per_region_prefers_the_english_language(monkeypatch, tmp_path):
+    """Same region, same revision, different languages: the English dump wins."""
+    db = seed(monkeypatch, tmp_path, [
+        ("l1", "Cave Story - Doukutsu Monogatari (World) (De) (v0.8.8)", "genesis", {}),
+        ("l2", "Cave Story - Doukutsu Monogatari (World) (En) (v0.8.8)", "genesis", {}),
+        ("l3", "Cave Story - Doukutsu Monogatari (World) (Es) (v0.8.8)", "genesis", {}),
+    ])
+    out = prune.cleanup(apply=True, systems=["genesis"], per_region=True, db=db)
+    assert out["deleted"] == 2
+    assert db.execute("SELECT title FROM items").fetchone()[0] == \
+        "Cave Story - Doukutsu Monogatari (World) (En) (v0.8.8)"
+
+
+def test_per_region_keeps_the_latest_hack_version(monkeypatch, tmp_path):
+    """Romhack release chains are versions of one hack: keep the newest, and
+    the version numbers fold into the same group."""
+    db = seed(monkeypatch, tmp_path, [
+        ("h1", "Mix 5 - Test (V8.1) by VIP (SMW Hack)", "romhacks", {}),
+        ("h2", "Mix 5 - Test (V9.2) by VIP (SMW Hack)", "romhacks", {}),
+        ("h3", "Mix 5 - Test (V9.3) by VIP (SMW Hack)", "romhacks", {}),
+    ])
+    out = prune.cleanup(apply=True, systems=["romhacks"], per_region=True, db=db)
+    assert out["deleted"] == 2
+    assert db.execute("SELECT title FROM items").fetchone()[0] == \
+        "Mix 5 - Test (V9.3) by VIP (SMW Hack)"
+
+
+def test_per_region_folds_a_demo_into_its_retail(monkeypatch, tmp_path):
+    """DOS catalog titles carry '(demo)' as part of the name — it is
+    pre-release, not identity, so the demo folds away when the retail game
+    is cataloged."""
+    db = seed(monkeypatch, tmp_path, [
+        ("m1", "Driller (demo) (1988)(Incentive Software) [Action]", "dos", {}),
+        ("m2", "Driller (1988)(Incentive Software) [Action]", "dos", {}),
+    ])
+    out = prune.cleanup(apply=True, systems=["dos"], per_region=True, db=db)
+    assert out["deleted"] == 1
+    assert db.execute("SELECT title FROM items").fetchone()[0] == \
+        "Driller (1988)(Incentive Software) [Action]"
+
+
 def test_apply_requires_an_explicit_scope(monkeypatch, tmp_path):
     db = seed(monkeypatch, tmp_path, [("x", "Thing (PD)", "gba", {})])
     with pytest.raises(ValueError):
