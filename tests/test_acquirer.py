@@ -1033,3 +1033,35 @@ def test_rolling_fill_and_incremental_import(monkeypatch, tmp_path):
     # imported mid-run: two scan passes, both against the download dir.
     assert calls == [str(ddir), str(ddir)]
     assert r["scan"]["files"] == 1 and r["scan"]["adopted"] == 2  # accumulated, not overwritten
+
+
+def test_in_flight_listed_during_direct_download_and_empty_after(monkeypatch, tmp_path):
+    """The Acquire tab's live list: while a direct download is running the item sits in
+    acquirer.IN_FLIGHT with its title and a source note — exactly what the status
+    endpoint snapshots — and nothing lingers once the run has finished."""
+    from romcom.config import invalidate
+    db = client_db(monkeypatch, tmp_path)
+    ddir = tmp_path / "games"; ddir.mkdir()
+    monkeypatch.setenv("ROMCOM_DOWNLOAD_DIR", str(ddir))
+    invalidate()
+    seed(db, [{"id": "i1", "title": "Super Mario World"}])
+    search, _ = fake_search([])  # indexer misses: the item goes down the direct path
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.acquirer.webdl.search",
+                        lambda q, sys: [{"title": q.lower(), "score": 100,
+                                         "url": f"https://roms.example/{q}", "source": "romsgames"}])
+
+    seen = []
+    def _fetch(pick, dest):
+        seen.append(acquirer.in_flight_snapshot())  # what /api/job/acquire/status sends
+        return _fake_fetch("Super Mario World (USA).zip")(pick, dest)
+    monkeypatch.setattr("romcom.acquirer.webdl.fetch", _fetch)
+    monkeypatch.setattr("romcom.actions.sync", lambda db: None)
+    monkeypatch.setattr("romcom.acquirer.scan", lambda *a, **k: {"files": 1})
+
+    r = auto_acquire(poll_interval=0)
+    assert r["direct"] == 1
+    assert seen and list(seen[0]) == ["i1"]
+    assert seen[0]["i1"]["title"] == "Super Mario World"
+    assert seen[0]["i1"]["note"] == "romsgames download"
+    assert acquirer.IN_FLIGHT == {}  # the worker released the item when it finished

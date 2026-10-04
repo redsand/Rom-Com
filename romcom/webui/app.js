@@ -903,6 +903,12 @@ function renderScanLive(st, s) {
 }
 
 function renderAcquireLive(st, s) {
+  const busy = Object.values(s.in_flight || {});
+  const working = busy.length
+    ? `<div style="margin-top:12px"><div class="sub" style="margin-bottom:6px">Working on now (${busy.length})</div>
+        <div class="checklist">${busy.map(x => `<div class="check"><span class="mark">⟳</span>
+          <span class="d"><b>${esc(x.title)}</b>${x.system ? ` <span class="sub">[${esc(x.system)}]</span>` : ""}${x.note ? ` — ${esc(x.note)}` : ""}</span></div>`).join("")}</div></div>`
+    : "";
   const tiles = `<div class="tile"><div class="v">${(st.queued || 0).toLocaleString()}</div><div class="l">Queued</div></div>
     <div class="tile"><div class="v">${(st.downloaded || 0).toLocaleString()}</div><div class="l">Downloaded</div></div>
     <div class="tile"><div class="v">${(st.direct || 0).toLocaleString()}</div><div class="l">Direct (romsgames)</div></div>
@@ -916,7 +922,7 @@ function renderAcquireLive(st, s) {
        <div class="tile"><div class="v">${(st.matched || 0).toLocaleString()}</div><div class="l">Matched so far</div></div>
        <div class="tile"><div class="v">${(st.adopted || 0).toLocaleString()}</div><div class="l">Cataloged as local</div></div>`
     : "";
-  $("#acq-result").innerHTML = `<div class="tiles" style="margin-top:12px">${tiles}${scanning}</div>`;
+  $("#acq-result").innerHTML = working + `<div class="tiles" style="margin-top:12px">${tiles}${scanning}</div>`;
 }
 
 function renderAcquireResult(r) {

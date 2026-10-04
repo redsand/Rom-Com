@@ -61,4 +61,5 @@ def test_the_worker_loop_catches_everything(monkeypatch):
     start = src.index("def _direct_worker")
     body = src[start:src.index("n_direct = max(", start)]
     assert "except Exception as ex:" in body, "the worker loop has no except — one bad item kills it"
-    assert body.index("except Exception as ex:") < body.index("finally:\n                direct_q.task_done()")
+    assert body.index("except Exception as ex:") < body.index("finally:")
+    assert body.index("finally:") < body.index("direct_q.task_done()")

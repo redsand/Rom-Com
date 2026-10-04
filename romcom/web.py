@@ -816,7 +816,12 @@ def create_app():
     def api_job_status(kind):
         if kind not in jobs:
             return jsonify({"error": "unknown job"}), 404
-        return jsonify(jobs[kind])
+        j = jobs[kind]
+        if kind == "acquire":
+            # What the workers are on right now, item by item, so the Acquire tab
+            # can show the live list — a snapshot, since the workers keep mutating it.
+            j = dict(j, in_flight=acquirer.in_flight_snapshot())
+        return jsonify(j)
 
     @app.get("/api/jobs/active")
     def api_jobs_active():

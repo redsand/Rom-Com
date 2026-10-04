@@ -75,6 +75,20 @@ STOP = threading.Event()        # the web UI sets this to cancel the watcher pro
 # alongside; the direct workers are the (now multi-lane) side road.
 DEFAULT_NZB_WORKERS = 4         # parallel indexer searches/queues when ROMCOM_ACQUIRE_PARALLEL is unset/0
 
+# What each worker is doing right now: item id -> {"title", "system", "note"}.
+# The Acquire tab shows this list so a run is watchable title-by-title instead
+# of as bare counters. Workers mutate it as they claim items and change phase;
+# readers must snapshot through in_flight_snapshot(), never iterate directly.
+IN_FLIGHT = {}
+_in_flight_lock = threading.Lock()
+
+
+def in_flight_snapshot():
+    """A copy of the in-flight map for the status endpoint — the workers keep
+    mutating the live one while the web thread reads it."""
+    with _in_flight_lock:
+        return {k: dict(v) for k, v in IN_FLIGHT.items()}
+
 
 def _cooled(db):
     """item_id -> the event holding it back, for every skip inside its cooldown window."""
@@ -369,6 +383,9 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                     return
                 if stop and stop.is_set():
                     continue
+                with _in_flight_lock:
+                    IN_FLIGHT[c["id"]] = {"title": c["title"],
+                                          "system": c.get("system") or "", "note": ""}
                 # Round-robin which source gets first shot per item, so no single host
                 # gates the whole sweep: with romsgames always first, its 30s politeness
                 # pace is a queue every item waits in before the other sources are even
@@ -391,6 +408,8 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                 qt = frozenset(indexer._tokens(indexer.clean_query(c["title"])))
                 for sname, mod in sources:
                     _emit(f"{sname} search: {c['title']}")
+                    with _in_flight_lock:
+                        IN_FLIGHT[c["id"]]["note"] = f"{sname} search"
                     try:
                         results = mod.search(c["title"], c["system"])
                     except Exception:
@@ -442,6 +461,8 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                 sname, mod, direct = picked
                 url = direct["url"]
                 _emit(f"{sname} download: {c['title']}")
+                with _in_flight_lock:
+                    IN_FLIGHT[c["id"]]["note"] = f"{sname} download"
                 try:
                     # romsgames runs several in parallel (transfers overlap; its request
                     # pacing still spaces the HTTP calls). Vimm self-serializes to exactly
@@ -502,6 +523,13 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                     with lock:
                         direct_inflight.discard(claimed)
             finally:
+                # Whatever way the item left the worker — done, skipped, failed or
+                # crashed — it is no longer being worked on, so off the live list.
+                # (The DONE sentinel is not an item; `continue` past a stop signal
+                # never claimed one either, but pop() with a default is still safe.)
+                if c is not DONE:
+                    with _in_flight_lock:
+                        IN_FLIGHT.pop(c["id"], None)
                 direct_q.task_done()
 
     n_direct = max(1, int(s["acquire_direct_parallel"]))
@@ -513,44 +541,55 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
     # --- NZB search + queue, run concurrently across the worker pool ---
     def _nzb_attempt(c):
         wdb = connect()             # each worker its own connection
-        _emit(f"search: {c['title']}")
-        try:
-            results, e = indexer.search_entity(wdb, "item", c["id"])
-        except Exception as ex:
-            # The indexer is down or erroring — the direct sources (romsgames, Vimm) may
-            # still have the ROM, so fall through to them instead of giving up on the item.
-            if s["download_dir"]:
-                direct_q.put(c)
-            else:
-                _skip(c, f"indexer search failed, no download dir for the direct fallback: {ex}", wdb)
-            return
-        top = _pick(results)
-        if top is None and llm.enabled():
-            # The strict ranker found nothing confident. Ask the LLM to salvage a real
-            # match from the below-floor candidates before falling back to direct sources.
-            cand = [r for r in results if r.get("url")]
-            if cand:
-                _emit(f"llm review: {c['title']}")
-                try:
-                    top = llm.choose(c["title"], c.get("system"), cand)
-                except Exception:
-                    top = None
-        if top is None:
-            if not s["download_dir"]:
-                _skip(c, "no usable indexer result, and no ROMCOM_DOWNLOAD_DIR for the direct fallback", wdb); return
-            direct_q.put(c)          # hand off to the single direct worker; don't block the pool
-            return
-        try:
-            nzo = actions.queue_result(wdb, "item", e, top)
-        except Exception as ex:
-            _fail(c, f"SABnzbd error: {ex}", wdb); return
-        if nzo is None:
-            with wdb:
-                wdb.execute("UPDATE items SET status='FAILED' WHERE id=?", (c["id"],))
-            _fail(c, "SABnzbd returned no nzo id", wdb); return
-        with lock:
-            stats["queued"] += 1
-        _emit(c["title"])
+        with _in_flight_lock:
+            IN_FLIGHT[c["id"]] = {"title": c["title"],
+                                  "system": c.get("system") or "", "note": "indexer"}
+        handed = False             # an item queued to direct_q is still in flight — its
+        try:                       # worker re-claims the key and owns removing it
+            _emit(f"search: {c['title']}")
+            try:
+                results, e = indexer.search_entity(wdb, "item", c["id"])
+            except Exception as ex:
+                # The indexer is down or erroring — the direct sources (romsgames, Vimm) may
+                # still have the ROM, so fall through to them instead of giving up on the item.
+                if s["download_dir"]:
+                    direct_q.put(c); handed = True
+                else:
+                    _skip(c, f"indexer search failed, no download dir for the direct fallback: {ex}", wdb)
+                return
+            top = _pick(results)
+            if top is None and llm.enabled():
+                # The strict ranker found nothing confident. Ask the LLM to salvage a real
+                # match from the below-floor candidates before falling back to direct sources.
+                cand = [r for r in results if r.get("url")]
+                if cand:
+                    _emit(f"llm review: {c['title']}")
+                    with _in_flight_lock:
+                        IN_FLIGHT[c["id"]]["note"] = "llm review"
+                    try:
+                        top = llm.choose(c["title"], c.get("system"), cand)
+                    except Exception:
+                        top = None
+            if top is None:
+                if not s["download_dir"]:
+                    _skip(c, "no usable indexer result, and no ROMCOM_DOWNLOAD_DIR for the direct fallback", wdb); return
+                direct_q.put(c); handed = True  # hand off; don't block the pool
+                return
+            try:
+                nzo = actions.queue_result(wdb, "item", e, top)
+            except Exception as ex:
+                _fail(c, f"SABnzbd error: {ex}", wdb); return
+            if nzo is None:
+                with wdb:
+                    wdb.execute("UPDATE items SET status='FAILED' WHERE id=?", (c["id"],))
+                _fail(c, "SABnzbd returned no nzo id", wdb); return
+            with lock:
+                stats["queued"] += 1
+            _emit(c["title"])
+        finally:
+            if not handed:
+                with _in_flight_lock:
+                    IN_FLIGHT.pop(c["id"], None)
 
     def _claim(limit):
         """Atomically take up to `limit` armed, never-attempted items (respecting the batch
