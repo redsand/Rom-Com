@@ -354,6 +354,32 @@ def test_a_sync_without_providers_reports_rather_than_raises(monkeypatch, tmp_pa
     assert any("no provider configured" in e for e in report["errors"])
 
 
+def test_ranking_gap_measures_the_syncs_own_universe(monkeypatch, tmp_path):
+    """The backlog the Settings card tracks is the sync's universe — non-device items in
+    hand or wanted, the only things a sync will ever score — and 'unranked' means nobody
+    has an opinion: no crowd score and no owner rating, the dashboard's same definition."""
+    db = setup(monkeypatch, tmp_path)
+    with db:
+        db.executemany("INSERT INTO items(id,title,system,status,wanted,is_device,playable)"
+                       " VALUES(?,?,?,?,?,?,?)", [
+            ("held-scored", "A", "snes", "VERIFIED", 1, 0, 0),
+            ("held-unranked", "B", "snes", "VERIFIED", 1, 0, 0),
+            ("wish-unranked", "C", "nes", "CATALOGED", 1, 0, 0),
+            ("owner-rated", "D", "nes", "CATALOGED", 1, 0, 0),
+            ("ref-only", "E", "nes", "CATALOGED", 0, 0, 0),   # reference rows: not the sync's business
+            ("a-device", "F", "arcade", "VERIFIED", 1, 1, 0),  # devices have no reputation
+            ("arc-playable", "G", "arcade", "CATALOGED", 0, 0, 1)])
+        db.execute("UPDATE items SET community_score=80 WHERE id='held-scored'")
+        db.execute("UPDATE items SET rating=6 WHERE id='owner-rated'")
+    g = community.ranking_gap(db)
+    assert g["universe"] == 5      # held-scored, held-unranked, wish-unranked, owner-rated, arc-playable
+    assert g["unranked"] == 3      # held-unranked, wish-unranked, arc-playable
+    assert g["unranked_held"] == 2  # the two in hand — the sync's first pass
+    assert {r["system"]: r["n"] for r in g["unranked_by_system"]} == {"snes": 1, "nes": 1, "arcade": 1}
+    assert community.status(db)["gap"]["unranked"] == 3       # the status endpoint carries it
+    assert community.sync(db=db)["gap"]["unranked"] == 3      # and so does a sync's report
+
+
 def _fake_rawg(monkeypatch):
     """A RAWG provider that is 'on' with no bulk pull, so the per-item search loop is
     the only thing that can produce a score."""

@@ -871,8 +871,11 @@ $("#community-sync").addEventListener("click", () => startJob("community", "/api
 
 function renderCommunityResult(r) {
   const errs = (r.errors || []).length;
+  const g = r.gap || {};
   const head = `${(r.scored || 0).toLocaleString()} items updated across ` +
-               `${Object.keys(r.systems || {}).length} systems`;
+               `${Object.keys(r.systems || {}).length} systems` +
+               (g.unranked !== undefined
+                 ? ` — ${(g.unranked || 0).toLocaleString()} still unranked` : "");
   const tail = errs ? ` — ${errs} provider problem(s): ${esc((r.errors || []).join(" | "))}` : "";
   $("#community-result").innerHTML = `<p class="sub">${head}${tail}</p>`;
   refreshCommunityStatus();
@@ -882,8 +885,14 @@ async function refreshCommunityStatus() {
   try {
     const s = await api("/api/community/status");
     const srcs = Object.entries(s.by_source || {}).map(([k, v]) => `${k}: ${v.n.toLocaleString()}`).join(", ");
+    const g = s.gap || {};
+    const where = (g.unranked_by_system || []).slice(0, 4)
+      .map(x => `${esc(x.system)} ${x.n.toLocaleString()}`).join(", ");
     $("#community-status").textContent = s.covered_items
-      ? `${s.covered_items.toLocaleString()} items scored (${srcs || "none yet"}) — RAWG requests left today: ${s.rawg_budget_left}/${s.rawg_budget}`
+      ? `${s.covered_items.toLocaleString()} scored (${srcs || "none yet"}) · ` +
+        `${(g.unranked || 0).toLocaleString()} unranked of ${(g.universe || 0).toLocaleString()}` +
+        `${where ? ` — biggest gaps: ${where}` : ""}` +
+        ` — RAWG requests left today: ${s.rawg_budget_left}/${s.rawg_budget}`
       : "no scores yet — sync first";
   } catch (e) { $("#community-status").textContent = e.message; }
 }

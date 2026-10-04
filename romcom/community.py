@@ -507,6 +507,7 @@ def sync(systems=None, db=None, progress=None):
         report["errors"].append(
             "no provider configured — set RAWG_API_KEY / RA_USERNAME+RA_API_KEY in .env "
             "and enable rawg_enabled / ra_enabled in Settings")
+        report["gap"] = ranking_gap(db, systems)
         return report
     # Group both passes up front so progress can report one honest done/total.
     phases = []
@@ -628,7 +629,38 @@ def sync(systems=None, db=None, progress=None):
         except Exception as ex:
             report["errors"].append(f"write/search: {ex}")
         report["scored_rows"] = report["scored"]
+    # The backlog the next sync still faces — so consecutive runs show it shrinking
+    # instead of only what the last one scored.
+    report["gap"] = ranking_gap(db, systems)
     return report
+
+
+def ranking_gap(db=None, systems=None):
+    """What the crowd-sync still has to chew through, and where it sits.
+
+    The universe is the sync's own `_targets`: non-device items in hand or wanted —
+    the only things a sync will ever score. An item is unranked when nobody has an
+    opinion on it (no crowd score and no owner rating), the same definition the
+    dashboard's Ranked tile uses, so the two numbers agree."""
+    db = db or connect()
+    held = ("(i.status IN ('FOUND','DOWNLOADED','VERIFIED','NORMALIZED','INSTALLED','TESTED')"
+            " OR (i.system='arcade' AND i.playable=1))")
+    where = f"COALESCE(i.is_device,0)=0 AND ({held} OR i.wanted=1)"
+    args = []
+    if systems:
+        where += f" AND i.system IN ({','.join('?' * len(systems))})"
+        args = list(systems)
+    unranked = " AND i.community_score IS NULL AND i.rating IS NULL"
+
+    def count(extra):
+        return db.execute(f"SELECT COUNT(*) c FROM items i WHERE {where}{extra}",
+                          args).fetchone()["c"]
+    by_system = [dict(r) for r in db.execute(
+        f"""SELECT COALESCE(i.system,'unknown') system, COUNT(*) n FROM items i
+            WHERE {where}{unranked} GROUP BY i.system ORDER BY n DESC LIMIT 8""", args)]
+    return {"universe": count(""), "unranked": count(unranked),
+            "unranked_held": count(unranked + f" AND {held}"),
+            "unranked_by_system": by_system}
 
 
 def status(db=None):
@@ -641,6 +673,7 @@ def status(db=None):
     covered = db.execute("SELECT COUNT(*) c FROM items WHERE community_score IS NOT NULL"
                          " AND COALESCE(is_device,0)=0").fetchone()["c"]
     return {"providers": ready, "covered_items": covered, "by_source": rows,
+            "gap": ranking_gap(db),
             "rawg_budget_left": _budget_left(db, "rawg"),
             "rawg_budget": settings()["rawg_budget"],
             "ra_budget_left": _budget_left(db, "ra"),
