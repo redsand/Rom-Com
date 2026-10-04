@@ -363,3 +363,41 @@ def test_a_wipe_dry_run_counts_without_deleting(tmp_path, monkeypatch):
     (dest / "nes" / "Stale.nes").write_bytes(b"stale!")
     r = organize(dest, systems=["nes"], wipe=True, dry_run=True)
     assert r["wiped"]["files"] == 1 and (dest / "nes" / "Stale.nes").exists()
+
+
+def test_an_export_too_big_for_even_a_cleared_card_refuses_before_wiping(tmp_path, monkeypatch):
+    """The clear-first order mattered: a selection that cannot fit even with the ticked
+    platforms empty used to wipe the card and THEN refuse — an empty card and nothing
+    copied. The refusal must come first, with the card's contents intact."""
+    _one_rom(tmp_path, monkeypatch, name="New.nes")
+    dest = tmp_path / "sd"
+    (dest / "nes").mkdir(parents=True)
+    (dest / "nes" / "Stale.nes").write_bytes(b"stale!")
+    _fake_disk(monkeypatch, free=1024 ** 3)  # exactly the reserve: no room for anything
+    r = organize(dest, systems=["nes"], wipe=True)
+    assert "error" in r and r["copied"] == 0
+    assert "still not enough" in r["error"]
+    assert (dest / "nes" / "Stale.nes").exists()   # refused before clearing anything
+
+
+def test_a_wipe_that_makes_it_fit_clears_and_copies(tmp_path, monkeypatch):
+    """The point of clearing first is making room: 8 bytes of headroom cannot hold a
+    9-byte rom, but the ticked platform's 300 stale bytes can — the wipe is what makes
+    the export fit, and then the old copy goes and the new one lands."""
+    _one_rom(tmp_path, monkeypatch, name="New.nes")
+    dest = tmp_path / "sd"
+    (dest / "nes").mkdir(parents=True)
+    (dest / "nes" / "Stale.nes").write_bytes(b"x" * 300)
+    from romcom import organizer
+    state = {"free": 1024 ** 3 + 8}
+    monkeypatch.setattr(organizer, "_reserve_bytes", lambda d: 1024 ** 3)
+    monkeypatch.setattr(organizer, "_free_bytes", lambda d: state["free"])
+    real_rmtree = organizer.shutil.rmtree
+    def rmtree(p, **kw):
+        real_rmtree(p, **kw)
+        state["free"] += 300      # clearing the folder really does free its bytes
+    monkeypatch.setattr(organizer.shutil, "rmtree", rmtree)
+    r = organize(dest, systems=["nes"], wipe=True)
+    assert r["copied"] == 1 and r["wiped"]["files"] == 1
+    assert not (dest / "nes" / "Stale.nes").exists()
+    assert (dest / "nes" / "0" / "New.nes").exists()

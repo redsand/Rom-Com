@@ -234,9 +234,12 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     `wipe` clears the card first: every <dest>/<system> folder for a ticked platform (and
     arcade, when ticked) is deleted before anything is copied — a clean card instead of a
     top-up. Nothing outside those folders is ever touched, and without an explicit
-    platform list it refuses rather than clear an unfiltered destination. Re-running was
-    the old "clean": skip-if-present silently kept games that had fallen out of the
-    recipe, and a layout change left the old copy behind beside the new one.
+    platform list it refuses rather than clear an unfiltered destination. The clear is
+    planned before it happens: an export that cannot fit even on a cleared card refuses
+    with the card untouched, so a too-big selection can never empty the card and then
+    fail. Re-running was the old "clean": skip-if-present silently kept games that had
+    fallen out of the recipe, and a layout change left the old copy behind beside the new
+    one.
     """
     db = connect()
     rows = _selection(wanted_only, keep_only, rating_min)
@@ -269,12 +272,15 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     stopped = False
     errors = []
 
-    # `wipe` runs before the space preflight, because deleting the old copy is what makes
-    # room for the new one. Only a ticked platform's own folder is ever deleted — never the
-    # card root, never a folder the export is not about to write, never a file sitting
-    # loose on the card. Without an explicit platform list it refuses: "clear everything"
-    # is not a thing to guess at.
-    wiped = None
+    # `wipe` is planned before it is performed: the ticked platforms' folders are walked
+    # and counted, but nothing is deleted until the export has been shown to fit. A card
+    # that cannot hold the selection even cleared must refuse with its contents intact —
+    # the first version deleted first and refused second, which emptied the card and then
+    # said no. Only a ticked platform's own folder is ever deleted — never the card root,
+    # never a folder the export is not about to write, never a file sitting loose on the
+    # card. Without an explicit platform list it refuses: "clear everything" is not a thing
+    # to guess at.
+    wipe_plan = []
     if wipe:
         if wanted_systems is None:
             return {"error": "wipe needs an explicit platform list — refusing to clear an "
@@ -284,25 +290,31 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         targets = set(wanted_systems)
         if arcade_wanted:
             targets.add("arcade")
-        wiped = {"folders": [], "files": 0, "bytes": 0}
         if dest.exists():
             for child in dest.iterdir():
                 if not child.is_dir() or child.name.lower() not in targets:
                     continue
+                files = nbytes = 0
                 for p in child.rglob("*"):
                     try:
                         if p.is_file():
-                            wiped["files"] += 1
-                            wiped["bytes"] += p.stat().st_size
+                            files += 1
+                            nbytes += p.stat().st_size
                     except OSError:
                         pass
-                if not dry_run:
-                    shutil.rmtree(child, ignore_errors=True)
-                wiped["folders"].append(child.name)
+                wipe_plan.append((child, files, nbytes))
+    wiped = None
+    if wipe:
+        wiped = {"folders": [c.name for c, _, _ in wipe_plan],
+                 "files": sum(f for _, f, _ in wipe_plan),
+                 "bytes": sum(b for _, _, b in wipe_plan)}
 
     reserve = _reserve_bytes(dest)
     if not dry_run:
-        need = _bytes_to_copy(rows, dest)
+        # After a wipe nothing at the targets survives to be reused, so the copy needs the
+        # selection's full bytes; without one, present same-size files are skipped and the
+        # need reflects that. Clearing the ticked platforms counts as room the copy may use.
+        need = (sum(r["bytes"] or 0 for r in rows) if wipe else _bytes_to_copy(rows, dest))
         if arcade_sets:
             from . import mameset
             need += mameset.build(arcade_sets, dest / "arcade", db=db,
@@ -312,15 +324,22 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             return {"error": f"cannot read free space on {dest} — is the card mounted?",
                     "copied": 0, "matched_files": len(rows), "by_system": {}, "errors": [],
                     "dupes_skipped": dupes_skipped, "stopped": False}
-        if need > free - reserve and not fill:
+        room = free + (wiped["bytes"] if wipe else 0)
+        if need > room - reserve and not fill:
             gb = 1024 ** 3
+            clearing = (f" ({(wiped['bytes'] / gb):.1f} GB more once the ticked platforms "
+                        f"are cleared — still not enough)") if wipe else ""
             return {"error": f"export needs {need / gb:.1f} GB but {dest} has "
-                             f"{free / gb:.1f} GB free ({reserve / gb:.1f} GB is kept in "
-                             f"reserve) — pick fewer platforms, tighten the curation "
-                             f"gates, or tick 'fill the card' to copy until it is nearly full",
+                             f"{free / gb:.1f} GB free{clearing} "
+                             f"({reserve / gb:.1f} GB is kept in reserve) — pick fewer "
+                             f"platforms, tighten the curation gates, or tick 'fill the "
+                             f"card' to copy until it is nearly full",
                     "needed_bytes": need, "free_bytes": free, "reserve_bytes": reserve,
                     "copied": 0, "matched_files": len(rows), "by_system": {}, "errors": [],
                     "dupes_skipped": dupes_skipped, "stopped": False}
+        # The refusal is past: the plan's deletions can go ahead and make the room real.
+        for child, _, _ in wipe_plan:
+            shutil.rmtree(child, ignore_errors=True)
 
     def room_for(nbytes):
         free = _free_bytes(dest)

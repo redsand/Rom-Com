@@ -977,6 +977,11 @@ $("#scan-result").addEventListener("click", e => {
 });
 
 function renderOrganizeResult(r) {
+  if (r.error) {   // the run refused before copying a byte — the reason is the whole answer
+    $("#org-result").innerHTML = `<div class="check bad" style="margin-top:12px">
+      <span class="mark">✕</span><span class="d">${esc(r.error)}</span></div>`;
+    return;
+  }
   const rows = Object.entries(r.by_system).sort()
     .map(([s, n]) => `<tr><td>${esc(s)}</td><td class="r">${n.toLocaleString()}</td></tr>`).join("");
   const errs = r.errors.map(x => `<div class="check bad"><span class="mark">✕</span>
@@ -985,9 +990,9 @@ function renderOrganizeResult(r) {
     + `<div class="tiles" style="margin-top:12px">
       <div class="tile"><div class="v">${r.copied.toLocaleString()}</div><div class="l">Copied</div></div>
       ${r.wiped ? `<div class="tile"><div class="v">${(r.wiped.files || 0).toLocaleString()}</div><div class="l">Cleared first</div><div class="d">${fmtBytes(r.wiped.bytes || 0)}</div></div>` : ""}
-      <div class="tile"><div class="v">${r.skipped.toLocaleString()}</div><div class="l">Already there</div></div>
+      <div class="tile"><div class="v">${(r.skipped || 0).toLocaleString()}</div><div class="l">Already there</div></div>
       <div class="tile"><div class="v">${(r.dupes_skipped || 0).toLocaleString()}</div><div class="l">Duplicate copies skipped</div><div class="d">same game, one copy</div></div>
-      <div class="tile"><div class="v">${r.missing.toLocaleString()}</div><div class="l">Source missing</div><div class="d">re-scan to fix</div></div>
+      <div class="tile"><div class="v">${(r.missing || 0).toLocaleString()}</div><div class="l">Source missing</div><div class="d">re-scan to fix</div></div>
       <div class="tile"><div class="v">${r.errors.length}</div><div class="l">Errors</div></div></div>`
     + (rows ? `<div class="tablewrap" style="margin-top:12px"><table>
         <thead><tr><th>System folder</th><th class="r">Files</th></tr></thead><tbody>${rows}</tbody></table></div>` : "")
