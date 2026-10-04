@@ -792,6 +792,13 @@ def create_app():
         from . import community
         return jsonify(community.status())
 
+    @app.get("/api/dupes")
+    def api_dupes():
+        """Disk space sitting in duplicate copies — reported, never deleted from the UI.
+        Removing them is a deliberate CLI act on the owner's archive: `romcom dupes`."""
+        from . import dupes
+        return jsonify(dupes.audit())
+
     @app.get("/api/job/<kind>/status")
     def api_job_status(kind):
         if kind not in jobs:

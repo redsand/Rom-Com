@@ -99,6 +99,19 @@ def cmd_dedupe(a):
     if not a.apply and r["removed"]:
         print(f'{r["removed"]} row(s) would be merged away; re-run with --apply')
 
+def cmd_dupes(a):
+    from . import dupes
+    r=dupes.cleanup(apply=a.apply, systems=a.system or None)
+    print(json.dumps({k:v for k,v in r.items() if k!="sample"},indent=2))
+    if r["sample"]:
+        print("largest duplicates:")
+        for d in r["sample"]:
+            print(f'  {d["path"]} ({d["bytes"]} bytes, same as {d["kept"]})')
+    if not a.apply and r["duplicate_copies"]:
+        gb=1024**3
+        print(f'{r["duplicate_copies"]} copy/copies would be reclaimed '
+              f'({r["reclaimable_bytes"]/gb:.1f} GB); re-run with --apply')
+
 def cmd_cache(a):
     from . import searchcache
     if a.action=="clear":
@@ -407,6 +420,7 @@ def main():
     ic=s.add_parser("import-csv"); ic.add_argument("path"); ic.set_defaults(fn=cmd_import_csv)
     dr=s.add_parser("doctor"); dr.add_argument("--no-sab",action="store_true"); dr.set_defaults(fn=cmd_doctor)
     dd=s.add_parser("dedupe"); dd.add_argument("--apply",action="store_true"); dd.set_defaults(fn=cmd_dedupe)
+    du=s.add_parser("dupes"); du.add_argument("--apply",action="store_true"); du.add_argument("--system",action="append"); du.set_defaults(fn=cmd_dupes)
     w=s.add_parser("web"); w.add_argument("--host",default="127.0.0.1"); w.add_argument("--port",type=int,default=8927); w.add_argument("--no-browser",action="store_true"); w.set_defaults(fn=cmd_web)
     cs=s.add_parser("catalog-status"); cs.add_argument("--strict",action="store_true"); cs.set_defaults(fn=cmd_catalog_status)
     cc=s.add_parser("cache"); cc.add_argument("action",choices=["stats","clear"],nargs="?",default="stats"); cc.add_argument("--source"); cc.set_defaults(fn=cmd_cache)

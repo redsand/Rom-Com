@@ -565,7 +565,21 @@ function loadImport() {
   $("#scan-path").value ||= localStorage.getItem("romcom-rom-path") || "";
   $("#org-path").value ||= localStorage.getItem("romcom-sd-path") || "";
   loadOrgProfiles().then(loadOrgPlan);
+  loadDupes();
   for (const kind of Object.keys(JOBS)) pollJob(kind, false);
+}
+
+/* Disk space sitting in duplicate copies. Reported only — removing them is a deliberate
+   CLI act (`romcom dupes --apply`), not a button on a page. */
+async function loadDupes() {
+  const el = $("#dupes-line");
+  try {
+    const d = await api("/api/dupes");
+    el.hidden = !d.duplicate_copies;
+    if (d.duplicate_copies)
+      el.innerHTML = `<b>${d.duplicate_copies.toLocaleString()}</b> duplicate copies on disk
+        (~${fmtBytes(d.reclaimable_bytes)} reclaimable) — review with <code>romcom dupes</code>`;
+  } catch { el.hidden = true; }
 }
 
 /* Header chip: running jobs are visible from every tab, and survive page refreshes */
