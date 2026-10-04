@@ -1030,6 +1030,8 @@ const SET_KEYS = ["nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "s
                   "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout",
                   "vimm_enabled", "vimm_base", "vimm_dl_base", "vimm_delay", "vimm_jitter", "vimm_timeout",
                   "archive_enabled", "archive_base", "archive_delay", "archive_timeout",
+                  "cdromance_enabled", "cdromance_base", "cdromance_delay", "cdromance_jitter",
+                  "cdromance_timeout",
                   "search_cache_ttl", "llm_enabled", "llm_base", "llm_model", "llm_timeout",
                   "export_wanted_only", "export_curated_only", "export_rating_min",
                   "rawg_enabled", "rawg_delay", "rawg_jitter", "rawg_timeout", "rawg_budget",
@@ -1095,6 +1097,7 @@ $("#set-test").addEventListener("click", async () => {
   try {
     const r = await post("/api/settings/test", {});
     const names = { indexer: "NZB indexer", sabnzbd: "SABnzbd", romsgames: "romsgames.net",
+                    "archive.org": "archive.org", vimm: "vimm.net", "cdromance.org": "cdromance.org",
                     community: "community scores (RAWG / RetroAchievements)" };
     out.innerHTML = Object.entries(r).map(([k, v]) => `
       <div class="check ${v.ok ? "ok" : "bad"}">

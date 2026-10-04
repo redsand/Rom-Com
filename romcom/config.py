@@ -48,6 +48,11 @@ ENV_VARS = {
     "archive_base": "ROMCOM_ARCHIVE_BASE",
     "archive_delay": "ROMCOM_ARCHIVE_DELAY",
     "archive_timeout": "ROMCOM_ARCHIVE_TIMEOUT",
+    "cdromance_enabled": "ROMCOM_CDR_ENABLED",
+    "cdromance_base": "ROMCOM_CDR_BASE",
+    "cdromance_delay": "ROMCOM_CDR_DELAY",
+    "cdromance_jitter": "ROMCOM_CDR_JITTER",
+    "cdromance_timeout": "ROMCOM_CDR_TIMEOUT",
     "search_cache_ttl": "ROMCOM_SEARCH_CACHE_TTL",
     "llm_enabled": "ROMCOM_LLM_ENABLED",
     "llm_base": "ROMCOM_LLM_BASE",
@@ -114,6 +119,11 @@ def _env_settings():
         "archive_base": (os.getenv("ROMCOM_ARCHIVE_BASE") or "https://archive.org").rstrip("/"),
         "archive_delay": os.getenv("ROMCOM_ARCHIVE_DELAY", "2"),
         "archive_timeout": os.getenv("ROMCOM_ARCHIVE_TIMEOUT", "60"),
+        "cdromance_enabled": os.getenv("ROMCOM_CDR_ENABLED", "false"),
+        "cdromance_base": (os.getenv("ROMCOM_CDR_BASE") or "https://cdromance.org").rstrip("/"),
+        "cdromance_delay": os.getenv("ROMCOM_CDR_DELAY", "5"),
+        "cdromance_jitter": os.getenv("ROMCOM_CDR_JITTER", "3"),
+        "cdromance_timeout": os.getenv("ROMCOM_CDR_TIMEOUT", "60"),
         "search_cache_ttl": os.getenv("ROMCOM_SEARCH_CACHE_TTL", "360"),
         "llm_enabled": os.getenv("ROMCOM_LLM_ENABLED", "false"),
         "llm_base": (os.getenv("ROMCOM_LLM_BASE") or "http://localhost:11434").rstrip("/"),
@@ -192,6 +202,10 @@ def settings():
     s["archive_enabled"] = str(s["archive_enabled"]).strip().lower() in ("1", "true", "yes", "on")
     for k, dflt in (("archive_delay", 2.0), ("archive_timeout", 60.0)):
         try: s[k] = max(0.0, float(s[k]))
+        except (TypeError, ValueError): s[k] = dflt
+    s["cdromance_enabled"] = str(s["cdromance_enabled"]).strip().lower() in ("1", "true", "yes", "on")
+    for k, dflt in (("cdromance_delay", 5.0), ("cdromance_jitter", 3.0), ("cdromance_timeout", 60.0)):
+        try: s[k] = float(s[k])
         except (TypeError, ValueError): s[k] = dflt
     try: s["search_cache_ttl"] = max(0.0, float(s["search_cache_ttl"]))
     except (TypeError, ValueError): s["search_cache_ttl"] = 360.0

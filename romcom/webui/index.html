@@ -357,7 +357,7 @@
       <div class="filters">
         <span class="count" style="width:150px">Search cache</span>
         <input id="set-search_cache_ttl" type="search" placeholder="360" spellcheck="false" style="width:90px">
-        <span class="sub">minutes to reuse a source's search results (0 = off) — applies to indexer, romsgames &amp; Vimm</span>
+        <span class="sub">minutes to reuse a source's search results (0 = off) — applies to indexer, romsgames, CDRomance &amp; Vimm</span>
       </div>
     </div>
     <div class="card">
@@ -402,6 +402,29 @@
         <span class="sub">seconds between requests (open host — just politeness)</span>
         <span class="count" style="width:150px;margin-left:24px">Timeout</span>
         <input id="set-archive_timeout" type="search" placeholder="60" spellcheck="false" style="width:90px">
+      </div>
+    </div>
+    <div class="card">
+      <h2>CDRomance <span class="hint">cdromance.org — opt-in fourth direct source; plain HTTP, no browser needed</span></h2>
+      <div class="filters">
+        <label class="autolabel"><input type="checkbox" id="set-cdromance_enabled"> use cdromance.org as a fallback source</label>
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Site</span>
+        <input id="set-cdromance_base" type="search" placeholder="https://cdromance.org" spellcheck="false" style="flex:1">
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Request spacing</span>
+        <input id="set-cdromance_delay" type="search" placeholder="5" spellcheck="false" style="width:90px">
+        <span class="sub">seconds between requests</span>
+        <span class="count" style="width:150px;margin-left:24px">Jitter</span>
+        <input id="set-cdromance_jitter" type="search" placeholder="3" spellcheck="false" style="width:90px">
+        <span class="sub">+ random 0&ndash;N seconds</span>
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Timeout</span>
+        <input id="set-cdromance_timeout" type="search" placeholder="60" spellcheck="false" style="width:90px">
+        <span class="sub">seconds per HTTP request</span>
       </div>
     </div>
     <div class="card">

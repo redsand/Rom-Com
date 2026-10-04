@@ -33,7 +33,7 @@ from .config import settings
 from .db import connect
 from .planner import next_individuals
 from .status import MISSING
-from . import indexer, actions, webdl, vimm, llm, archive
+from . import indexer, actions, webdl, vimm, llm, archive, cdromance
 import sqlite3
 from .scanner import scan
 
@@ -371,6 +371,8 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                 sources = [("romsgames", webdl)]
                 if s["vimm_enabled"]:
                     sources.append(("vimm", vimm))
+                if s["cdromance_enabled"]:
+                    sources.append(("cdromance", cdromance))
                 if s["archive_enabled"]:
                     sources.append(("archive", archive))
                 picked, had_error, dup_url = None, False, None

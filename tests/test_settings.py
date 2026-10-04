@@ -74,6 +74,18 @@ def test_vimm_settings_default_and_coercion(monkeypatch, tmp_path):
     assert s["vimm_enabled"] is True and s["vimm_delay"] == 20.0  # bad value falls back
 
 
+def test_cdromance_settings_default_and_coercion(monkeypatch, tmp_path):
+    env_db(monkeypatch, tmp_path)
+    s = settings()
+    assert s["cdromance_enabled"] is False  # opt-in, off by default
+    assert s["cdromance_base"] == "https://cdromance.org"
+    assert s["cdromance_delay"] == 5.0 and s["cdromance_jitter"] == 3.0
+    assert s["cdromance_timeout"] == 60.0
+    env_db(monkeypatch, tmp_path, ROMCOM_CDR_ENABLED="on", ROMCOM_CDR_DELAY="junk")
+    s = settings()
+    assert s["cdromance_enabled"] is True and s["cdromance_delay"] == 5.0  # bad value falls back
+
+
 def test_bad_numeric_falls_back(monkeypatch, tmp_path):
     db = env_db(monkeypatch, tmp_path)
     with db:
@@ -137,6 +149,20 @@ def test_settings_test_endpoint(monkeypatch, tmp_path):
     assert d["indexer"]["ok"] is False
     assert "sekret" not in d["indexer"]["detail"] and "***" in d["indexer"]["detail"]
     assert d["sabnzbd"]["ok"] is True  # one failure doesn't mask the rest
+
+
+def test_settings_test_probes_cdromance_when_enabled(monkeypatch, tmp_path):
+    """CDRomance joins the probe list only when its toggle is on — the same
+    opt-in convention as archive.org and Vimm."""
+    env_db(monkeypatch, tmp_path, ROMCOM_CDR_ENABLED="true")
+    monkeypatch.setattr("romcom.indexer.ping", lambda: True)
+    monkeypatch.setattr("romcom.sab.queue", lambda: [])
+    monkeypatch.setattr("romcom.webdl.test", lambda: True)
+    monkeypatch.setattr("romcom.cdromance.test", lambda: True)
+    c = create_app().test_client()
+    d = c.post("/api/settings/test").get_json()
+    assert d["cdromance.org"]["ok"] is True
+    assert set(d) == {"indexer", "sabnzbd", "romsgames", "cdromance.org"}
 
 
 def test_community_credentials_never_leak_into_probe_details(monkeypatch, tmp_path):

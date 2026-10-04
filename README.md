@@ -24,6 +24,7 @@ It separates four concerns:
 - Newznab-compatible index search with ranking and size filters.
 - SABnzbd queue/history integration.
 - romsgames.net direct-download fallback with paced, jittered requests.
+- Opt-in direct-download fallbacks: cdromance.org, Vimm's Lair and Internet Archive.
 - Bulk and individual acquisition support.
 - Automatic acquire-download-import pipeline for approved & wanted items.
 - Downloaded vs verified state separation.
@@ -360,6 +361,9 @@ queues the best result in SABnzbd, waits for the downloads to finish, and then s
   DOWNLOADED; the scan phase matches it like any other file). Every request to the
   site is spaced `ROMCOM_WEBDL_DELAY` seconds plus up to `ROMCOM_WEBDL_JITTER` of
   random offset — a deliberately human pace so their rate limiting never trips.
+  If romsgames misses, the same direct pipeline then tries the enabled opt-in
+  sources in order — CDRomance (`ROMCOM_CDR_ENABLED`), then archive.org
+  (`ROMCOM_ARCHIVE_ENABLED`) — and journals the win under that source's name.
   Single-item equivalent: `romcom webdl <item-id>` (add `--result N` to override
   the automatic pick).
 
@@ -414,13 +418,14 @@ GitHub Actions runs the same test suite on pushes and pull requests.
 
 ## Where downloads come from, and which to trust
 
-Four sources can feed the library. They are not interchangeable, and the differences matter
+Five sources can feed the library. They are not interchangeable, and the differences matter
 more than the names suggest.
 
 | Source | Setting | Confidence | Use it for |
 |---|---|---|---|
 | **SABnzbd / NZB indexer** | `NZB_API_URL`, `SAB_URL` | **High** | Anything large. This is the one to rely on. |
 | **romsgames** (direct) | `ROMCOM_WEBDL_BASE` | **Medium** | The everyday workhorse for single carts. |
+| **CDRomance** (direct) | `ROMCOM_CDR_ENABLED` | **Medium** | A well-named second opinion when romsgames misses. |
 | **archive.org** | `ROMCOM_ARCHIVE_ENABLED` | **Low-medium** | Things the other two do not carry. |
 | **Vimm's Lair** | `ROMCOM_VIMM_ENABLED` | **Currently unusable** | Nothing, for now. |
 
@@ -432,6 +437,12 @@ why. If a title is available here, take it here.
 (`webdl_delay`, `webdl_jitter`) so a sweep does not hammer the site. Reliable enough for
 cartridge-sized files, and it is what most of this library actually came from. A failure is
 usually just "not carried" rather than anything wrong.
+
+**CDRomance** is opt-in and direct in the same way — no browser, no gate: the search page,
+the game page and the site's own "Show Links" AJAX are all plain HTTP, and the file is a
+plain zip served with range support. Pages are sorted by platform, which makes the
+platform filter trustworthy and the title ranking clean. Paced like the rest
+(`cdromance_delay`, `cdromance_jitter`).
 
 **archive.org** is opt-in and slow, and item naming is inconsistent enough that a name match
 is a weaker signal than elsewhere. Worth enabling when hunting something obscure; not worth

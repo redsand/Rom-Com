@@ -84,6 +84,8 @@ def create_app():
                 "webdl_base", "webdl_delay", "webdl_jitter", "webdl_timeout",
                 "vimm_enabled", "vimm_base", "vimm_dl_base", "vimm_delay", "vimm_jitter", "vimm_timeout",
                 "archive_enabled", "archive_base", "archive_delay", "archive_timeout",
+                "cdromance_enabled", "cdromance_base", "cdromance_delay", "cdromance_jitter",
+                "cdromance_timeout",
                 "search_cache_ttl", "llm_enabled", "llm_base", "llm_model", "llm_timeout",
                 "chat_enabled", "chat_model", "chat_embed_model", "chat_history_max",
                 "mcp_enabled", "mcp_servers_path",
@@ -150,6 +152,9 @@ def create_app():
         if settings()["archive_enabled"]:
             from . import archive
             probes.append(("archive.org", lambda: archive.test()))
+        if settings()["cdromance_enabled"]:
+            from . import cdromance
+            probes.append(("cdromance.org", lambda: cdromance.test()))
         if settings()["llm_enabled"]:
             from . import llm
             probes.append(("ollama", lambda: llm.test()))

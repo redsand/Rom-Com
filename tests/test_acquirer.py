@@ -887,6 +887,54 @@ def test_vimm_not_tried_when_disabled(monkeypatch, tmp_path):
     assert r["skipped"] == 1 and not called
 
 
+def test_cdromance_used_when_enabled_and_earlier_sources_miss(monkeypatch, tmp_path):
+    """With CDRomance enabled, romsgames and Vimm empty, the item is fetched from
+    cdromance.org and journaled with source='cdromance'."""
+    from romcom.config import invalidate
+    db = client_db(monkeypatch, tmp_path)
+    ddir = tmp_path / "games"; ddir.mkdir()
+    monkeypatch.setenv("ROMCOM_DOWNLOAD_DIR", str(ddir))
+    monkeypatch.setenv("ROMCOM_CDR_ENABLED", "true")
+    invalidate()
+    seed(db, [{"id": "i1", "title": "Super Mario World"}])
+    search, _ = fake_search([{"title": "junk", "url": "nzb://x", "size": 1, "score": 5}])
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.acquirer.webdl.search", lambda q, sys: [])  # romsgames misses
+    monkeypatch.setattr("romcom.acquirer.cdromance.search",
+                        lambda q, sys: [{"title": "super mario world", "score": 100,
+                                         "url": "https://cdr.example/snes-rom/super-mario-world/",
+                                         "source": "cdromance"}])
+    monkeypatch.setattr("romcom.acquirer.cdromance.fetch",
+                        _fake_fetch("Super Mario World (USA).zip"))
+    monkeypatch.setattr("romcom.actions.sync", lambda db: None)
+    monkeypatch.setattr("romcom.acquirer.scan", lambda *a, **k: {"files": 1})
+
+    r = auto_acquire(poll_interval=0)
+    assert r["direct"] == 1
+    row = db.execute("SELECT source,status,nzo_id FROM jobs").fetchone()
+    assert row["source"] == "cdromance" and row["status"] == "DOWNLOADED" and row["nzo_id"] is None
+
+
+def test_cdromance_not_tried_when_disabled(monkeypatch, tmp_path):
+    """CDRomance is opt-in: with the toggle off (default), the direct fallback never
+    touches it even when romsgames comes up empty."""
+    from romcom.config import invalidate
+    db = client_db(monkeypatch, tmp_path)
+    ddir = tmp_path / "games"; ddir.mkdir()
+    monkeypatch.setenv("ROMCOM_DOWNLOAD_DIR", str(ddir))
+    invalidate()
+    seed(db, [{"id": "i1", "title": "Game"}])
+    search, _ = fake_search([])
+    monkeypatch.setattr("romcom.indexer.search_entity", search)
+    monkeypatch.setattr("romcom.acquirer.webdl.search", lambda *a: [])
+    called = []
+    monkeypatch.setattr("romcom.acquirer.cdromance.search", lambda *a: called.append(a) or [])
+    monkeypatch.setattr("romcom.actions.sync", lambda db: None)
+
+    r = auto_acquire(poll_interval=0)
+    assert r["skipped"] == 1 and not called
+
+
 def test_nzb_searches_run_in_parallel_up_to_worker_count(monkeypatch, tmp_path):
     """`parallel` is now the number of concurrent NZB search/queue workers: with parallel=2
     and a blocking search, at most two searches run at once — and all items still get
