@@ -47,6 +47,15 @@ _GATED = """ FROM files f JOIN items i ON i.id=f.matched_item_id
       WHERE (? = 0 OR i.wanted = 1)
         AND (? = 0 OR i.keep = 1 OR (? > 0 AND COALESCE(i.rating,0) >= ?))"""
 
+# The card-fill order: a game ranks by the highest opinion anyone holds about it — the
+# crowd's 0-100 score or the owner's 1-10 rating scaled to the same scale (recommend.py's
+# rule, without its keep/played penalties: those demote games recommendations want you to
+# *try*; on a card, "kept" must not demote). Unranked games score 0 and go last. Files of
+# one item share a score and the i.id tie-break, so a game's files stay adjacent and space
+# runs out between games, not through one.
+_SCORE = "MAX(COALESCE(i.community_score,0), COALESCE(i.rating,0)*10)"
+_ORDER = f" ORDER BY {_SCORE} DESC, i.system, i.title, i.id, f.path"
+
 
 def _gate_args(wanted_only, keep_only, rating_min):
     rating_min = int(rating_min or 0)
@@ -104,14 +113,15 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
 
     `fill` skips the up-front refusal and copies until the reserve is reached instead — for
     a card deliberately given to one platform that is larger than it (arcade, usually). The
-    reserve still holds; only the all-or-nothing refusal is waived.
+    reserve still holds; only the all-or-nothing refusal is waived. Games copy best-rated
+    first (see `_SCORE`), so when space runs out it is the low end of the library that is
+    left off the card.
 
     `stop` is a threading.Event checked between files; setting it ends the run with
     `stopped: True`. A file mid-copy is finished, not truncated.
     """
     db = connect()
-    rows = db.execute("SELECT f.path, i.system, i.title, i.external_id" + _GATED
-                      + " ORDER BY i.system, i.title",
+    rows = db.execute("SELECT f.path, i.system, i.title, i.external_id" + _GATED + _ORDER,
                       _gate_args(wanted_only, keep_only, rating_min)).fetchall()
     wanted_systems = {s.lower() for s in systems} if systems else None
     # Arcade is built, not copied. One physical file belongs to many sets, and

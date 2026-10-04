@@ -138,3 +138,54 @@ def test_an_unmounted_card_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(organizer, "_free_bytes", lambda d: None)
     r = organize(tmp_path / "sd")
     assert "mounted" in r["error"] and r["copied"] == 0
+
+
+def test_export_copies_best_rated_games_first(tmp_path, monkeypatch):
+    """Fill order is a ranking, not an accident of the alphabet: a game ranks by the higher
+    of the crowd's score and the owner's rating x10."""
+    _one_rom(tmp_path, monkeypatch, name="Zebra.nes", payload=b"12345")
+    _one_rom(tmp_path, monkeypatch, name="Aardvark.nes", payload=b"123")
+    db = connect()
+    with db:
+        db.execute("UPDATE items SET community_score=80 WHERE id='nes-Zebra.nes'")
+        db.execute("UPDATE items SET rating=9 WHERE id='nes-Aardvark.nes'")
+    order = []
+    organize(tmp_path / "sd", progress=lambda i, n, name: order.append(name))
+    assert order[0] == "Aardvark.nes" and order[1] == "Zebra.nes"  # rating 9 -> 90 beats 80
+
+
+def test_fill_mode_keeps_top_games_when_space_runs_out(tmp_path, monkeypatch):
+    """When a fill run runs out of room it must be the low end of the library left off the
+    card, not whatever sorted first alphabetically."""
+    _one_rom(tmp_path, monkeypatch, name="Low.nes")
+    _one_rom(tmp_path, monkeypatch, name="High.nes")
+    db = connect()
+    with db:
+        db.execute("UPDATE items SET community_score=10 WHERE id='nes-Low.nes'")
+        db.execute("UPDATE items SET community_score=90 WHERE id='nes-High.nes'")
+    from romcom import organizer
+    # 15 bytes usable above the reserve: one 9-byte rom fits, the second does not
+    state = {"free": 2 * 1024 ** 3 - 5}
+    monkeypatch.setattr(organizer, "_reserve_bytes", lambda d: 2 * 1024 ** 3 - 20)
+    monkeypatch.setattr(organizer, "_free_bytes", lambda d: state["free"])
+    real_copy = organizer.shutil.copy2
+    def copy(src, dst):
+        state["free"] -= 9
+        return real_copy(src, dst)
+    monkeypatch.setattr(organizer.shutil, "copy2", copy)
+    r = organize(tmp_path / "sd", fill=True)
+    assert r["copied"] == 1 and r["stopped"]
+    assert (tmp_path / "sd" / "nes" / "High.nes").exists()
+    assert not (tmp_path / "sd" / "nes" / "Low.nes").exists()
+
+
+def test_unranked_games_sort_last(tmp_path, monkeypatch):
+    """No rating and no community score is a score of 0: unknowns go to the back."""
+    _one_rom(tmp_path, monkeypatch, name="Scored.nes")
+    _one_rom(tmp_path, monkeypatch, name="Mystery.nes")
+    db = connect()
+    with db:
+        db.execute("UPDATE items SET community_score=5 WHERE id='nes-Scored.nes'")
+    order = []
+    organize(tmp_path / "sd", progress=lambda i, n, name: order.append(name))
+    assert order.index("Scored.nes") < order.index("Mystery.nes")

@@ -235,11 +235,12 @@
         <button class="ghost small" id="org-all">All</button>
         <button class="ghost small" id="org-none">None</button>
         <span class="sub" id="org-total"></span>
-        <label class="sub" title="Instead of refusing an export that will not fit, copy until the card is nearly full (1 GB or 1% is always left free)">
+        <label class="sub" title="Instead of refusing an export that will not fit, copy until the card is nearly full (1 GB or 1% is always left free). Best-rated games go on first, so a filled card keeps the top of the library">
           <input type="checkbox" id="org-fill"> fill the card if it won't all fit</label>
       </div>
       <div id="org-systems" class="org-pick"></div>
-      <p class="sub">Copies the ticked platforms into &lt;dest&gt;\&lt;system&gt;\ folders. Nothing is moved or
+      <p class="sub">Copies the ticked platforms into &lt;dest&gt;\&lt;system&gt;\ folders, best-rated games first
+        (your rating or the crowd's score). Nothing is moved or
         deleted; files already on the card are skipped, so re-running tops up. An export that would not
         fit is refused before anything is written, and a card is never filled past its last 1 GB (or 1%).</p>
       <div id="org-progress" hidden>
