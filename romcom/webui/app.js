@@ -660,7 +660,7 @@ function orgSetGates(g) {
 const orgCurrent = () => orgProfiles.find(p => p.id === $("#org-profile").value) || null;
 const orgForm = () => ({name: orgCurrent()?.name, path: $("#org-path").value.trim(), systems: orgPicked(),
                         fill: $("#org-fill").checked, capacity_gb: $("#org-capacity").value || null,
-                        gates: orgGates()});
+                        distinct_games: $("#org-distinct").checked, gates: orgGates()});
 let orgPendingSystems = null;     // a profile's ticks, applied once the plan has drawn the list
 let orgGatesKnown = false;        // gates come from Settings until the owner or a profile sets them
 
@@ -677,6 +677,7 @@ function orgApplyProfile(p) {
   $("#org-path").value = p.path || "";
   $("#org-capacity").value = p.capacity_gb ? String(Math.round(p.capacity_gb)) : "";
   $("#org-fill").checked = !!p.fill;
+  $("#org-distinct").checked = !!p.distinct_games;
   orgSetGates(p.gates || {}); orgGatesKnown = true;
   orgPendingSystems = p.systems || [];
   $("#org-delete").disabled = false;
@@ -686,7 +687,7 @@ function orgApplyProfile(p) {
 async function loadOrgPlan() {
   const picked = orgPendingSystems ?? orgPicked();
   const body = {path: $("#org-path").value.trim(), capacity_gb: $("#org-capacity").value || null,
-                systems: picked};
+                systems: picked, distinct_games: $("#org-distinct").checked};
   if (orgGatesKnown) body.gates = orgGates();
   let d;
   try { d = await post("/api/organize/plan", body); }
@@ -771,6 +772,7 @@ $("#org-none").addEventListener("click", () => { $$("#org-systems input").forEac
 $("#org-path").addEventListener("change", loadOrgPlan);
 $("#org-capacity").addEventListener("change", loadOrgPlan);
 $("#org-fill").addEventListener("change", orgRender);
+$("#org-distinct").addEventListener("change", loadOrgPlan);
 for (const id of ["#org-g-wanted", "#org-g-keep", "#org-g-rating"])
   $(id).addEventListener("change", () => { orgGatesKnown = true; loadOrgPlan(); });
 
@@ -809,7 +811,8 @@ $("#org-start").addEventListener("click", () => {
   const systems = orgPicked();
   if (!systems.length) { toast("Pick at least one platform to export", true); return; }
   localStorage.setItem("romcom-sd-path", path);
-  startJob("organize", "/api/organize", {path, systems, fill: $("#org-fill").checked, gates: orgGates()});
+  startJob("organize", "/api/organize", {path, systems, fill: $("#org-fill").checked,
+                                          distinct_games: $("#org-distinct").checked, gates: orgGates()});
 });
 
 $("#org-stop").addEventListener("click", async () => {
@@ -936,6 +939,7 @@ function renderOrganizeResult(r) {
     + `<div class="tiles" style="margin-top:12px">
       <div class="tile"><div class="v">${r.copied.toLocaleString()}</div><div class="l">Copied</div></div>
       <div class="tile"><div class="v">${r.skipped.toLocaleString()}</div><div class="l">Already there</div></div>
+      <div class="tile"><div class="v">${(r.dupes_skipped || 0).toLocaleString()}</div><div class="l">Duplicate copies skipped</div><div class="d">same game, one copy</div></div>
       <div class="tile"><div class="v">${r.missing.toLocaleString()}</div><div class="l">Source missing</div><div class="d">re-scan to fix</div></div>
       <div class="tile"><div class="v">${r.errors.length}</div><div class="l">Errors</div></div></div>`
     + (rows ? `<div class="tablewrap" style="margin-top:12px"><table>

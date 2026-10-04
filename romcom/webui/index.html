@@ -237,9 +237,12 @@
         <span class="sub" id="org-total"></span>
         <label class="sub" title="Instead of refusing an export that will not fit, copy until the card is nearly full (1 GB or 1% is always left free). Best-rated games go on first, so a filled card keeps the top of the library">
           <input type="checkbox" id="org-fill"> fill the card if it won't all fit</label>
+        <label class="sub" title="The catalog holds region/variant entries as separate games ('Cars (USA)', 'Cars (Germany)'), and one game downloaded twice is two files. Tick this to put one copy of each game on the card; untick it to copy each catalog entry">
+          <input type="checkbox" id="org-distinct"> one copy per game</label>
       </div>
       <div id="org-systems" class="org-pick"></div>
-      <p class="sub">Copies the ticked platforms into &lt;dest&gt;\&lt;system&gt;\ folders, best-rated games first
+      <p class="sub">Copies the ticked platforms into &lt;dest&gt;\&lt;system&gt;\&lt;score&gt;\ folders (90, 80,
+        &hellip; 0 — RetroArch can't show a rating, so the folder does), best-rated games first
         (your rating or the crowd's score). Nothing is moved or
         deleted; files already on the card are skipped, so re-running tops up. An export that would not
         fit is refused before anything is written, and a card is never filled past its last 1 GB (or 1%).</p>

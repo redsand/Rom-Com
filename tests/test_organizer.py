@@ -25,7 +25,7 @@ def test_scan_then_organize(tmp_path, monkeypatch):
     dest = tmp_path / "sd"
     o = organize(dest)
     assert o["copied"] == 1 and not o["errors"]
-    assert (dest / "nes" / "Example Game (USA).nes").read_bytes() == payload
+    assert (dest / "nes" / "0" / "Example Game (USA).nes").read_bytes() == payload
 
     # Re-run: already present, nothing recopied
     o2 = organize(dest)
@@ -175,8 +175,8 @@ def test_fill_mode_keeps_top_games_when_space_runs_out(tmp_path, monkeypatch):
     monkeypatch.setattr(organizer.shutil, "copy2", copy)
     r = organize(tmp_path / "sd", fill=True)
     assert r["copied"] == 1 and r["stopped"]
-    assert (tmp_path / "sd" / "nes" / "High.nes").exists()
-    assert not (tmp_path / "sd" / "nes" / "Low.nes").exists()
+    assert (tmp_path / "sd" / "nes" / "90" / "High.nes").exists()
+    assert not (tmp_path / "sd" / "nes" / "10" / "Low.nes").exists()
 
 
 def test_unranked_games_sort_last(tmp_path, monkeypatch):
@@ -189,3 +189,135 @@ def test_unranked_games_sort_last(tmp_path, monkeypatch):
     order = []
     organize(tmp_path / "sd", progress=lambda i, n, name: order.append(name))
     assert order.index("Scored.nes") < order.index("Mystery.nes")
+
+
+def _files_for(tmp_path, monkeypatch, item, system, title, copies):
+    """One catalog entry owning `copies` files: (name, bytes, sha1, match_method) tuples."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
+    roms = tmp_path / "roms"; roms.mkdir(exist_ok=True)
+    db = connect()
+    with db:
+        db.execute("INSERT INTO items(id,title,system) VALUES(?,?,?)", (item, title, system))
+        for name, size, sha1, method in copies:
+            (roms / name).write_bytes(b"x" * size)
+            db.execute("INSERT INTO files(path,bytes,matched_item_id,sha1,match_method) "
+                       "VALUES(?,?,?,?,?)", (str(roms / name), size, item, sha1, method))
+    return roms
+
+
+def test_export_skips_same_content_copies(tmp_path, monkeypatch):
+    """One game fetched twice is two files with different names and the same bytes (every
+    download source names files differently); the card only needs one of them."""
+    _files_for(tmp_path, monkeypatch, "c1", "nes", "Cars", [
+        ("Cars (vimm).zip", 9, "aa", None), ("Cars (romsgames).zip", 9, "aa", None),
+        ("Cars (archive).zip", 9, "aa", None)])
+    r = organize(tmp_path / "sd")
+    assert r["copied"] == 1 and r["dupes_skipped"] == 2
+    assert len(list((tmp_path / "sd" / "nes" / "0").iterdir())) == 1
+
+
+def test_export_prefers_the_hash_verified_copy(tmp_path, monkeypatch):
+    """Two identical-content copies: the hash match is proof, the name match is a guess."""
+    _files_for(tmp_path, monkeypatch, "c1", "nes", "Cars", [
+        ("guess.zip", 9, "aa", "filename-exact"), ("proof.zip", 9, "aa", "hash")])
+    organize(tmp_path / "sd")
+    assert (tmp_path / "sd" / "nes" / "0" / "proof.zip").exists()
+    assert not (tmp_path / "sd" / "nes" / "0" / "guess.zip").exists()
+
+
+def test_export_keeps_distinct_content_under_one_item(tmp_path, monkeypatch):
+    """A multi-file game (.cue + .bin) is not a duplicate: distinct content is kept."""
+    _files_for(tmp_path, monkeypatch, "c1", "psx", "Game", [
+        ("Game.cue", 9, "bb", None), ("Game.bin", 9, "cc", None)])
+    r = organize(tmp_path / "sd")
+    assert r["copied"] == 2 and r["dupes_skipped"] == 0
+
+
+def test_export_keeps_hashless_files(tmp_path, monkeypatch):
+    """A file with no strong hash cannot be proven identical to anything, so it is
+    never dropped."""
+    _files_for(tmp_path, monkeypatch, "c1", "nes", "Cars", [
+        ("a.zip", 9, None, None), ("b.zip", 9, None, None)])
+    r = organize(tmp_path / "sd")
+    assert r["copied"] == 2 and r["dupes_skipped"] == 0
+
+
+def test_distinct_games_collapses_variants(tmp_path, monkeypatch):
+    """'Cars (USA)' and 'Cars (Germany)' are separate catalog entries but one game; with
+    distinct_games the card gets the best variant only."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
+    _files_for(tmp_path, monkeypatch, "usa", "nes", "Cars (USA)",
+               [("Cars (USA).zip", 9, "aa", "hash")])
+    db = connect()
+    with db:
+        db.execute("UPDATE items SET community_score=90 WHERE id='usa'")
+    _files_for(tmp_path, monkeypatch, "ger", "nes", "Cars (Germany)",
+               [("Cars (Germany).zip", 9, "bb", None)])
+    with db:
+        db.execute("UPDATE items SET community_score=10 WHERE id='ger'")
+    r = organize(tmp_path / "sd", distinct_games=True)
+    assert r["copied"] == 1 and r["dupes_skipped"] == 1
+    assert (tmp_path / "sd" / "nes" / "90" / "Cars (USA).zip").exists()
+    assert not (tmp_path / "sd" / "nes" / "10" / "Cars (Germany).zip").exists()
+
+
+def test_distinct_games_off_keeps_variants(tmp_path, monkeypatch):
+    """The toggle is the owner's call: off, each catalog entry gets its copy."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
+    _files_for(tmp_path, monkeypatch, "usa", "nes", "Cars (USA)",
+               [("Cars (USA).zip", 9, "aa", None)])
+    _files_for(tmp_path, monkeypatch, "ger", "nes", "Cars (Germany)",
+               [("Cars (Germany).zip", 9, "bb", None)])
+    r = organize(tmp_path / "sd")  # distinct_games defaults off
+    assert r["copied"] == 2 and r["dupes_skipped"] == 0
+
+
+def test_distinct_games_prefers_the_hash_verified_variant(tmp_path, monkeypatch):
+    """A better-rated variant whose file is only a name match loses to a hash-verified
+    dump: the copy on the card should be the one the catalog can vouch for."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
+    _files_for(tmp_path, monkeypatch, "usa", "nes", "Cars (USA)",
+               [("Cars (USA).zip", 9, "aa", "hash")])
+    db = connect()
+    with db:
+        db.execute("UPDATE items SET community_score=10 WHERE id='usa'")
+    _files_for(tmp_path, monkeypatch, "ger", "nes", "Cars (Germany)",
+               [("Cars (Germany).zip", 9, "bb", "filename-exact")])
+    with db:
+        db.execute("UPDATE items SET community_score=90 WHERE id='ger'")
+    r = organize(tmp_path / "sd", distinct_games=True)
+    assert r["copied"] == 1
+    assert (tmp_path / "sd" / "nes" / "10" / "Cars (USA).zip").exists()
+
+
+def test_planner_counts_match_a_deduped_export(tmp_path, monkeypatch):
+    """The picker's numbers must be what an export copies: both dedupe the same way."""
+    from romcom.organizer import export_systems
+    _files_for(tmp_path, monkeypatch, "c1", "nes", "Cars", [
+        ("Cars (vimm).zip", 9, "aa", None), ("Cars (romsgames).zip", 9, "aa", None),
+        ("Other.zip", 9, "bb", None)])
+    for dg in (False, True):
+        assert export_systems(distinct_games=dg) == [
+            {"system": "nes", "files": 2, "bytes": 18}]
+    assert organize(tmp_path / "sd", dry_run=True)["would_copy_bytes"] == 18
+
+
+def test_export_files_games_into_score_folders(tmp_path, monkeypatch):
+    """RetroArch cannot show a rating, so the card shows it instead: a game lands in the
+    folder of the score it ranks by, and unranked games land in 0."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
+    _files_for(tmp_path, monkeypatch, "a", "nes", "Golden", [("Golden.zip", 9, "aa", None)])
+    db = connect()
+    with db:
+        db.execute("UPDATE items SET community_score=87 WHERE id='a'")
+    _files_for(tmp_path, monkeypatch, "b", "nes", "Silver",
+               [("Silver.zip", 9, "bb", None)])
+    with db:
+        db.execute("UPDATE items SET rating=7 WHERE id='b'")
+    _files_for(tmp_path, monkeypatch, "c", "nes", "Mystery",
+               [("Mystery.zip", 9, "cc", None)])
+    organize(tmp_path / "sd")
+    assert sorted(p.name for p in (tmp_path / "sd" / "nes").iterdir()) == ["0", "70", "80"]
+    assert (tmp_path / "sd" / "nes" / "80" / "Golden.zip").exists()   # 87 -> 80
+    assert (tmp_path / "sd" / "nes" / "70" / "Silver.zip").exists()   # rating 7 -> 70
+    assert (tmp_path / "sd" / "nes" / "0" / "Mystery.zip").exists()

@@ -38,7 +38,8 @@ def _clean(p):
             "capacity_gb": float(cap) if cap not in (None, "", 0, "0") else None,
             "gates": {"wanted_only": bool(gates.get("wanted_only")),
                       "keep_only": bool(gates.get("keep_only")),
-                      "rating_min": max(0, min(10, int(gates.get("rating_min") or 0)))}}
+                      "rating_min": max(0, min(10, int(gates.get("rating_min") or 0)))},
+            "distinct_games": bool(p.get("distinct_games"))}
 
 
 def list_profiles():
@@ -98,7 +99,7 @@ def best_fill(sizes, room, forced=()):
     return {"add": add, "add_bytes": sum(sizes[s] for s in add), "room_after_forced": room}
 
 
-def plan(capacity_bytes=None, selected=(), gates=None):
+def plan(capacity_bytes=None, selected=(), gates=None, distinct_games=False):
     """Smart help for a card of `capacity_bytes`.
 
     Plans against the card's whole size, not its current free space: what is already on
@@ -113,7 +114,8 @@ def plan(capacity_bytes=None, selected=(), gates=None):
     gates = gates or {}
     rows = export_systems(wanted_only=gates.get("wanted_only"),
                           keep_only=gates.get("keep_only"),
-                          rating_min=gates.get("rating_min"))
+                          rating_min=gates.get("rating_min"),
+                          distinct_games=distinct_games)
     sizes = {r["system"]: r["bytes"] or 0 for r in rows}
     if not capacity_bytes:
         return {"systems": rows, "usable_bytes": None}
@@ -126,7 +128,8 @@ def plan(capacity_bytes=None, selected=(), gates=None):
     if big:
         curated = {r["system"]: r["bytes"] or 0
                    for r in export_systems(wanted_only=gates.get("wanted_only"),
-                                           keep_only=True, rating_min=7)}
+                                           keep_only=True, rating_min=7,
+                                           distinct_games=distinct_games)}
         too_big = [{"system": s, "bytes": sizes[s], "curated_bytes": curated.get(s, 0),
                     "curated_fits": 0 < curated.get(s, 0) <= usable} for s in sorted(big)]
 

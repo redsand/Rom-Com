@@ -469,7 +469,8 @@ def create_app():
                                           keep_only=g["keep_only"],
                                           rating_min=g["rating_min"],
                                           stop=stops["organize"],
-                                          fill=bool(params.get("fill")))
+                                          fill=bool(params.get("fill")),
+                                          distinct_games=bool(params.get("distinct_games")))
         if kind == "acquire":
             return lambda prog: acquirer.auto_acquire(progress=prog, watch=bool(params.get("watch")),
                                                       stop=acquirer.STOP)
@@ -714,6 +715,7 @@ def create_app():
         systems = [s for s in (body.get("systems") or []) if s]
         return start_job("organize", {"path": path, "systems": systems,
                                       "fill": bool(body.get("fill")),
+                                      "distinct_games": bool(body.get("distinct_games")),
                                       "gates": _export_gates(body.get("gates"))})
 
     @app.post("/api/organize/plan")
@@ -739,7 +741,8 @@ def create_app():
             cap = 0
         cap = cap or out["card_total_bytes"]
         return jsonify(out | {"capacity_bytes": cap} | exportplan.plan(
-            capacity_bytes=cap, selected=body.get("systems") or [], gates=gates))
+            capacity_bytes=cap, selected=body.get("systems") or [], gates=gates,
+            distinct_games=bool(body.get("distinct_games"))))
 
     @app.get("/api/export/profiles")
     def api_export_profiles():

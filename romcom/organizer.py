@@ -62,17 +62,118 @@ def _gate_args(wanted_only, keep_only, rating_min):
     return (1 if wanted_only else 0, 1 if keep_only else 0, rating_min, rating_min)
 
 
-def export_systems(wanted_only=False, keep_only=False, rating_min=None):
+def _selection(wanted_only=False, keep_only=False, rating_min=None):
+    """Every file an export would consider, best game first (see `_SCORE`). One query
+    backs the export and the platform picker, so the picker's counts are exactly what
+    an export copies."""
+    return connect().execute(
+        "SELECT f.path, f.bytes, f.sha1, f.md5, f.match_method, i.id item_id, "
+        "i.system, i.title, i.external_id, i.rating, i.community_score"
+        + _GATED + _ORDER,
+        _gate_args(wanted_only, keep_only, rating_min)).fetchall()
+
+
+def _content_key(r):
+    """A file's content identity, or None when unprovable — a file with no strong hash is
+    never treated as a duplicate of anything."""
+    return r["sha1"] or r["md5"] or None
+
+
+def _copy_rank(r):
+    """Which of two identical-content copies wins on the card: hash-verified first
+    (proof, per scanner's match methods — a name match is a guess), then the larger
+    file, then a stable order so the pick never depends on row order."""
+    return (0 if str(r["match_method"] or "").startswith("hash") else 1,
+            -(r["bytes"] or 0), r["path"])
+
+
+def _game_key(title):
+    """The game a title is a variant OF: parenthetical groups that are pure region or
+    revision metadata drop (community's deco-strip rule), what remains is letters and
+    digits — 'Cars (USA)' and 'Cars (Germany)' are both 'cars'."""
+    from .community import _strip_deco_groups
+    return re.sub(r"[^a-z0-9]+", " ", _strip_deco_groups(title or "").lower()).strip()
+
+
+def _canonical(rows, distinct_games=False):
+    """One copy per game. Same-content siblings under one item always collapse — they
+    are the same bytes wearing different names, because every download source names files
+    differently and one game fetched twice is two files. With `distinct_games`,
+    region/variant entries of one title collapse too: the best variant goes on the card
+    (hash-verified file, then highest score). Multi-file games keep every distinct file —
+    a .cue's .bin is content of its own. Returns (rows, dupes_skipped)."""
+    out, dupes = [], 0
+    i, n = 0, len(rows)
+    while i < n:  # files of one item are adjacent in _ORDER
+        j = i
+        while j < n and rows[j]["item_id"] == rows[i]["item_id"]:
+            j += 1
+        best = {}  # content key -> the copy that goes on the card
+        for r in rows[i:j]:
+            key = _content_key(r)
+            if key is None:  # unprovable identity is never a duplicate
+                out.append(r)
+            elif key in best:
+                dupes += 1
+                if _copy_rank(r) < _copy_rank(best[key]):
+                    best[key] = r
+            else:
+                best[key] = r
+        out.extend(best.values())
+        i = j
+    if distinct_games:
+        metas = {}
+        for r in out:
+            m = metas.setdefault(r["item_id"], {"item_id": r["item_id"], "verified": False,
+                                                "score": _score(r)})
+            m["verified"] = m["verified"] or str(r["match_method"] or "").startswith("hash")
+        winner = {}
+        for r in out:
+            gk = ((r["system"] or "").lower(), _game_key(r["title"]))
+            cur = winner.get(gk)
+            if cur is None or _metas_rank(metas[r["item_id"]], metas[cur]):
+                winner[gk] = r["item_id"]
+        before, out = len(out), [r for r in out
+                                 if winner.get(((r["system"] or "").lower(),
+                                                 _game_key(r["title"]))) == r["item_id"]]
+        dupes += before - len(out)
+    return out, dupes
+
+
+def _metas_rank(a, b):
+    """True when item a is the better variant of a game: the hash-verified dump, then the
+    better-ranked game (the same score _ORDER sorts by), then a stable id order."""
+    ka = (0 if a["verified"] else 1, -a["score"])
+    kb = (0 if b["verified"] else 1, -b["score"])
+    return ka < kb or (ka == kb and a["item_id"] < b["item_id"])
+
+
+def _score(r):
+    """A game's export score — the same expression _ORDER ranks by."""
+    return max(r["community_score"] or 0, (r["rating"] or 0) * 10)
+
+
+def _rank_folder(r):
+    """The score folder a game files under on the card: 90, 80, ... 0. RetroArch has no
+    way to show a rating, but it can show a directory — so the ranking the export sorted
+    by is also where the game lands, and browsing the card shows which tier is which."""
+    return str(_score(r) // 10 * 10)
+
+
+def export_systems(wanted_only=False, keep_only=False, rating_min=None, distinct_games=False):
     """Per-system file count and size an export would copy under the current gates.
 
     Sizes come from the scan's recorded `files.bytes`, not a stat of every file, so this is
     fast enough to back a picker. Arcade's figure is the matched chip files; the built sets
     can differ a little (shared chips are written into every set that needs them)."""
-    db = connect()
-    return [dict(r) for r in db.execute(
-        "SELECT COALESCE(i.system,'unknown') system, COUNT(*) files, "
-        "COALESCE(SUM(f.bytes),0) bytes" + _GATED + " GROUP BY 1 ORDER BY 1",
-        _gate_args(wanted_only, keep_only, rating_min))]
+    rows, _ = _canonical(_selection(wanted_only, keep_only, rating_min), distinct_games)
+    agg = {}
+    for r in rows:
+        a = agg.setdefault(r["system"] or "unknown",
+                           {"system": r["system"] or "unknown", "files": 0, "bytes": 0})
+        a["files"] += 1
+        a["bytes"] += r["bytes"] or 0
+    return sorted(agg.values(), key=lambda a: a["system"])
 
 
 def _safe(name):
@@ -82,8 +183,11 @@ def _safe(name):
 
 
 def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
-             dry_run=False, keep_only=False, rating_min=None, stop=None, fill=False):
-    """Copy files matched to a catalog item into <dest>/<system>/<filename>.
+             dry_run=False, keep_only=False, rating_min=None, stop=None, fill=False,
+             distinct_games=False):
+    """Copy files matched to a catalog item into <dest>/<system>/<score>/<filename> — the
+    score folder (90, 80, ... 0) is the ranking the copy order sorts by, made visible to
+    RetroArch, which cannot show a rating.
 
     Files are copied (never moved); an existing target of the same size is skipped,
     so re-running only tops up what's new.
@@ -119,10 +223,16 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
 
     `stop` is a threading.Event checked between files; setting it ends the run with
     `stopped: True`. A file mid-copy is finished, not truncated.
+
+    `distinct_games` puts one copy of each game on the card even when the catalog holds
+    region/variant entries of it ('Cars (USA)', 'Cars (Germany)'): the best variant is
+    picked and the rest are not copied. Same-content copies under one entry are never
+    copied regardless — they are the same file wearing different names. Both layers are
+    counted by `dupes_skipped` in the result, and `export_systems` applies the same rules,
+    so the picker's numbers stay honest.
     """
     db = connect()
-    rows = db.execute("SELECT f.path, i.system, i.title, i.external_id" + _GATED + _ORDER,
-                      _gate_args(wanted_only, keep_only, rating_min)).fetchall()
+    rows = _selection(wanted_only, keep_only, rating_min)
     wanted_systems = {s.lower() for s in systems} if systems else None
     # Arcade is built, not copied. One physical file belongs to many sets, and
     # `files.matched_item_id` records a single owner, so copying matched files leaves every
@@ -147,6 +257,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         rows = [r for r in rows if r["path"] in ids]
     if wanted_systems is not None:
         rows = [r for r in rows if (r["system"] or "").lower() in wanted_systems]
+    rows, dupes_skipped = _canonical(rows, distinct_games)
     dest = Path(dest)
     stopped = False
     errors = []
@@ -162,7 +273,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         if free is None:
             return {"error": f"cannot read free space on {dest} — is the card mounted?",
                     "copied": 0, "matched_files": len(rows), "by_system": {}, "errors": [],
-                    "stopped": False}
+                    "dupes_skipped": dupes_skipped, "stopped": False}
         if need > free - reserve and not fill:
             gb = 1024 ** 3
             return {"error": f"export needs {need / gb:.1f} GB but {dest} has "
@@ -171,7 +282,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                              f"gates, or tick 'fill the card' to copy until it is nearly full",
                     "needed_bytes": need, "free_bytes": free, "reserve_bytes": reserve,
                     "copied": 0, "matched_files": len(rows), "by_system": {}, "errors": [],
-                    "stopped": False}
+                    "dupes_skipped": dupes_skipped, "stopped": False}
 
     def room_for(nbytes):
         free = _free_bytes(dest)
@@ -201,7 +312,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             planned_bytes += src.stat().st_size
             by_system[r["system"] or "unknown"] = by_system.get(r["system"] or "unknown", 0) + 1
             continue
-        folder = dest / (r["system"] or "unknown")
+        folder = dest / (r["system"] or "unknown") / _rank_folder(r)
         target = folder / src.name
         try:
             size = src.stat().st_size
@@ -232,7 +343,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             planned_bytes += arcade_report.get("bytes_needed", 0)
     out = {"matched_files": len(rows), "copied": copied, "skipped": skipped,
            "missing": missing, "by_system": by_system, "errors": errors,
-           "arcade": arcade_report,
+           "arcade": arcade_report, "dupes_skipped": dupes_skipped,
            "wanted_only": bool(wanted_only), "keep_only": bool(keep_only),
            "sources": sorted(sources) if sources else None, "stopped": stopped}
     if dry_run:
@@ -252,7 +363,7 @@ def _bytes_to_copy(rows, dest):
             size = src.stat().st_size
         except OSError:
             continue
-        target = dest / (r["system"] or "unknown") / src.name
+        target = dest / (r["system"] or "unknown") / _rank_folder(r) / src.name
         try:
             if target.stat().st_size == size:
                 continue

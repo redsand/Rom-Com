@@ -71,12 +71,15 @@ def test_profiles_round_trip_and_are_cleaned(monkeypatch, tmp_path):
     c = create_app().test_client()
     made = c.post("/api/export/profiles", json={
         "name": "Odin 2 – 3DS card", "path": "J:\\", "systems": ["3ds", "3ds", ""],
-        "capacity_gb": "256", "gates": {"rating_min": 99}, "junk": 1}).get_json()
+        "capacity_gb": "256", "gates": {"rating_min": 99}, "distinct_games": 1,
+        "junk": 1}).get_json()
     assert made["systems"] == ["3ds"] and made["capacity_gb"] == 256.0
-    assert made["gates"]["rating_min"] == 10 and "junk" not in made
-    c.put(f"/api/export/profiles/{made['id']}", json={**made, "systems": ["3ds", "gba"]})
+    assert made["gates"]["rating_min"] == 10 and made["distinct_games"] is True
+    assert "junk" not in made
+    c.put(f"/api/export/profiles/{made['id']}", json={**made, "systems": ["3ds", "gba"],
+                                                      "distinct_games": False})
     [got] = c.get("/api/export/profiles").get_json()
-    assert got["systems"] == ["3ds", "gba"]
+    assert got["systems"] == ["3ds", "gba"] and got["distinct_games"] is False
     assert c.delete(f"/api/export/profiles/{made['id']}").status_code == 200
     assert c.delete(f"/api/export/profiles/{made['id']}").status_code == 404
 
@@ -103,3 +106,21 @@ def test_an_export_runs_with_the_gates_it_was_sent(monkeypatch, tmp_path):
         if seen: break
         time.sleep(0.05)
     assert seen["keep_only"] is True and seen["rating_min"] == 7 and seen["wanted_only"] is False
+
+
+def test_plan_endpoint_honours_one_copy_per_game(monkeypatch, tmp_path):
+    """The plan under 'one copy per game' counts one entry per title, so the card's
+    numbers never promise more than the export copies."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "t.db"))
+    db = connect()
+    with db:
+        db.execute("INSERT INTO items(id,title,system,community_score) VALUES('a','Cars (USA)','nes',90)")
+        db.execute("INSERT INTO items(id,title,system,community_score) VALUES('b','Cars (Germany)','nes',10)")
+        db.execute("INSERT INTO files(path,bytes,matched_item_id) VALUES('x:/a',9,'a')")
+        db.execute("INSERT INTO files(path,bytes,matched_item_id) VALUES('x:/b',9,'b')")
+    c = create_app().test_client()
+    d = c.post("/api/organize/plan", json={"capacity_gb": 64,
+                                           "distinct_games": True}).get_json()
+    assert d["systems"] == [{"system": "nes", "files": 1, "bytes": 9}]
+    d = c.post("/api/organize/plan", json={"capacity_gb": 64}).get_json()
+    assert d["systems"] == [{"system": "nes", "files": 2, "bytes": 18}]

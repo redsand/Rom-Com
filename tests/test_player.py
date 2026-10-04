@@ -265,14 +265,15 @@ def test_arcade_export_is_delegated_to_the_set_builder(monkeypatch, tmp_path):
     assert r["copied"] == 3        # the builder's count, not a second copy of the same files
 
 
-def test_non_arcade_systems_keep_the_flat_layout(monkeypatch, tmp_path):
-    """One file is one game everywhere else; nesting those would just add a pointless level."""
+def test_non_arcade_games_land_in_a_score_folder(monkeypatch, tmp_path):
+    """RetroArch cannot show a rating, so a game files under the score it ranks by — an
+    unrated game lands in 0. (Arcade is the exception: MAME needs its set dirs.)"""
     from romcom.organizer import organize
     db, rom = setup(monkeypatch, tmp_path, {})
     player.set_keep("snes-ct", True, db=db)
     dest = tmp_path / "card2"
     organize(str(dest), keep_only=True)
-    assert (dest / "snes" / rom.name).exists()
+    assert (dest / "snes" / "0" / rom.name).exists()
 
 
 def test_play_stages_the_arcade_set_on_demand(monkeypatch, tmp_path):
