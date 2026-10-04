@@ -330,7 +330,7 @@ def cmd_organize(a):
     print(json.dumps(organize(a.dest, systems=a.system or None,
                              wanted_only=a.wanted_only, keep_only=a.keep_only, sources=a.source or None,
                              rating_min=int(settings().get("export_rating_min", 0) or 0),
-                             dry_run=a.dry_run), indent=2))
+                             fill=a.fill, dry_run=a.dry_run), indent=2))
 
 def cmd_recommend(a):
     from . import recommend
@@ -410,6 +410,7 @@ def main():
     og.add_argument("--source",action="append",help="only items from this catalog_source (e.g. antopisa)")
     og.add_argument("--wanted-only",action="store_true",help="only items marked wanted")
     og.add_argument("--keep-only",action="store_true",help="only items marked keep")
+    og.add_argument("--fill",action="store_true",help="copy until the card's free-space reserve instead of refusing when the selection will not fit")
     og.add_argument("--dry-run",action="store_true",help="report what would be copied, copy nothing")
     og.set_defaults(fn=cmd_organize)
     rec=s.add_parser("recommend", help="the n best games to play next, in hand now")
