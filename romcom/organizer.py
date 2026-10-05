@@ -266,9 +266,23 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     # A systems filter that leaves arcade out must leave arcade out: the set build used to
     # run regardless, so "export snes" also wrote the whole arcade library.
     arcade_wanted = wanted_systems is None or "arcade" in wanted_systems
-    arcade_sets = sorted({(r["external_id"] or "").split("/", 1)[-1]
-                          for r in rows if (r["system"] or "").lower() == "arcade"}
-                         if arcade_wanted else ())
+    # The selection's order is the fill order (best game first), so an export that runs
+    # out of room misses the obscure tail, not the famous middle.
+    arcade_sets = list(dict.fromkeys(
+        (r["external_id"] or "").split("/", 1)[-1]
+        for r in rows if (r["system"] or "").lower() == "arcade")) if arcade_wanted else []
+    arcade_bios_unavailable = {}
+    if arcade_sets:
+        from . import mameset
+        # The romof parents (neogeo, pgm…) come along whether or not the recipe ticked
+        # them: mslug on a card without neogeo.zip beside it refuses to boot. Parents
+        # first, so a build that runs out of room stops before the games needing them.
+        mame_dat = mameset.dat_path("mame")
+        if mame_dat:
+            parents = mameset.romof_refs(arcade_sets, mame_dat)
+            hold = sorted(set(parents) & mameset.assemblable(db, mame_dat))
+            arcade_bios_unavailable = {k: len(v) for k, v in parents.items() if k not in set(hold)}
+            arcade_sets = hold + [s for s in arcade_sets if s not in set(hold)]
     arcade_report = None
     rows = [r for r in rows if (r["system"] or "").lower() != "arcade"]
     if sources:
@@ -341,6 +355,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             # read one zip per game.
             need += mameset.build(arcade_sets, dest / "arcade", db=db, dry_run=True,
                                   fresh=bool(wipe and arcade_wanted), zipped=True,
+                                  dat=mame_dat,
                                   progress=None if progress is None else
                                   lambda i, total, name: progress(i, total, f"measuring arcade: {name}")
                                   ).get("bytes_needed", 0)
@@ -374,7 +389,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     if arcade_sets:
         from . import mameset
         arcade_report = mameset.build(arcade_sets, dest / "arcade", db=db, dry_run=dry_run,
-                                      stop=stop, zipped=True,
+                                      stop=stop, zipped=True, dat=mame_dat,
                                       room_for=None if dry_run else room_for,
                                       progress=None if progress is None else
                                       lambda i, total, name: progress(i, total, f"arcade: {name}"))
@@ -429,7 +444,8 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             planned_bytes += arcade_report.get("bytes_needed", 0)
     out = {"matched_files": len(rows), "copied": copied, "skipped": skipped,
            "missing": missing, "by_system": by_system, "errors": errors,
-           "arcade": arcade_report, "dupes_skipped": dupes_skipped, "wiped": wiped,
+           "arcade": arcade_report, "arcade_bios_unavailable": arcade_bios_unavailable,
+           "dupes_skipped": dupes_skipped, "wiped": wiped,
            "wanted_only": bool(wanted_only), "keep_only": bool(keep_only),
            "sources": sorted(sources) if sources else None, "stopped": stopped}
     if dry_run:

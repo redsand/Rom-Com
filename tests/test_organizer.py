@@ -202,9 +202,10 @@ def test_export_narrates_its_phases(tmp_path, monkeypatch):
     with db:
         db.execute("UPDATE items SET external_id='mame/galaga', system='arcade' "
                    "WHERE id='nes-Game (USA).nes'")
+    monkeypatch.setattr("romcom.mameset.dat_path", lambda profile="mame": None)
     calls = []
     def fake_build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, progress=None,
-                   fresh=False, zipped=False):
+                   fresh=False, zipped=False, dat=None):
         if progress: progress(0, len(setnames), "galaga")
         calls.append(dry_run)
         return {"sets": {}, "copied": 0, "bytes": 0, "bytes_needed": 0,
@@ -228,9 +229,10 @@ def test_a_wipe_sizes_the_arcade_rebuild_in_full(tmp_path, monkeypatch):
     db = connect()
     with db:
         db.execute("UPDATE items SET external_id='mame/galaga' WHERE id='arcade-Game (USA).nes'")
+    monkeypatch.setattr("romcom.mameset.dat_path", lambda profile="mame": None)
     calls = []
     def fake_build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, progress=None,
-                   fresh=False, zipped=False):
+                   fresh=False, zipped=False, dat=None):
         calls.append((dry_run, fresh, zipped))
         return {"sets": {}, "copied": 0, "bytes": 0, "bytes_needed": 0,
                 "complete": 0, "incomplete": 0}
@@ -490,6 +492,32 @@ MAME_DAT = """<?xml version="1.0"?><datafile>
 <rom name="bios.bin" size="16" crc="aaaa1111"/>
 </machine>
 </datafile>"""
+
+
+def test_export_builds_the_arcade_bios_parents_of_its_selection(tmp_path, monkeypatch):
+    """The export's arcade phase builds what the recipe ticked — but mslug on a card
+    without neogeo.zip beside it refuses to boot. The romof parents of the selection
+    come along whether or not they were ticked, and a parent the dump cannot build is
+    reported, not guessed at."""
+    from romcom.organizer import organize
+    # one dat, as the real mame one: the games with their romof parents, parents defined
+    export_dat = tmp_path / "mame.dat"
+    export_dat.write_text(CORE_DAT.replace("</datafile>",
+                        '<machine name="neogeo">\n'
+                        '<rom name="bios.bin" size="16" crc="aaaa1111"/>\n'
+                        '</machine>\n</datafile>'), encoding="utf-8")
+    db = _romset_env(monkeypatch, tmp_path, {"mame": export_dat},
+                     {"m1.bin": "aaaa1111", "k.bin": "dddd4444"})
+    with db:      # the recipe ticked the games; neogeo was never ticked
+        for iid, setname, chip in (("m", "mslug", "m1.bin"), ("k", "kof97", "k.bin")):
+            db.execute("INSERT INTO items(id,title,system,external_id) "
+                       f"VALUES('{iid}','{setname}','arcade','arcade/{setname}')")
+            db.execute(f"UPDATE files SET matched_item_id='{iid}' WHERE path LIKE '%{chip}'")
+    r = organize(tmp_path / "sd")
+    card = tmp_path / "sd" / "arcade"
+    assert (card / "mslug.zip").exists() and (card / "kof97.zip").exists()
+    assert (card / "neogeo.zip").exists()               # the parent, not ticked, still there
+    assert r["arcade_bios_unavailable"] == {"ghost": 1}  # kof97's parent: not in the dump
 
 
 def test_romset_builds_every_assemblable_set_and_the_bios_parents(tmp_path, monkeypatch):

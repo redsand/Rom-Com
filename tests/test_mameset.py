@@ -269,6 +269,31 @@ def test_romof_gaps_names_the_bios_parents_a_dat_never_defines(monkeypatch, tmp_
     assert mameset.romof_gaps(defined) == {}
 
 
+def test_romof_refs_names_every_parent_of_the_games_asked_for(monkeypatch, tmp_path):
+    """`romof_gaps` names the parents a dat never defines — but the mame dat defines
+    them all, so an export asking "what must come along with my selection" needs every
+    romof reference, defined or not. That is this function: restricted to the games
+    asked for, unlike the dat-wide gaps."""
+    db, tmp = _setup(monkeypatch, tmp_path)
+    refs_dat = tmp / "refs.dat"
+    refs_dat.write_text(FBNEO_DAT.replace('name="mslug"', 'name="mslug"') +
+                        '<game name="kof97" romof="ghost">\n'
+                        '<rom name="k.bin" size="16" crc="dddd4444"/>\n'
+                        '</game>\n'
+                        '<game name="galaga">\n'
+                        '<rom name="gg.bin" size="16" crc="eeee5555"/>\n'
+                        '</game>\n', encoding="utf-8")
+    assert mameset.romof_refs(["mslug"], refs_dat) == {"neogeo": ["mslug"]}
+    assert mameset.romof_refs(["mslug", "kof97"], refs_dat) == {"neogeo": ["mslug"],
+                                                                "ghost": ["kof97"]}
+    assert mameset.romof_refs(["galaga"], refs_dat) == {}       # a game with no parent
+    defined = tmp / "defined.dat"
+    defined.write_text(refs_dat.read_text(encoding="utf-8") + '<game name="neogeo">\n'
+                       '<rom name="bios.bin" size="16" crc="bbbb2222"/>\n</game>\n',
+                       encoding="utf-8")
+    assert mameset.romof_refs(["mslug"], defined) == {"neogeo": ["mslug"]}  # defined, still named
+
+
 def test_playable_is_assembly_not_status(monkeypatch, tmp_path):
     """Status is the wrong question for arcade.
 

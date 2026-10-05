@@ -120,6 +120,24 @@ def romof_gaps(path):
     return {t: n for t, n in refs.items() if t not in names}
 
 
+def romof_refs(setnames, path):
+    """Every romof= parent the given games depend on, {parent: games referencing it}.
+
+    `romof_gaps` names the parents a dat never defines; this names the parents of the
+    games asked for, defined or not. An export's arcade phase builds what the recipe
+    selected, and the parents must come along whether or not the recipe ticked them —
+    mslug on a card without neogeo.zip beside it refuses to boot."""
+    want, refs = set(setnames), {}
+    for line in Path(path).open(encoding="utf-8", errors="replace"):
+        m = re.search(r'<(?:game|machine)\s+name="([^"]+)"', line)
+        if not m:
+            continue
+        r = re.search(r'\bromof="([^"]+)"', line)
+        if r and m.group(1) in want:
+            refs.setdefault(r.group(1), []).append(m.group(1))
+    return refs
+
+
 def _index(db, roms):
     """hash -> a path on disk, for every rom wanted. One query, not one per chip."""
     crcs = {r["crc"] for rs in roms.values() for r in rs if r["crc"]}
@@ -159,8 +177,9 @@ def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, prog
     if not roms:
         where = f"DAT/{PROFILES.get(profile, (profile,))[0]}/" if profile in PROFILES else str(dat)
         return {"sets": {}, "error": f"no romset dat found for {profile!r} — put its dat "
-                                     f"under {where}", "copied": 0,
-                "bytes_needed": 0}
+                                     f"under {where}", "copied": 0, "bytes": 0,
+                "bytes_needed": 0, "complete": 0, "incomplete": 0,
+                "stopped": False, "out_of_room": False}
     by_crc, by_sha = _index(db, roms)
     dest = Path(dest)
     report, copied, total_bytes, needed_bytes = {}, 0, 0, 0
