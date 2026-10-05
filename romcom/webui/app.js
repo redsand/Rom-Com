@@ -579,6 +579,7 @@ const JOBS = {
   import:   {wrap: "#imp-progress",  bar: "#imp-bar",  cur: "#imp-current",  btn: "#imp-start",  out: "#imp-results",  render: renderImportResult,   doneMsg: "Import finished"},
   scan:     {wrap: "#scan-progress", bar: "#scan-bar", cur: "#scan-current", btn: "#scan-start", out: "#scan-result",  render: renderScanResult,     liveRender: renderScanLive, doneMsg: "Scan finished"},
   organize: {wrap: "#org-progress",  bar: "#org-bar",  cur: "#org-current",  btn: "#org-start",  out: "#org-result",   render: renderOrganizeResult, doneMsg: "Export finished"},
+  romset:   {wrap: "#rom-progress",  bar: "#rom-bar",  cur: "#rom-current",  btn: "#rom-start",  out: "#rom-result",   render: renderRomsetResult,   doneMsg: "Romset finished"},
   acquire:  {wrap: "#acq-progress",  bar: "#acq-bar",  cur: "#acq-current",  btn: "#acq-start",  out: "#acq-result",   render: renderAcquireResult, liveRender: renderAcquireLive, doneMsg: "Download run finished"},
   // Lives on the Settings tab; its render refills the coverage line under the button.
   community:{wrap: "#community-progress", bar: "#community-bar", cur: "#community-current", btn: "#community-sync", out: "#community-result", render: renderCommunityResult, doneMsg: "Crowd scores synced"},
@@ -590,6 +591,7 @@ function loadImport() {
   $("#imp-path").value ||= localStorage.getItem("romcom-dat-path") || "";
   $("#scan-path").value ||= localStorage.getItem("romcom-rom-path") || "";
   $("#org-path").value ||= localStorage.getItem("romcom-sd-path") || "";
+  $("#rom-path").value ||= localStorage.getItem("romcom-romset-path") || "";
   loadOrgProfiles().then(loadOrgPlan);
   loadDupes();
   for (const kind of Object.keys(JOBS)) pollJob(kind, false);
@@ -646,6 +648,7 @@ async function pollJob(kind, loop) {
   try { s = await api(`/api/job/${kind}/status`); } catch { return; }
   jobRunning[kind] = !!s.running;
   if (kind === "organize") $("#org-stop").disabled = !s.running;
+  if (kind === "romset") $("#rom-stop").disabled = !s.running;
   if (s.running) {
     $(j.wrap).hidden = false;
     $(j.btn).disabled = true;
@@ -867,6 +870,20 @@ $("#org-stop").addEventListener("click", async () => {
   catch (e) { toast(e.message, true); $("#org-stop").disabled = false; }
 });
 
+$("#rom-start").addEventListener("click", () => {
+  const path = $("#rom-path").value.trim();
+  if (!path) { toast("Enter the destination folder on the card first", true); return; }
+  localStorage.setItem("romcom-romset-path", path);
+  startJob("romset", "/api/romset", {profile: $("#rom-profile").value, path,
+                                     leave_gb: +$("#rom-leave").value || 0});
+});
+
+$("#rom-stop").addEventListener("click", async () => {
+  $("#rom-stop").disabled = true;
+  try { await post("/api/job/romset/cancel"); toast("Stopping after the current set…"); }
+  catch (e) { toast(e.message, true); $("#rom-stop").disabled = false; }
+});
+
 $("#community-sync").addEventListener("click", () => startJob("community", "/api/community/sync", {}));
 
 function renderCommunityResult(r) {
@@ -1012,6 +1029,30 @@ function renderOrganizeResult(r) {
     + (rows ? `<div class="tablewrap" style="margin-top:12px"><table>
         <thead><tr><th>System folder</th><th class="r">Files</th></tr></thead><tbody>${rows}</tbody></table></div>` : "")
     + (errs ? `<details class="skiplist" open><summary>${r.errors.length} errors</summary><div class="checklist" style="max-height:none">${errs}</div></details>` : "");
+}
+
+function renderRomsetResult(r) {
+  if (r.error) {
+    $("#rom-result").innerHTML = `<div class="check bad" style="margin-top:12px">
+      <span class="mark">✕</span><span class="d">${esc(r.error)}</span></div>`;
+    return;
+  }
+  const missing = Object.entries(r.bios_unavailable || {});
+  $("#rom-result").innerHTML = (r.stopped ?
+      `<p class="sub" style="margin-top:12px"><b>Stopped at the card's free-space reserve</b> — what was built stays; re-running tops up the rest.</p>` : "")
+    + `<div class="tiles" style="margin-top:12px">
+      <div class="tile"><div class="v">${(r.assemblable || 0).toLocaleString()}</div><div class="l">Sets the dump can build</div></div>
+      <div class="tile"><div class="v">${(r.complete || 0).toLocaleString()}</div><div class="l">Complete on the card</div></div>
+      <div class="tile"><div class="v">${(r.incomplete || 0).toLocaleString()}</div><div class="l">Incomplete</div></div>
+      <div class="tile"><div class="v">${fmtBytes(r.bytes || 0)}</div><div class="l">Copied this run</div><div class="d">${(r.copied || 0).toLocaleString()} chips</div></div>
+      <div class="tile"><div class="v">${(r.bios_built || []).length}</div><div class="l">Bios parents built</div>
+        <div class="d">${esc((r.bios_built || []).join(", ") || "—")}</div></div></div>`
+    + (missing.length ? `<details class="skiplist" open style="margin-top:12px">
+        <summary>${missing.length} bios parent${missing.length > 1 ? "s" : ""} not buildable from the dump</summary>
+        <div class="checklist" style="max-height:none">${missing.map(([name, n]) =>
+          `<div class="check bad"><span class="mark">✕</span>
+           <span class="d">${esc(name)} — needed by ${n.toLocaleString()} game${n > 1 ? "s" : ""}</span></div>`).join("")}</div></details>`
+      : "");
 }
 
 function renderImportResult(r) {

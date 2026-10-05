@@ -6,7 +6,7 @@ from .config import load_yaml, settings, ENV_VARS, invalidate as invalidate_sett
 from .db import connect
 from .catalog import import_dats
 from .scanner import scan, adopt_unmatched
-from .organizer import organize
+from .organizer import organize, romset
 from .report import summary
 from .planner import bulk_plan, next_individuals, next_picks
 from .doctor import run as doctor_run
@@ -457,11 +457,11 @@ def create_app():
     # One background job per kind at a time; state polled by the UI.
     jobs = {k: {"running": False, "done": 0, "total": 0, "current": "", "stats": None,
                 "result": None, "error": None, "last_beat": None}
-            for k in ("import", "scan", "organize", "adopt", "acquire", "community")}
+            for k in ("import", "scan", "organize", "romset", "adopt", "acquire", "community")}
     job_lock = threading.Lock()
     # Jobs the UI can stop. Acquire is stopped through the watcher toggle (acquirer.STOP),
     # which the watchdog also reads, so it is deliberately not here.
-    stops = {"organize": threading.Event()}
+    stops = {"organize": threading.Event(), "romset": threading.Event()}
 
     def _job_fn(kind, params):
         if kind == "import":
@@ -483,6 +483,10 @@ def create_app():
                                           fill=bool(params.get("fill")),
                                           distinct_games=bool(params.get("distinct_games")),
                                           wipe=bool(params.get("wipe")))
+        if kind == "romset":
+            return lambda prog: romset(params["profile"], params["path"],
+                                       leave_bytes=int(float(params.get("leave_gb") or 0) * 1024 ** 3),
+                                       progress=prog, stop=stops["romset"])
         if kind == "acquire":
             return lambda prog: acquirer.auto_acquire(progress=prog, watch=bool(params.get("watch")),
                                                       stop=acquirer.STOP)
@@ -622,7 +626,7 @@ def create_app():
             # Never resume an export. It writes to a device the owner may have pulled or
             # swapped, and restarting the service was the only way to stop one — so resuming
             # turned "stop this" into "start it again".
-            if kind == "organize": continue
+            if kind in ("organize", "romset"): continue
             if params.get("path") and not Path(params["path"]).exists(): continue
             _launch(kind, params)
 
@@ -730,6 +734,23 @@ def create_app():
                                       "distinct_games": bool(body.get("distinct_games")),
                                       "wipe": bool(body.get("wipe")),
                                       "gates": _export_gates(body.get("gates"))})
+
+    @app.post("/api/romset")
+    def api_romset():
+        """Build one arcade core's whole romset onto a card folder — the CLI's
+        `romcom romset` as a button, so topping up a card needs no terminal."""
+        body = request.get_json(force=True)
+        path = _checked_path(body, must_exist=False)
+        if not path:
+            return jsonify({"error": "destination path is required"}), 400
+        if body.get("profile") not in ("mame", "fbneo", "mame2003"):
+            return jsonify({"error": "profile must be mame, fbneo or mame2003"}), 400
+        try:
+            leave_gb = max(0.0, float(body.get("leave_gb") or 0))
+        except (TypeError, ValueError):
+            leave_gb = 0.0
+        return start_job("romset", {"profile": body["profile"], "path": path,
+                                    "leave_gb": leave_gb})
 
     @app.post("/api/organize/plan")
     def api_organize_plan():

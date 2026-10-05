@@ -509,7 +509,7 @@ def _discard_partial(target):
         pass
 
 
-def romset(profile, dest, leave_bytes=0, progress=None, db=None):
+def romset(profile, dest, leave_bytes=0, progress=None, db=None, stop=None):
     """Build one emulator core's romset onto a folder: every set its dat can assemble from
     the dump, as one zip per set, plus the bios parents (neogeo.zip, pgm.zip…) its games
     reference but its dat never defines — the cores look for those as their own zips, and
@@ -565,7 +565,7 @@ def romset(profile, dest, leave_bytes=0, progress=None, db=None):
                 progress(0, 0, f"{profile}: {len(hold)} bios sets from {alt.name} "
                                f"({', '.join(hold[:5])}…)")
             r = mameset.build(hold, dest, db=db, zipped=True, dat=alt,
-                              room_for=room_for,
+                              room_for=room_for, stop=stop,
                               progress=None if progress is None else
                               lambda i, total, name: progress(i, total, f"bios: {name}"))
             bios_built += [s for s, v in (r.get("sets") or {}).items() if v.get("complete")]
@@ -581,6 +581,7 @@ def romset(profile, dest, leave_bytes=0, progress=None, db=None):
     if progress:
         progress(0, len(sets), f"{profile}: building {len(sets)} sets…")
     r = mameset.build(sets, dest, db=db, zipped=True, dat=dat, room_for=room_for,
+                      stop=stop,
                       progress=None if progress is None else
                       lambda i, total, name: progress(i, total, name))
     return {"profile": profile, "dat": dat.name, "assemblable": len(sets),

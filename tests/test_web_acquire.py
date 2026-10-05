@@ -325,6 +325,48 @@ def test_watchdog_restarts_a_wedged_watcher(monkeypatch, tmp_path):
         acquirer.STOP.clear()
 
 
+def test_the_romset_button_builds_the_core_asked_for(monkeypatch, tmp_path):
+    """`romcom romset mame J:\\arcade` was the only way to top up a card's arcade folder.
+    The web UI now has the button, and it must pass through the core asked for, the
+    destination folder, and the room to leave free for the cores that come after."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
+    connect()
+    seen = {}
+
+    def fake(profile, dest, leave_bytes=0, **kw):
+        seen.update(profile=profile, dest=dest, leave_bytes=leave_bytes)
+        return {"profile": profile, "assemblable": 1, "bios_built": []}
+    monkeypatch.setattr("romcom.web.romset", fake)
+    c = create_app().test_client()
+    assert c.post("/api/romset", json={}).status_code == 400                  # no destination
+    assert c.post("/api/romset", json={"path": "J:\\arcade",
+                                       "profile": "nope"}).status_code == 400
+    assert c.post("/api/romset", json={"path": str(tmp_path / "arcade"),
+                                       "profile": "fbneo", "leave_gb": "20"}).status_code == 200
+    for _ in range(40):
+        if seen: break
+        time.sleep(0.05)
+    assert seen == {"profile": "fbneo", "dest": str(tmp_path / "arcade"),
+                    "leave_bytes": 20 * 1024 ** 3}
+
+
+def test_an_interrupted_romset_build_is_never_resumed(monkeypatch, tmp_path):
+    """Like an export, a romset build writes to a card the owner may have pulled —
+    it must not come back by itself when the service restarts."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
+    db = connect()
+    with db:
+        db.execute("INSERT INTO web_jobs(kind,params,status) VALUES('romset',?,'running')",
+                   ('{"profile": "mame", "path": "J:\\\\arcade"}',))
+    launched = []
+    monkeypatch.setattr("romcom.web.romset", lambda *a, **k: launched.append(1) or {})
+    app = create_app()
+    app.recover_interrupted()
+    time.sleep(0.2)
+    assert not launched
+    assert db.execute("SELECT status FROM web_jobs").fetchone()["status"] == "interrupted"
+
+
 def test_an_interrupted_export_is_never_resumed(monkeypatch, tmp_path):
     """Restarting the service was the only way to stop an export, and recovery started it
     again. An export writes to a removable device; it must not come back on its own."""

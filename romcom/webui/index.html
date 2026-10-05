@@ -259,6 +259,32 @@
       </div>
       <div id="org-result"></div>
     </div>
+
+    <div class="card">
+      <h2>Arcade romsets <span class="hint">one core's whole romset, one zip per set, into its own folder</span></h2>
+      <div class="filters">
+        <select id="rom-profile" title="Which core's romset to build — each speaks its own romset version">
+          <option value="mame">MAME (current)</option>
+          <option value="fbneo">FBNeo</option>
+          <option value="mame2003">MAME 2003-Plus</option>
+        </select>
+        <input id="rom-path" type="search" placeholder="J:\arcade (folder on the card)" spellcheck="false" style="width:340px">
+        <button class="ghost browse" data-target="#rom-path">Browse&hellip;</button>
+        <label class="sub" title="Room held back for the cores that come after, so several cores share one card. Run biggest-first with a floor for the rest">
+          leave <input type="number" id="rom-leave" min="0" step="1" value="0" style="width:56px"> GB free</label>
+        <button id="rom-start" class="primary">Build romset</button>
+      </div>
+      <p class="sub">Builds every set the core's dat can assemble from the dump, bios parents first
+        (neogeo.zip before the games that need it), best-rated games before obscure ones. Complete
+        zips already on the card are skipped, so re-running tops up; a card that fills misses the
+        obscure tail, not the famous middle. Each core gets its own folder.</p>
+      <div id="rom-progress" hidden>
+        <div class="meter big"><i id="rom-bar" style="width:0%"></i></div>
+        <div class="sub" id="rom-current"></div>
+        <button id="rom-stop" class="ghost">Stop build</button>
+      </div>
+      <div id="rom-result"></div>
+    </div>
   </section>
 
   <!-- Settings -->
