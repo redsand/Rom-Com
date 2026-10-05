@@ -158,6 +158,26 @@ def test_a_complete_zip_is_skipped_an_incomplete_one_is_rebuilt_whole(monkeypatc
         assert "prom-2.5c" in f.namelist()                    # complete again
 
 
+def test_a_duplicate_chip_name_lands_in_the_zip_once(monkeypatch, tmp_path):
+    """A machine can list the same chip name twice — an alternate dump with a different
+    hash. Both used to be written, and a core reading the first entry could load the
+    wrong chip. One entry per name, the first alternate the dump has."""
+    import zipfile
+    db, tmp = _setup(monkeypatch, tmp_path)
+    dat = tmp / "dup.dat"
+    dat.write_text(DAT.replace(
+        '<rom name="prom-2.5c" size="256" crc="bbbb2222" sha1="2222222222222222222222222222222222222222"/>',
+        '<rom name="prom-2.5c" size="256" crc="eeee5555" sha1="5555555555555555555555555555555555555555"/>\n'
+        '<rom name="prom-2.5c" size="256" crc="bbbb2222" sha1="2222222222222222222222222222222222222222"/>'),
+        encoding="utf-8")
+    monkeypatch.setattr(mameset, "dat_path", lambda profile="mame": dat)
+    r = mameset.build(["galaga"], tmp / "out", db=db, zipped=True)
+    assert r["sets"]["galaga"]["complete"] is True   # the second alternate is on disk
+    with zipfile.ZipFile(tmp / "out" / "galaga.zip") as z:
+        assert sorted(z.namelist()) == ["gg1_1b.3p", "prom-2.5c"]  # once, not twice
+        assert z.read("prom-2.5c") == b"x" * 16
+
+
 def test_no_dat_degrades_instead_of_failing(monkeypatch, tmp_path):
     db, tmp = _setup(monkeypatch, tmp_path)
     monkeypatch.setattr(mameset, "dat_path", lambda profile="mame": None)

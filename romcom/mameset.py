@@ -162,13 +162,20 @@ def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, prog
         if stop is not None and stop.is_set():
             stopped = True
             break
-        found, missing = [], []
+        # A machine can list one chip name several times — an alternate or bad dump with a
+        # different hash but the same filename. The zip must hold one entry per name or the
+        # core may load the wrong chip, and the first alternate the dump actually has wins.
+        by_name = {}
         for chip in chips:
-            src = by_sha.get(chip["sha1"]) or by_crc.get(chip["crc"])
-            if not src or not Path(src).exists():
-                missing.append(chip["name"])
-                continue
-            found.append((src, chip["name"]))
+            by_name.setdefault(chip["name"], []).append(chip)
+        found, missing = [], []
+        for chip_name, entries in by_name.items():
+            src = next((s for s in (by_sha.get(e["sha1"]) or by_crc.get(e["crc"]) for e in entries)
+                       if s and Path(s).exists()), None)
+            if src:
+                found.append((src, chip_name))
+            else:
+                missing.append(chip_name)
         folder = dest / name
         sized = [(src, canonical, Path(src).stat().st_size) for src, canonical in found]
         for _, _, size in sized:
