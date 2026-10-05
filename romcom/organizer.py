@@ -57,6 +57,18 @@ _SCORE = "MAX(COALESCE(i.community_score,0), COALESCE(i.rating,0)*10)"
 _ORDER = f" ORDER BY {_SCORE} DESC, i.system, i.title, i.id, f.path"
 
 
+def _fill_order(db, names):
+    """Rank a romset fill best-game-first, on the same scale `_SCORE` ranks cards. Arcade
+    sets sit in the items table as `<source>/<setname>` external ids. A fill stops at the
+    free-space reserve, and an alphabetical fill stopped halfway leaves a card without
+    every famous M-Z game on it; ranked, it is the obscure zero-score tail that drops."""
+    scores = {r["s"]: r["sc"] for r in db.execute(
+        "SELECT substr(external_id, instr(external_id,'/')+1) s, " + _SCORE + " sc"
+        " FROM items i WHERE i.system='arcade'"
+        " GROUP BY substr(external_id, instr(external_id,'/')+1)")}
+    return sorted(names, key=lambda n: (-scores.get(n, 0), n))
+
+
 def _gate_args(wanted_only, keep_only, rating_min):
     rating_min = int(rating_min or 0)
     return (1 if wanted_only else 0, 1 if keep_only else 0, rating_min, rating_min)
@@ -494,7 +506,12 @@ def romset(profile, dest, leave_bytes=0, progress=None, db=None):
     comes after, so several cores can share one card by running biggest-first with a
     floor for the rest. The build never refuses — filling the folder is the point — and
     stops cleanly at the free-space reserve; complete zips are skipped, so a re-run is a
-    top-up. Bios parents missing from the dump are reported, not guessed at."""
+    top-up. Sets fill best-game-first (`_fill_order`), so a card that runs out of room
+    misses the obscure tail, not the famous middle. Bios parents are built before the
+    games that need them, first from the current-MAME dat and then from any extra dat
+    in the profile's own folder — a core's games may need bios sets of another romset
+    era (MAME 2003-Plus's cvs, taitofx1…) that neither dat of its own defines. What
+    still cannot be built is reported, not guessed at."""
     from . import mameset
     db = db or connect()
     dest = Path(dest)
@@ -506,7 +523,7 @@ def romset(profile, dest, leave_bytes=0, progress=None, db=None):
         return {"error": f"no romset dat for {profile!r} — put its dat under {where}", **empty}
     if progress:
         progress(0, 0, f"{profile}: finding what the dump can assemble…")
-    sets = sorted(mameset.assemblable(db, dat))
+    sets = _fill_order(db, mameset.assemblable(db, dat))
     if not sets:
         return {"error": f"{profile}: nothing assemblable from what is on disk", **empty}
 
@@ -520,22 +537,31 @@ def romset(profile, dest, leave_bytes=0, progress=None, db=None):
     gaps = mameset.romof_gaps(dat)
     if gaps:
         mame_dat = mameset.dat_path("mame")
-        hold = sorted(set(gaps) & mameset.assemblable(db, mame_dat)) if mame_dat else []
-        if hold:
+        alts = [p for p in [mame_dat, *mameset.dat_paths(profile)[1:]] if p and p != dat]
+        pending = dict(gaps)
+        for alt in alts:
+            if not pending:
+                break
+            hold = sorted(set(pending) & mameset.assemblable(db, alt))
+            if not hold:
+                continue
             if progress:
-                progress(0, 0, f"{profile}: {len(hold)} bios sets ({', '.join(hold[:5])}…)")
-            r = mameset.build(hold, dest, db=db, zipped=True, dat=mame_dat,
+                progress(0, 0, f"{profile}: {len(hold)} bios sets from {alt.name} "
+                               f"({', '.join(hold[:5])}…)")
+            r = mameset.build(hold, dest, db=db, zipped=True, dat=alt,
                               room_for=room_for,
                               progress=None if progress is None else
                               lambda i, total, name: progress(i, total, f"bios: {name}"))
-            bios_built = [s for s, v in (r.get("sets") or {}).items() if v.get("complete")]
+            bios_built += [s for s, v in (r.get("sets") or {}).items() if v.get("complete")]
             if r.get("out_of_room"):
                 return {"profile": profile, "dat": dat.name, "assemblable": len(sets),
                         "bios_built": bios_built, "bios_unavailable": {},
                         "error": f"{dest} reached its free-space reserve during the bios "
                                  f"build — nothing else written", **{k: v for k, v in r.items()
                                                                    if k != "sets"}}
-        bios_unavailable = {k: v for k, v in gaps.items() if k not in set(hold)}
+            for s in hold:
+                pending.pop(s, None)
+        bios_unavailable = pending
     if progress:
         progress(0, len(sets), f"{profile}: building {len(sets)} sets…")
     r = mameset.build(sets, dest, db=db, zipped=True, dat=dat, room_for=room_for,

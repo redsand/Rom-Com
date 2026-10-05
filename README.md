@@ -483,8 +483,10 @@ because galaga will not boot without namco54.
 Handhelds and frontends do not scan loose chip folders: they read one zip per game, and each
 emulator core speaks its own romset version. `romcom romset` builds one core's romset onto a
 card — every set its dat can assemble from the dump, one `<set>.zip` each, plus the bios
-parents (neogeo.zip, pgm.zip…) its games reference but its dat never defines, taken from the
-current MAME dat:
+parents (neogeo.zip, pgm.zip…) its games reference but its dat never defines, taken first
+from the current MAME dat and then from any extra dat in the profile's own folder. Sets fill
+best-game-first (community score / your rating), so a card that runs out of room misses the
+obscure tail, not the famous middle:
 
 ```bash
 romcom romset mame      J:\arcade        --leave-gb 35   # current MAME, room held back for:
@@ -495,4 +497,10 @@ romcom romset mame2003 J:\arcade-mame2003               # MAME 2003-Plus (last: 
 Dats live under `DAT/` (gitignored): `DAT/MAME` (the file whose name says "arcade"),
 `DAT/FBNeo`, `DAT/MAME2003-Plus`. `--leave-gb` is how several cores share one card: run
 biggest-first holding room back for the rest; the build fills to the free-space reserve and
-stops cleanly, and a re-run tops up (complete zips are skipped).
+stops cleanly, and a re-run tops up (complete zips are skipped). Extra dats dropped into a
+profile's folder are bios fallbacks — MAME 2003-Plus's games need cvs.zip and taitofx1.zip,
+which neither its own dat nor the current-MAME dat defines, so a 0.78-era dat in
+`DAT/MAME2003-Plus/` fills those gaps; the profile's own dat still wins (the fallback cannot
+hijack the build). Chips the dump is missing (a redumped bios, clone-only PROMs) can simply
+be dropped in a folder and `romcom scan`ned — romset matches by hash, so the folder is
+otherwise irrelevant.

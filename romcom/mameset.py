@@ -29,27 +29,36 @@ from .db import connect
 
 # Each emulator core speaks its own romset version: current MAME, FBNeo, MAME 2003-Plus.
 # A zip that satisfies one core can fail on another — chip versions and set names drift —
-# so each profile has its own dat folder under DAT/. `mame` filters the folder for the
-# file whose name says "arcade" (the full MAME dat ships beside it); the others take the
-# first dat in their folder, because each project publishes exactly one.
+# so each profile has its own dat folder under DAT/. The `hint` picks the profile's own
+# romset dat out of the folder: extra dats dropped in beside it (a 0.78 dat for the
+# bios sets MAME 2003-Plus's own dat never defines) are fallbacks, never the primary —
+# without the hint, alphabetically-first "MAME 0.78.dat" would hijack the build.
 PROFILES = {"mame": ("MAME", "arcade"),
             "fbneo": ("FBNeo", None),
-            "mame2003": ("MAME2003-Plus", None)}
+            "mame2003": ("MAME2003-Plus", "2003")}
+
+
+def dat_paths(profile="mame"):
+    """Every dat in a profile's folder, the profile's own romset dat first. The rest are
+    fallbacks for what that dat references but never defines (see `organizer.romset`)."""
+    spec = PROFILES.get(profile)
+    if not spec:
+        return []
+    d = ROOT / "DAT" / spec[0]
+    if not d.exists():
+        return []
+    files = sorted(list(d.glob("*.dat")) + list(d.glob("*.xml")))
+    if not spec[1]:
+        return files
+    preferred = [p for p in files if spec[1] in p.name.lower()]
+    return preferred + [p for p in files if p not in preferred]
 
 
 def dat_path(profile="mame"):
     """The romset dat for an emulator core profile, or None when it is not installed.
     `mame` is the current-MAME arcade dat (the file whose name says 'arcade'); the others
-    take the first dat in their own folder, because each project ships exactly one."""
-    spec = PROFILES.get(profile)
-    if not spec:
-        return None
-    d = ROOT / "DAT" / spec[0]
-    if not d.exists():
-        return None
-    if spec[1]:
-        return next((p for p in sorted(d.glob("*.dat")) if spec[1] in p.name.lower()), None)
-    return next(iter(sorted(list(d.glob("*.dat")) + list(d.glob("*.xml")))), None)
+    are picked by their profile's hint, because a folder may hold fallback dats too."""
+    return next(iter(dat_paths(profile)), None)
 
 
 def set_roms(setnames, path=None):
@@ -156,9 +165,15 @@ def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, prog
     dest = Path(dest)
     report, copied, total_bytes, needed_bytes = {}, 0, 0, 0
     stopped = out_of_room = False
+    # The caller's order wins: `romset` ranks the fill so a card that runs out of room
+    # misses the obscure tail, not the famous middle. Set names the dat added on its
+    # own (device refs) follow, alphabetically.
+    order = [n for n in setnames if n in roms]
+    order += sorted(n for n in roms if n not in set(setnames))
     import shutil
-    for i, (name, chips) in enumerate(sorted(roms.items())):
-        if progress: progress(i, len(roms), name)
+    for i, name in enumerate(order):
+        if progress: progress(i, len(order), name)
+        chips = roms[name]
         if stop is not None and stop.is_set():
             stopped = True
             break

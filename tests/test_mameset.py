@@ -206,6 +206,34 @@ def test_dat_path_finds_each_core_profile(monkeypatch, tmp_path):
     assert mameset.dat_path("fbneo") is None                        # dat not installed
 
 
+def test_a_fallback_dat_cannot_hijack_the_profile_romset_dat(monkeypatch, tmp_path):
+    """Bios sets a core's games need may only be defined by another romset era's dat
+    (MAME 2003-Plus's cvs, taitofx1…), so those dats are dropped into the profile's
+    folder as fallbacks. But "MAME 0.78.dat" sorts before "mame2003-plus.xml", so the
+    2003 hint has to keep the profile's own dat first or the fallback would take over
+    the build — every set built to the wrong era's roms."""
+    monkeypatch.setattr(mameset, "ROOT", tmp_path)
+    d = tmp_path / "DAT/MAME2003-Plus"
+    d.mkdir(parents=True)
+    (d / "MAME 0.78.dat").write_text("x", encoding="utf-8")
+    (d / "mame2003-plus.xml").write_text("x", encoding="utf-8")
+    (d / "MAME 0.78 bios supplement.dat").write_text("x", encoding="utf-8")
+    assert [p.name for p in mameset.dat_paths("mame2003")] == \
+        ["mame2003-plus.xml", "MAME 0.78 bios supplement.dat", "MAME 0.78.dat"]
+    assert mameset.dat_path("mame2003").name == "mame2003-plus.xml"
+
+
+def test_build_preserves_the_callers_order(monkeypatch, tmp_path):
+    """`romset` ranks the fill so a card that runs out of room misses the obscure tail,
+    not the famous middle — so the build must not re-sort what it was handed. Device
+    sets the dat added still follow, alphabetically."""
+    db, tmp = _setup(monkeypatch, tmp_path)
+    seen = []
+    mameset.build(["other", "galaga"], tmp / "out", db=db,
+                  progress=lambda i, total, name: seen.append((i, name)))
+    assert seen == [(0, "other"), (1, "galaga"), (2, "namco54")]
+
+
 FBNEO_DAT = """<?xml version="1.0"?><datafile>
 <game name="mslug" romof="neogeo">
 <rom name="m1.bin" size="16" crc="aaaa1111"/>

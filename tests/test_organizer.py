@@ -471,6 +471,8 @@ def _romset_env(monkeypatch, tmp_path, dats, disk):
             db.execute("INSERT INTO files(path,bytes,crc32,sha1) VALUES(?,?,?,?)",
                        (str(flat / name), 16, crc, chr(ord('a') + len(name)) * 40))
     monkeypatch.setattr(mameset, "dat_path", lambda profile="mame": dats.get(profile))
+    monkeypatch.setattr(mameset, "dat_paths",
+                        lambda profile="mame": [p for p in [dats.get(profile)] if p])
     return db
 
 
@@ -507,6 +509,50 @@ def test_romset_builds_every_assemblable_set_and_the_bios_parents(tmp_path, monk
     assert (dest / "mslug.zip").exists() and (dest / "kof97.zip").exists()
     assert r["bios_built"] == ["neogeo"]
     assert r["bios_unavailable"] == {"ghost": 1}             # kof97's parent: not in the dump
+
+
+def test_romset_builds_bios_parents_from_a_fallback_dat(tmp_path, monkeypatch):
+    """The mame dat defines what it defines — a core's games may need bios sets of another
+    romset era (MAME 2003-Plus's cvs, taitofx1…) that neither dat of its own defines. Extra
+    dats in the profile's folder are the fallback: a parent the mame dat cannot build gets
+    built from the era-matched one instead of being reported unavailable."""
+    from romcom import mameset
+    from romcom.organizer import romset
+    core = tmp_path / "core.dat"; core.write_text(CORE_DAT, encoding="utf-8")
+    mame = tmp_path / "mame.dat"; mame.write_text(MAME_DAT, encoding="utf-8")
+    era = tmp_path / "MAME 0.78.dat"
+    era.write_text('<?xml version="1.0"?><datafile>\n'
+                   '<machine name="ghost">\n'
+                   '<rom name="g.bin" size="16" crc="dddd4444"/>\n'
+                   '</machine>\n</datafile>', encoding="utf-8")
+    _romset_env(monkeypatch, tmp_path, {"fbneo": core, "mame": mame},
+                {"m1.bin": "aaaa1111", "k.bin": "dddd4444"})
+    monkeypatch.setattr(mameset, "dat_paths",
+                        lambda profile="mame": [core, era])   # the profile's own dat, then its fallback
+    r = romset("fbneo", tmp_path / "card")
+    assert sorted(r["bios_built"]) == ["ghost", "neogeo"]      # mame dat, then 0.78 dat
+    assert (tmp_path / "card" / "neogeo.zip").exists()
+    assert (tmp_path / "card" / "ghost.zip").exists()
+    assert r["bios_unavailable"] == {}                          # every gap was covered
+
+
+def test_romset_fills_best_scored_games_first(tmp_path, monkeypatch):
+    """A fill stops at the free-space reserve, and an alphabetical fill stopped halfway
+    leaves a card without every famous M-Z game on it — the fill must run best-game-first
+    so it is the obscure zero-score tail that drops."""
+    from romcom.organizer import romset
+    core = tmp_path / "core.dat"
+    core.write_text(CORE_DAT.replace(' romof="neogeo"', '').replace(' romof="ghost"', ''),
+                   encoding="utf-8")
+    db = _romset_env(monkeypatch, tmp_path, {"fbneo": core},
+                    {"m1.bin": "aaaa1111", "k.bin": "dddd4444"})
+    with db:      # kof97 is the alphabetically-first set; mslug is the one anyone wants
+        db.execute("INSERT INTO items(id,title,system,external_id,community_score) "
+                   "VALUES('m','Metal Slug','arcade','arcade/mslug',90)")
+    seen = []
+    romset("fbneo", tmp_path / "card",
+           progress=lambda i, total, name: seen.append(name))
+    assert seen.index("mslug") < seen.index("kof97")
 
 
 def test_romset_stops_at_the_leave_bytes_floor(tmp_path, monkeypatch):
