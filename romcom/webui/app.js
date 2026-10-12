@@ -703,7 +703,8 @@ function orgSetGates(g) {
 const orgCurrent = () => orgProfiles.find(p => p.id === $("#org-profile").value) || null;
 const orgForm = () => ({name: orgCurrent()?.name, path: $("#org-path").value.trim(), systems: orgPicked(),
                         fill: $("#org-fill").checked, capacity_gb: $("#org-capacity").value || null,
-                        distinct_games: $("#org-distinct").checked, wipe: $("#org-wipe").checked,
+                        distinct_games: $("#org-distinct").checked,
+                        arcade_core: $("#org-core").value, wipe: $("#org-wipe").checked,
                         gates: orgGates()});
 let orgPendingSystems = null;     // a profile's ticks, applied once the plan has drawn the list
 let orgGatesKnown = false;        // gates come from Settings until the owner or a profile sets them
@@ -723,6 +724,7 @@ function orgApplyProfile(p) {
   $("#org-fill").checked = !!p.fill;
   $("#org-distinct").checked = !!p.distinct_games;
   $("#org-wipe").checked = !!p.wipe;
+  $("#org-core").value = p.arcade_core || "mame";
   orgSetGates(p.gates || {}); orgGatesKnown = true;
   orgPendingSystems = p.systems || [];
   $("#org-delete").disabled = false;
@@ -732,7 +734,8 @@ function orgApplyProfile(p) {
 async function loadOrgPlan() {
   const picked = orgPendingSystems ?? orgPicked();
   const body = {path: $("#org-path").value.trim(), capacity_gb: $("#org-capacity").value || null,
-                systems: picked, distinct_games: $("#org-distinct").checked};
+                systems: picked, distinct_games: $("#org-distinct").checked,
+                arcade_core: $("#org-core").value};
   if (orgGatesKnown) body.gates = orgGates();
   let d;
   try { d = await post("/api/organize/plan", body); }
@@ -760,6 +763,7 @@ function orgTick(systems, add) {
 function orgRender() {
   const d = orgPlan; if (!d) return;
   const picked = $$("#org-systems input:checked");
+  $("#org-core-wrap").hidden = !picked.some(x => x.value === "arcade");
   const bytes = picked.reduce((a, x) => a + Number(x.dataset.bytes || 0), 0);
   const usable = d.usable_bytes;
   const over = usable != null && bytes > usable;
@@ -818,6 +822,7 @@ $("#org-path").addEventListener("change", loadOrgPlan);
 $("#org-capacity").addEventListener("change", loadOrgPlan);
 $("#org-fill").addEventListener("change", orgRender);
 $("#org-distinct").addEventListener("change", loadOrgPlan);
+$("#org-core").addEventListener("change", loadOrgPlan);   // "all three" is three times the bytes
 for (const id of ["#org-g-wanted", "#org-g-keep", "#org-g-rating"])
   $(id).addEventListener("change", () => { orgGatesKnown = true; loadOrgPlan(); });
 
@@ -861,6 +866,7 @@ $("#org-start").addEventListener("click", () => {
   localStorage.setItem("romcom-sd-path", path);
   startJob("organize", "/api/organize", {path, systems, fill: $("#org-fill").checked,
                                           distinct_games: $("#org-distinct").checked,
+                                          arcade_core: $("#org-core").value,
                                           wipe: $("#org-wipe").checked, gates: orgGates()});
 });
 

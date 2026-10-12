@@ -196,7 +196,7 @@ def _safe(name):
 
 def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
              dry_run=False, keep_only=False, rating_min=None, stop=None, fill=False,
-             distinct_games=False, wipe=False):
+             distinct_games=False, wipe=False, arcade_core="mame"):
     """Copy files matched to a catalog item into <dest>/<system>/<score>/<filename> — the
     score folder (90, 80, ... 0) is the ranking the copy order sorts by, made visible to
     RetroArch, which cannot show a rating.
@@ -243,6 +243,11 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     counted by `dupes_skipped` in the result, and `export_systems` applies the same rules,
     so the picker's numbers stay honest.
 
+    `arcade_core` is which core's romset the card gets: 'mame' (current MAME, the default),
+    'fbneo', 'mame2003' — or 'all', which builds each core into its own folder under
+    <dest>/arcade/. The same catalog feeds each core's own dat: the cores speak different
+    romset versions, so a zip rebuilt for one can fail on another.
+
     `wipe` clears the card first: every <dest>/<system> folder for a ticked platform (and
     arcade, when ticked) is deleted before anything is copied — a clean card instead of a
     top-up. Nothing outside those folders is ever touched, and without an explicit
@@ -266,14 +271,29 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     # A systems filter that leaves arcade out must leave arcade out: the set build used to
     # run regardless, so "export snes" also wrote the whole arcade library.
     arcade_wanted = wanted_systems is None or "arcade" in wanted_systems
+    from . import mameset
+    # Which core's romset the card gets. A browser is not trusted with the spelling:
+    # anything unexpected means the default.
+    if arcade_core == "all":
+        arcade_cores = ["mame", "fbneo", "mame2003"]   # one folder per core, under arcade/
+    elif arcade_core in mameset.PROFILES:
+        arcade_cores = [arcade_core]
+    else:
+        arcade_cores = ["mame"]
     # The selection's order is the fill order (best game first), so an export that runs
-    # out of room misses the obscure tail, not the famous middle.
+    # out of room misses the obscure tail, not the famous middle. 'One copy per game'
+    # reaches arcade too: the sets come from the same deduped rows the plan's arcade
+    # figure counts, or every clone variant of one game would build although the plan
+    # promised only one.
+    arcade_dupes_skipped = 0
+    arcade_rows = ([r for r in rows if (r["system"] or "").lower() == "arcade"]
+                   if arcade_wanted else [])
+    if distinct_games and arcade_rows:
+        arcade_rows, arcade_dupes_skipped = _canonical(arcade_rows, True)
     arcade_sets = list(dict.fromkeys(
-        (r["external_id"] or "").split("/", 1)[-1]
-        for r in rows if (r["system"] or "").lower() == "arcade")) if arcade_wanted else []
+        (r["external_id"] or "").split("/", 1)[-1] for r in arcade_rows))
     arcade_bios_unavailable = {}
-    if arcade_sets:
-        from . import mameset
+    if arcade_sets and "mame" in arcade_cores:
         # The romof parents (neogeo, pgm…) come along whether or not the recipe ticked
         # them: mslug on a card without neogeo.zip beside it refuses to boot. Parents
         # first, so a build that runs out of room stops before the games needing them.
@@ -283,7 +303,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             hold = sorted(set(parents) & mameset.assemblable(db, mame_dat))
             arcade_bios_unavailable = {k: len(v) for k, v in parents.items() if k not in set(hold)}
             arcade_sets = hold + [s for s in arcade_sets if s not in set(hold)]
-    arcade_report = None
+    arcade_reports = {}
     rows = [r for r in rows if (r["system"] or "").lower() != "arcade"]
     if sources:
         keep = {s.lower() for s in sources}
@@ -294,7 +314,8 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         rows = [r for r in rows if r["path"] in ids]
     if wanted_systems is not None:
         rows = [r for r in rows if (r["system"] or "").lower() in wanted_systems]
-    rows, dupes_skipped = _canonical(rows, distinct_games)
+    rows, nonarcade_dupes = _canonical(rows, distinct_games)
+    dupes_skipped = nonarcade_dupes + arcade_dupes_skipped
     dest = Path(dest)
     stopped = False
     errors = []
@@ -338,6 +359,39 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                  "bytes": sum(b for _, _, b in wipe_plan)}
 
     reserve = _reserve_bytes(dest)
+
+    def room_for(nbytes):
+        free = _free_bytes(dest)
+        return free is not None and free - nbytes >= reserve
+
+    # A wipe rebuilds the arcade folder whole, so its sizing pass measures a full build.
+    fresh_wipe = bool(wipe and arcade_wanted)
+
+    def build_arcade(core, dry_run):
+        """One core's zip build. A single-core card writes the zips straight into
+        <dest>/arcade — the layout a frontend scans — but three cores cannot share it
+        (the same set name would be three different zips), so each gets its own folder.
+        The measuring pass wants the full rebuild under a wipe; the real build does not,
+        because the wipe (if any) has already cleared the folder by then."""
+        dest_dir = dest / "arcade" if len(arcade_cores) == 1 else dest / "arcade" / core
+        base = "arcade" if len(arcade_cores) == 1 else f"arcade/{core}"
+        label = f"measuring {base}" if dry_run else base
+        dat = mameset.dat_path(core)
+        if not dat:
+            # build would fall back to the default dat and quietly write another core's
+            # romset under this one's name — refuse instead.
+            return {"sets": {}, "error": f"no romset dat for {core!r} — put its dat under "
+                                         f"DAT/{mameset.PROFILES.get(core, (core,))[0]}/",
+                    "copied": 0, "bytes": 0, "bytes_needed": 0, "complete": 0,
+                    "incomplete": 0, "stopped": False, "out_of_room": False}
+        return mameset.build(arcade_sets, dest_dir, db=db, dry_run=dry_run, zipped=True,
+                             profile=core, dat=dat,
+                             fresh=fresh_wipe if dry_run else False,
+                             room_for=None if dry_run else room_for,
+                             stop=None if dry_run else stop,
+                             progress=None if progress is None else
+                             lambda i, total, name: progress(i, total, f"{label}: {name}"))
+
     if not dry_run:
         # After a wipe nothing at the targets survives to be reused, so the copy needs the
         # selection's full bytes; without one, present same-size files are skipped and the
@@ -345,7 +399,6 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         if progress: progress(0, 0, "measuring what's left to copy…")
         need = (sum(r["bytes"] or 0 for r in rows) if wipe else _bytes_to_copy(rows, dest))
         if arcade_sets:
-            from . import mameset
             # A wipe clears the arcade folder before rebuilding it, so the sizing pass
             # must measure the FULL build — fresh=True — not the delta over the old
             # sets it is about to delete. The delta once let a whole 70 GB rebuild
@@ -353,12 +406,8 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             # the free-space reserve and stopped mid-copy. Zipped because the card is
             # for a handheld: no emulator there scans loose chip folders — they all
             # read one zip per game.
-            need += mameset.build(arcade_sets, dest / "arcade", db=db, dry_run=True,
-                                  fresh=bool(wipe and arcade_wanted), zipped=True,
-                                  dat=mame_dat,
-                                  progress=None if progress is None else
-                                  lambda i, total, name: progress(i, total, f"measuring arcade: {name}")
-                                  ).get("bytes_needed", 0)
+            for core in arcade_cores:
+                need += build_arcade(core, dry_run=True).get("bytes_needed", 0)
         free = _free_bytes(dest)
         if free is None:
             return {"error": f"cannot read free space on {dest} — is the card mounted?",
@@ -387,16 +436,17 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         return free is not None and free - nbytes >= reserve
 
     if arcade_sets:
-        from . import mameset
-        arcade_report = mameset.build(arcade_sets, dest / "arcade", db=db, dry_run=dry_run,
-                                      stop=stop, zipped=True, dat=mame_dat,
-                                      room_for=None if dry_run else room_for,
-                                      progress=None if progress is None else
-                                      lambda i, total, name: progress(i, total, f"arcade: {name}"))
-        stopped = bool(arcade_report.get("stopped"))
-        if arcade_report.get("out_of_room"):
-            errors.append({"file": "", "error": f"{dest} reached its free-space reserve "
-                                                f"during the arcade build — export stopped"})
+        for core in arcade_cores:
+            r = build_arcade(core, dry_run=dry_run)
+            arcade_reports[core] = r
+            if r.get("error"):
+                errors.append({"file": "", "error": f"arcade ({core}): {r['error']}"})
+            if r.get("out_of_room"):
+                errors.append({"file": "", "error": f"{dest} reached its free-space reserve "
+                                                    f"during the arcade build — export stopped"})
+            if r.get("stopped"):
+                stopped = True
+                break
 
     copied = skipped = missing = 0
     planned_bytes = 0
@@ -437,14 +487,17 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                 stopped = True
                 break
     if progress: progress(len(rows), len(rows), "stopped" if stopped else "done")
-    if arcade_report:
-        by_system["arcade"] = arcade_report["complete"] + arcade_report["incomplete"]
-        copied += arcade_report["copied"]
+    if arcade_reports:
+        by_system["arcade"] = sum(r["complete"] + r["incomplete"]
+                                  for r in arcade_reports.values())
+        copied += sum(r["copied"] for r in arcade_reports.values())
         if dry_run:
-            planned_bytes += arcade_report.get("bytes_needed", 0)
+            planned_bytes += sum(r.get("bytes_needed", 0) for r in arcade_reports.values())
     out = {"matched_files": len(rows), "copied": copied, "skipped": skipped,
            "missing": missing, "by_system": by_system, "errors": errors,
-           "arcade": arcade_report, "arcade_bios_unavailable": arcade_bios_unavailable,
+           "arcade": (next(iter(arcade_reports.values())) if len(arcade_reports) == 1
+                      else arcade_reports),
+           "arcade_bios_unavailable": arcade_bios_unavailable,
            "dupes_skipped": dupes_skipped, "wiped": wiped,
            "wanted_only": bool(wanted_only), "keep_only": bool(keep_only),
            "sources": sorted(sources) if sources else None, "stopped": stopped}

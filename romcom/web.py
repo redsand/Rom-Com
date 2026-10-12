@@ -482,7 +482,8 @@ def create_app():
                                           stop=stops["organize"],
                                           fill=bool(params.get("fill")),
                                           distinct_games=bool(params.get("distinct_games")),
-                                          wipe=bool(params.get("wipe")))
+                                          wipe=bool(params.get("wipe")),
+                                          arcade_core=params.get("arcade_core") or "mame")
         if kind == "romset":
             return lambda prog: romset(params["profile"], params["path"],
                                        leave_bytes=int(float(params.get("leave_gb") or 0) * 1024 ** 3),
@@ -733,6 +734,7 @@ def create_app():
                                       "fill": bool(body.get("fill")),
                                       "distinct_games": bool(body.get("distinct_games")),
                                       "wipe": bool(body.get("wipe")),
+                                      "arcade_core": body.get("arcade_core") or "mame",
                                       "gates": _export_gates(body.get("gates"))})
 
     @app.post("/api/romset")
@@ -776,7 +778,8 @@ def create_app():
         cap = cap or out["card_total_bytes"]
         return jsonify(out | {"capacity_bytes": cap} | exportplan.plan(
             capacity_bytes=cap, selected=body.get("systems") or [], gates=gates,
-            distinct_games=bool(body.get("distinct_games"))))
+            distinct_games=bool(body.get("distinct_games")),
+            arcade_core=body.get("arcade_core") or "mame"))
 
     @app.get("/api/export/profiles")
     def api_export_profiles():

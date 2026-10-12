@@ -72,14 +72,21 @@ def test_profiles_round_trip_and_are_cleaned(monkeypatch, tmp_path):
     made = c.post("/api/export/profiles", json={
         "name": "Odin 2 – 3DS card", "path": "J:\\", "systems": ["3ds", "3ds", ""],
         "capacity_gb": "256", "gates": {"rating_min": 99}, "distinct_games": 1, "wipe": 1,
-        "junk": 1}).get_json()
+        "arcade_core": "all", "junk": 1}).get_json()
     assert made["systems"] == ["3ds"] and made["capacity_gb"] == 256.0
     assert made["gates"]["rating_min"] == 10 and made["distinct_games"] is True
+    assert made["arcade_core"] == "all"
+    junked = c.post("/api/export/profiles", json={"name": "n", "arcade_core": "fbneo.exe",
+                                                  "gates": {}, "systems": ["3ds"],
+                                                  "distinct_games": False, "wipe": False}).get_json()
+    assert junked["arcade_core"] is None
+    c.delete(f"/api/export/profiles/{junked['id']}")
     assert made["wipe"] is True and "junk" not in made
     c.put(f"/api/export/profiles/{made['id']}", json={**made, "systems": ["3ds", "gba"],
                                                       "distinct_games": False, "wipe": False})
     [got] = c.get("/api/export/profiles").get_json()
     assert got["systems"] == ["3ds", "gba"] and got["distinct_games"] is False
+    assert got["arcade_core"] == "all"          # the put round-trips the chosen core
     assert got["wipe"] is False
     assert c.delete(f"/api/export/profiles/{made['id']}").status_code == 200
     assert c.delete(f"/api/export/profiles/{made['id']}").status_code == 404
@@ -107,6 +114,13 @@ def test_an_export_runs_with_the_gates_it_was_sent(monkeypatch, tmp_path):
         if seen: break
         time.sleep(0.05)
     assert seen["keep_only"] is True and seen["rating_min"] == 7 and seen["wanted_only"] is False
+    seen.clear()
+    c.post("/api/organize", json={"path": str(tmp_path / "sd"), "systems": ["arcade"],
+                                  "arcade_core": "fbneo"})
+    for _ in range(40):
+        if seen.get("arcade_core") == "fbneo": break
+        time.sleep(0.05)
+    assert seen["arcade_core"] == "fbneo"
 
 
 def test_plan_endpoint_honours_one_copy_per_game(monkeypatch, tmp_path):
@@ -125,3 +139,17 @@ def test_plan_endpoint_honours_one_copy_per_game(monkeypatch, tmp_path):
     assert d["systems"] == [{"system": "nes", "files": 1, "bytes": 9}]
     d = c.post("/api/organize/plan", json={"capacity_gb": 64}).get_json()
     assert d["systems"] == [{"system": "nes", "files": 2, "bytes": 18}]
+
+
+def test_plan_scales_arcade_for_all_three_cores(monkeypatch, tmp_path):
+    """'All three' builds three romsets from the same chips, so the card's arcade figure
+    has to say so — the UI's 'won't fit' must count what the run would write."""
+    _library(monkeypatch, tmp_path, {"arcade": [(9, 0, None)]})
+    c = create_app().test_client()
+    one = c.post("/api/organize/plan", json={"capacity_gb": 64, "systems": ["arcade"],
+                                             "arcade_core": "mame"}).get_json()
+    alla = c.post("/api/organize/plan", json={"capacity_gb": 64, "systems": ["arcade"],
+                                              "arcade_core": "all"}).get_json()
+    a = [s for s in one["systems"] if s["system"] == "arcade"][0]
+    b = [s for s in alla["systems"] if s["system"] == "arcade"][0]
+    assert a["bytes"] == 9 and b["bytes"] == 27

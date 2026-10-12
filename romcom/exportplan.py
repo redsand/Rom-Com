@@ -40,6 +40,8 @@ def _clean(p):
                       "keep_only": bool(gates.get("keep_only")),
                       "rating_min": max(0, min(10, int(gates.get("rating_min") or 0)))},
             "distinct_games": bool(p.get("distinct_games")),
+            "arcade_core": p.get("arcade_core") if p.get("arcade_core") in (
+                "mame", "fbneo", "mame2003", "all") else None,
             "wipe": bool(p.get("wipe"))}
 
 
@@ -100,7 +102,8 @@ def best_fill(sizes, room, forced=()):
     return {"add": add, "add_bytes": sum(sizes[s] for s in add), "room_after_forced": room}
 
 
-def plan(capacity_bytes=None, selected=(), gates=None, distinct_games=False):
+def plan(capacity_bytes=None, selected=(), gates=None, distinct_games=False,
+         arcade_core="mame"):
     """Smart help for a card of `capacity_bytes`.
 
     Plans against the card's whole size, not its current free space: what is already on
@@ -111,12 +114,18 @@ def plan(capacity_bytes=None, selected=(), gates=None, distinct_games=False):
     Returns per-platform sizes under the gates, the selection's total against the usable
     space (capacity less the reserve), the best fill from scratch, the best way to fill what
     the selection leaves, and for each platform too big for the card on its own, what its
-    curated subset (kept or rated 7+) would take instead."""
+    curated subset (kept or rated 7+) would take instead.
+
+    Arcade's figure is the matched chip files — the built sets can differ a little (shared
+    chips are written into every set that needs them). With `arcade_core='all'` three cores
+    are built, so three chip sets are written: the figure triples."""
     gates = gates or {}
     rows = export_systems(wanted_only=gates.get("wanted_only"),
                           keep_only=gates.get("keep_only"),
                           rating_min=gates.get("rating_min"),
                           distinct_games=distinct_games)
+    if arcade_core == "all":
+        rows = [r | {"bytes": r["bytes"] * 3} if r["system"] == "arcade" else r for r in rows]
     sizes = {r["system"]: r["bytes"] or 0 for r in rows}
     if not capacity_bytes:
         return {"systems": rows, "usable_bytes": None}
@@ -127,7 +136,9 @@ def plan(capacity_bytes=None, selected=(), gates=None, distinct_games=False):
     too_big = []
     big = [s for s, b in sizes.items() if b > usable]
     if big:
-        curated = {r["system"]: r["bytes"] or 0
+        curated = {(r["system"]): r["bytes"] * 3
+                   if arcade_core == "all" and r["system"] == "arcade"
+                   else r["bytes"] or 0
                    for r in export_systems(wanted_only=gates.get("wanted_only"),
                                            keep_only=True, rating_min=7,
                                            distinct_games=distinct_games)}

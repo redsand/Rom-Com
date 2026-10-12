@@ -243,6 +243,14 @@
           <input type="checkbox" id="org-fill"> fill the card if it won't all fit</label>
         <label class="sub" title="The catalog holds region/variant entries as separate games ('Cars (USA)', 'Cars (Germany)'), and one game downloaded twice is two files. Tick this to put one copy of each game on the card; untick it to copy each catalog entry">
           <input type="checkbox" id="org-distinct"> one copy per game</label>
+        <label class="sub" id="org-core-wrap" title="Each emulator core speaks its own arcade romset version — a zip that satisfies one can fail on another. Pick the one your front end uses, or all three, one folder each under arcade&#92;">
+          Arcade&nbsp;romset:
+          <select id="org-core" title="Which core's romset the arcade folder holds. MAME current is the default; FBNeo and MAME 2003-Plus speak their own versions">
+            <option value="mame">MAME</option>
+            <option value="fbneo">FBNeo</option>
+            <option value="mame2003">MAME 2003-Plus</option>
+            <option value="all">all three</option>
+          </select></label>
         <label class="sub" title="Delete the ticked platforms' folders on the card before copying — a clean card instead of a top-up. Nothing outside those folders is touched">
           <input type="checkbox" id="org-wipe"> clear those platforms first</label>
       </div>
