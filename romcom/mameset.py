@@ -138,6 +138,21 @@ def romof_refs(setnames, path):
     return refs
 
 
+def cloneof_refs(setnames, path):
+    """The dat's own clone relationships: {clone: parent} for every requested set that is
+    a clone. The dat line is `<machine name="…" cloneof="…">` — single-line sets parse
+    their name and cloneof from the same line, which is why both searches run it."""
+    want, refs = set(setnames), {}
+    for line in Path(path).open(encoding="utf-8", errors="replace"):
+        m = re.search(r'<(?:game|machine)\s+name="([^"]+)"', line)
+        if not m or m.group(1) not in want:
+            continue
+        r = re.search(r'\bcloneof="([^"]+)"', line)
+        if r:
+            refs[m.group(1)] = r.group(1)
+    return refs
+
+
 def _index(db, roms):
     """hash -> a path on disk, for every rom wanted. One query, not one per chip."""
     crcs = {r["crc"] for rs in roms.values() for r in rs if r["crc"]}

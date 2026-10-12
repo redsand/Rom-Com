@@ -64,6 +64,55 @@ _SCORE = "MAX(COALESCE(i.community_score,0), COALESCE(i.rating,0)*10)"
 _ORDER = f" ORDER BY {_SCORE} DESC, i.system, i.title, i.id, f.path"
 
 
+def _set_scores(db, names):
+    """Each arcade set's card score (`_SCORE`), for picking a family's survivor."""
+    out, lst = {}, list(names)
+    for i in range(0, len(lst), 900):           # SQLite caps variables per statement
+        chunk = lst[i:i + 900]
+        q = ",".join("?" * len(chunk))
+        for r in db.execute(
+                "SELECT substr(external_id, instr(external_id,'/')+1) s, " + _SCORE + " sc"
+                " FROM items i WHERE i.system='arcade'"
+                f" AND substr(external_id, instr(external_id,'/')+1) IN ({q})", chunk):
+            out[r["s"]] = r["sc"] or 0
+    return out
+
+
+def _prune_clones(db, core, sets):
+    """'One copy per game' goes by the dat's own clone book, not just the catalog's
+    titles: two sets of one MAME rom family must not both reach the card, however much
+    their titles differ (doa2 beside doa2m, bloodstm beside bloodstm104). Every requested
+    set is chased up its cloneof chain to its family root; each family with several
+    members keeps its best-scored one, ties preferring the parent, then the first name."""
+    from . import mameset
+    path = mameset.dat_path(core)
+    if not path:
+        return list(sets), {}           # the build has its own guard for a missing dat
+    family = mameset.cloneof_refs(sets, path)
+    if not family:
+        return list(sets), {}
+    root = {}
+    for s in sets:
+        r, seen = s, set()
+        while r in family and r not in seen:
+            seen.add(r)
+            r = family[r]
+        root[s] = r
+    scores = _set_scores(db, sets)
+    fam = {}
+    for s in sets:
+        fam.setdefault(root[s], []).append(s)
+    drop = {}
+    for members in fam.values():
+        if len(members) < 2:
+            continue
+        best = min(members, key=lambda m: (-scores.get(m, 0), 0 if m == root[m] else 1, m))
+        for m in members:
+            if m != best:
+                drop[m] = best
+    return [s for s in sets if s not in drop], drop
+
+
 def _fill_order(db, names):
     """Rank a romset fill best-game-first, on the same scale `_SCORE` ranks cards. Arcade
     sets sit in the items table as `<source>/<setname>` external ids. A fill stops at the
@@ -302,6 +351,18 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         arcade_rows, arcade_dupes_skipped = _canonical(arcade_rows, True)
     arcade_sets = list(dict.fromkeys(
         (r["external_id"] or "").split("/", 1)[-1] for r in arcade_rows))
+    # Each core has its own romset book, so the clone pruning is per core: two sets of
+    # one MAME family must not both reach a MAME card, but an FBNeo family may differ.
+    # The mame romof parents below follow mame's own pruned list.
+    core_sets = {core: arcade_sets for core in arcade_cores}
+    clones_pruned = {}
+    if distinct_games and arcade_sets:
+        for core in arcade_cores:
+            core_sets[core], drop = _prune_clones(db, core, arcade_sets)
+            if drop:
+                clones_pruned[core] = drop
+                arcade_dupes_skipped += len(drop)
+        arcade_sets = core_sets.get("mame", arcade_sets)
     arcade_bios_unavailable = {}
     if arcade_sets and "mame" in arcade_cores:
         # The romof parents (neogeo, pgm…) come along whether or not the recipe ticked
@@ -313,6 +374,9 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             hold = sorted(set(parents) & mameset.assemblable(db, mame_dat))
             arcade_bios_unavailable = {k: len(v) for k, v in parents.items() if k not in set(hold)}
             arcade_sets = hold + [s for s in arcade_sets if s not in set(hold)]
+            # neogeo.zip and co. ride the mame build too — core_sets still holds the
+            # pre-parent list, and the build loop reads from there now.
+            core_sets["mame"] = arcade_sets
     arcade_reports = {}
     rows = [r for r in rows if (r["system"] or "").lower() != "arcade"]
     if sources:
@@ -405,7 +469,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                                          f"DAT/{mameset.PROFILES.get(core, (core,))[0]}/",
                     "copied": 0, "bytes": 0, "bytes_needed": 0, "complete": 0,
                     "incomplete": 0, "stopped": False, "out_of_room": False}
-        return mameset.build(arcade_sets, dest_dir, db=db, dry_run=dry_run, zipped=True,
+        return mameset.build(core_sets[core], dest_dir, db=db, dry_run=dry_run, zipped=True,
                              profile=core, dat=dat,
                              fresh=fresh_wipe if dry_run else False,
                              room_for=None if dry_run else room_for,
@@ -563,6 +627,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
            "arcade": (next(iter(arcade_reports.values())) if len(arcade_reports) == 1
                       else arcade_reports),
            "arcade_bios_unavailable": arcade_bios_unavailable,
+           "clones_pruned": clones_pruned or None,
            "console_bios": {"dir": str(dest / "system"), "systems": console_bios},
            "dupes_skipped": dupes_skipped, "wiped": wiped,
            "wanted_only": bool(wanted_only), "keep_only": bool(keep_only),

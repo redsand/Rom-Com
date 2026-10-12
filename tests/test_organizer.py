@@ -725,3 +725,61 @@ def test_the_export_carries_console_bios_and_reports_the_gaps(tmp_path, monkeypa
     # Unticked consoles' bios are not this run's business.
     r3 = organize(tmp_path / "sd3", systems=["dreamcast"])
     assert set(r3["console_bios"]["systems"]) == {"dreamcast"}
+
+
+def test_distinct_games_prunes_the_dats_clone_families(tmp_path, monkeypatch):
+    """'One copy per game' goes by the dat's own clone book, not just catalog titles: two
+    sets of one MAME family must not both reach the card, however much the titles differ
+    (doa2 survived beside doa2m by title, with both sets' distinct chips). The family
+    keeps its best-scored member."""
+    DAT = ('<?xml version="1.0"?><datafile>\n'
+           '<machine name="doa2">\n<rom name="a.bin" size="16" crc="aaaa1111"/>\n</machine>\n'
+           '<machine name="doa2m" cloneof="doa2">\n<rom name="b.bin" size="16" crc="bbbb2222"/>\n</machine>\n'
+           '</datafile>')
+    dats = {"mame": tmp_path / "mame.dat"}
+    dats["mame"].write_text(DAT, encoding="utf-8")
+    db = _romset_env(monkeypatch, tmp_path, dats, {"a.bin": "aaaa1111", "b.bin": "bbbb2222"})
+    with db:    # different titles AND different chips: the title dedupe cannot see this one
+        db.execute("INSERT INTO items(id,title,system,external_id,community_score) "
+                   "VALUES('a','Dead or Alive 2 (USA)','arcade','arcade/doa2',80)")
+        db.execute("INSERT INTO items(id,title,system,external_id,community_score) "
+                   "VALUES('b','Dead or Alive 2 Millennium (Japan)','arcade','arcade/doa2m',20)")
+        for iid, chip in (("a", "a.bin"), ("b", "b.bin")):
+            db.execute("UPDATE files SET matched_item_id=? WHERE path LIKE ?", (iid, f"%{chip}"))
+    r = organize(tmp_path / "sd", distinct_games=True)
+    arcade = tmp_path / "sd" / "arcade"
+    assert (arcade / "doa2.zip").exists() and not (arcade / "doa2m.zip").exists()
+    assert r["clones_pruned"] == {"mame": {"doa2m": "doa2"}}
+    assert r["dupes_skipped"] == 1
+
+    organize(tmp_path / "sd2")                       # off: the clone is asked for, it builds
+    assert (tmp_path / "sd2" / "arcade" / "doa2m.zip").exists()
+
+
+def test_clone_pruning_survives_chains_and_scores_the_family(tmp_path, monkeypatch):
+    """A clone of a clone resolves to the family root, and the best-scored member wins even
+    when that member is the root's own clone."""
+    DAT = ('<?xml version="1.0"?><datafile>\n'
+           '<machine name="sf2">\n<rom name="a.bin" size="16" crc="aaaa1111"/>\n</machine>\n'
+           '<machine name="sf2ce" cloneof="sf2">\n<rom name="b.bin" size="16" crc="bbbb2222"/>\n</machine>\n'
+           '<machine name="sf2ced" cloneof="sf2ce">\n<rom name="c.bin" size="16" crc="cccc3333"/>\n</machine>\n'
+           '</datafile>')
+    dats = {"mame": tmp_path / "mame.dat"}
+    dats["mame"].write_text(DAT, encoding="utf-8")
+    db = _romset_env(monkeypatch, tmp_path, dats,
+                     {"a.bin": "aaaa1111", "b.bin": "bbbb2222", "c.bin": "cccc3333"})
+    with db:
+        db.execute("INSERT INTO items(id,title,system,external_id,community_score) "
+                   "VALUES('a','Street Fighter II (USA)','arcade','arcade/sf2',50)")
+        db.execute("INSERT INTO items(id,title,system,external_id,community_score) "
+                   "VALUES('b','Street Fighter II Champion Edition (US)','arcade','arcade/sf2ce',60)")
+        db.execute("INSERT INTO items(id,title,system,external_id,community_score) "
+                   "VALUES('c','Street Fighter II CE (Japan)','arcade','arcade/sf2ced',50)")
+        for iid, chip in (("a", "a.bin"), ("b", "b.bin"), ("c", "c.bin")):
+            db.execute("UPDATE files SET matched_item_id=? WHERE path LIKE ?", (iid, f"%{chip}"))
+    r = organize(tmp_path / "sd", distinct_games=True)
+    arcade = tmp_path / "sd" / "arcade"
+    # one family, one survivor: the Champion Edition, which the crowd rates highest
+    assert (arcade / "sf2ce.zip").exists()
+    assert not (arcade / "sf2.zip").exists() and not (arcade / "sf2ced.zip").exists()
+    assert r["clones_pruned"] == {"mame": {"sf2": "sf2ce", "sf2ced": "sf2ce"}}
