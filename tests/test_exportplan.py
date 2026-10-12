@@ -153,3 +153,17 @@ def test_plan_scales_arcade_for_all_three_cores(monkeypatch, tmp_path):
     a = [s for s in one["systems"] if s["system"] == "arcade"][0]
     b = [s for s in alla["systems"] if s["system"] == "arcade"][0]
     assert a["bytes"] == 9 and b["bytes"] == 27
+
+
+def test_plan_honours_a_rating_gate_alone(tmp_path, monkeypatch):
+    """'Rated >= 7' with no other tick must thin the card's numbers — the gate used to be
+    wired to the keep switch and counted everything."""
+    _library(monkeypatch, tmp_path, {"nes": [(1 * G, 0, 8), (1 * G, 0, 5), (1 * G, 0, None)]})
+    p = exportplan.plan(capacity_bytes=64 * G, gates={"rating_min": 7})
+    assert p["systems"] == [{"system": "nes", "files": 1, "bytes": 1 * G}]
+    # The crowd's 0-100 speaks the same scale: a 70 is a 7, so the unrated game is in.
+    db = connect()
+    with db:
+        db.execute("UPDATE items SET community_score=70 WHERE rating IS NULL")
+    p2 = exportplan.plan(capacity_bytes=64 * G, gates={"rating_min": 7})
+    assert p2["systems"] == [{"system": "nes", "files": 2, "bytes": 2 * G}]

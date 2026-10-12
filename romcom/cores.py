@@ -105,6 +105,114 @@ CORES = {
 
 BUILDBOT = "https://buildbot.libretro.com/nightly/windows/x86_64/latest/{core}.dll.zip"
 
+# Console BIOS the cores cannot boot without — a missing one here means "some games
+# cannot be played", not "fewer options". Each slot lists one or more alternative
+# filenames for the same job (regions, board revisions); any one file in a slot
+# satisfies it, and RetroArch reads every file by these names straight from its System
+# Directory. Filenames are matched case-insensitively; some cores also take a zip twin
+# of the same name, which this match accepts by ignoring nothing — the plain name is
+# what the core's docs promise. Deliberately absent:
+#   n64     — Mupen64Plus-Next needs no BIOS (the obvious suspect, and innocent)
+#   ps1     — SwanStation boots without a BIOS; only Beetle PSX HW demands one
+#   pcengine — only CD games need a System Card, and cart-only libraries would be
+#              flagged needlessly
+BIOS = {
+    "dreamcast": {"label": "Dreamcast",
+                  "slots": [["dc_boot.bin"], ["dc_flash.bin"]],
+                  "why": "Flycast cannot boot a single game without both files"},
+    "saturn":    {"label": "Saturn",
+                  "slots": [["sega_101.bin", "sega_102.bin"]],
+                  "why": "Beetle Saturn boots nothing without the console BIOS "
+                         "(sega_101 = US/EU, sega_102 = Japan)"},
+    "segacd":    {"label": "Sega CD",
+                  "slots": [["bios_CD_E.bin", "bios_CD_U.bin", "bios_CD_J.bin"]],
+                  "why": "the disc's boot code comes from the region BIOS — E = Europe, "
+                         "U = US, J = Japan"},
+    "3do":       {"label": "3DO",
+                  "slots": [["panafz10.bin", "panafz10-norsa.bin", "panafz1.bin",
+                             "opera_bios.rom"]],
+                  "why": "the Opera core will not boot without one"},
+    "amiga":     {"label": "Amiga",
+                  "slots": [["kick13.rom", "kick33180.A500", "kick34005.A500",
+                             "kick40068.A1200", "kick40063.A600"]],
+                  "why": "PUAE needs a Kickstart ROM in the system folder or nothing boots"},
+}
+
+
+def bios_files(db):
+    """The library's BIOS-shaped files, indexed case-insensitively by filename.
+
+    BIOS data files are not catalog items — import deliberately skips console-bios DATs and
+    the dumps land in `files` unmatched — so none of the item-driven queries can ever see
+    them. This walks the `files` table and keeps only entries whose basename is a name some
+    slot wants.
+    """
+    want = {n.lower() for spec in BIOS.values() for slot in spec["slots"] for n in slot}
+    out = {}
+    for r in db.execute("SELECT path, bytes FROM files"):
+        name = str(r["path"] or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if name in want:
+            out.setdefault(name, []).append((r["path"], r["bytes"] or 0))
+    return out
+
+
+def bios_report(db, systems=None):
+    """Which BIOS slots the library fills, per system — the export's shopping list.
+
+    `systems` (a set of system names) limits the report to the systems being exported.
+    For each system: `fills` maps the BIOS filename that will be copied to
+    (source path, bytes), taking the first candidate found for a slot; `missing` lists
+    the slots nothing in the library fills, each as its alternative filenames.
+    """
+    found = bios_files(db)
+    wanted = set(BIOS) if systems is None else set(BIOS) & set(systems)
+    picked, missing = {}, {}
+    for system in sorted(wanted):
+        spec = BIOS[system]
+        fills, miss = {}, []
+        for slot in spec["slots"]:
+            for name in slot:
+                if name.lower() in found:
+                    fills[name] = found[name.lower()][0]
+                    break
+            else:
+                miss.append(slot)
+        if fills:
+            picked[system] = fills
+        if miss:
+            missing[system] = miss
+    return {"picked": picked, "missing": missing}
+
+
+def bios_status(db=None):
+    """BIOS needs per system with games in the library, plus what's missing and blocked.
+
+    Like `status()`, this is for answering "why can't I play it" — with a console game
+    count on each row, because that is the size of what a missing file locks out.
+    """
+    from .db import connect
+    db = db or connect()
+    have = {}
+    for r in db.execute("""SELECT i.system, COUNT(DISTINCT i.id) n FROM items i
+                           JOIN files f ON f.matched_item_id = i.id GROUP BY i.system"""):
+        have[(r["system"] or "").lower()] = r["n"]
+    report = bios_report(db)
+    rows = []
+    for system in sorted(BIOS):
+        # Only consoles that own games: a missing 3DO BIOS is noise while the library
+        # holds no 3DO games, and the doctor check would cry about phantom gaps.
+        games = have.get(system, 0)
+        if not games:
+            continue
+        rows.append({"system": system, "label": BIOS[system]["label"],
+                     "why": BIOS[system]["why"], "games": games,
+                     "have": sorted(report["picked"].get(system, {})),
+                     "missing": list(report["missing"].get(system, []))})
+    missing = [r for r in rows if r["missing"]]
+    rows.sort(key=lambda r: (not r["missing"], -r["games"]))
+    return {"rows": rows, "missing": missing, "missing_count": len(missing),
+            "games_blocked": sum(r["games"] for r in missing)}
+
 
 def cores_dir():
     """RetroArch's cores folder, taken from emulators.yaml so there is one source of truth."""

@@ -665,3 +665,63 @@ def test_export_gets_the_arcade_core_it_is_asked_for(tmp_path, monkeypatch):
     # mame builds mslug plus the neogeo parent before it; fbneo builds both of its sets.
     assert alla["arcade"]["mame"]["complete"] == 2 and alla["arcade"]["fbneo"]["complete"] == 2
     assert alla["arcade"]["mame2003"].get("error")            # no dat for that core installed
+
+
+def test_rating_min_filters_the_export_on_its_own(tmp_path, monkeypatch):
+    """A rating gate set alone has to do its own filtering. The gate used to be a clause of
+    the keep switch, so 'rated >= 7' with no 'curated only' tick copied everything."""
+    _one_rom(tmp_path, monkeypatch, system="nes", name="Great (USA).nes")
+    _one_rom(tmp_path, monkeypatch, system="nes", name="Mediocre (Europe).nes")
+    _one_rom(tmp_path, monkeypatch, system="nes", name="Crowd Favourite (Japan).nes")
+    db = connect()
+    with db:
+        db.execute("UPDATE items SET rating=8 WHERE title='Great (USA).nes'")
+        db.execute("UPDATE items SET rating=5 WHERE title='Mediocre (Europe).nes'")
+        # Nobody rates it personally, but the crowd's 85 speaks the same scale as a 8.5.
+        db.execute("UPDATE items SET community_score=85 WHERE title='Crowd Favourite (Japan).nes'")
+    dest = tmp_path / "sd"
+    r = organize(dest, rating_min=7)
+    copied = list((dest / "nes").rglob("*.nes"))
+    assert r["copied"] == 2
+    assert {p.name for p in copied} == {"Great (USA).nes", "Crowd Favourite (Japan).nes"}
+
+    # Both gates: keep is the wide one, rating widens it further, never narrows it.
+    with db:
+        db.execute("UPDATE items SET keep=1 WHERE title='Mediocre (Europe).nes'")
+    r2 = organize(tmp_path / "sd2", keep_only=True, rating_min=7)
+    assert r2["copied"] == 3 and r2["dupes_skipped"] == 0
+
+
+def test_the_export_carries_console_bios_and_reports_the_gaps(tmp_path, monkeypatch):
+    """A card full of Dreamcast/Saturn games plays nothing without their bios, and the
+    library's query for matched items can never find them — they sit in `files` unmatched.
+    The export copies the ones it finds into <dest>/system and names what is missing."""
+    _one_rom(tmp_path, monkeypatch, system="dreamcast", name="Sonic Adventure (USA).dc")
+    _one_rom(tmp_path, monkeypatch, system="saturn", name="Panzer Dragoon (USA).bin")
+    dump = tmp_path / "dump"; dump.mkdir()
+    boot = dump / "DC_BOOT.BIN"; boot.write_bytes(b"boot")   # dumps come in any case
+    flash = dump / "dc_flash.bin"; flash.write_bytes(b"flash")
+    db = connect()
+    with db:
+        for f in (boot, flash):
+            db.execute("INSERT INTO files(path,bytes) VALUES(?,?)", (str(f), f.stat().st_size))
+    dest = tmp_path / "sd"
+    r = organize(dest)
+    assert (dest / "system" / "dc_boot.bin").read_bytes() == b"boot"
+    cb = r["console_bios"]
+    assert cb["dir"] == str(dest / "system")
+    assert cb["systems"]["dreamcast"]["copied"] == ["dc_boot.bin", "dc_flash.bin"]
+    assert cb["systems"]["dreamcast"]["missing"] == []
+    # Saturn has no bios anywhere in the dump: the report must say so, not stay silent.
+    assert cb["systems"]["saturn"]["missing"] == ["sega_101.bin or sega_102.bin"]
+    # One region's Sega CD bios is enough: the slot lists the three and asks for one.
+    with db:
+        (dump / "bios_CD_U.bin").write_bytes(b"segacd")
+        db.execute("INSERT INTO files(path,bytes) VALUES(?,7)", (str(dump / "bios_CD_U.bin"),))
+    r2 = organize(tmp_path / "sd2", dry_run=True, systems=["segacd"])
+    cb2 = r2["console_bios"]
+    assert set(cb2["systems"]) == {"segacd"}                  # dry run reports the same shape
+    assert cb2["systems"]["segacd"]["copied"] == ["bios_CD_U.bin"]
+    # Unticked consoles' bios are not this run's business.
+    r3 = organize(tmp_path / "sd3", systems=["dreamcast"])
+    assert set(r3["console_bios"]["systems"]) == {"dreamcast"}

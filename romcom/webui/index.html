@@ -230,7 +230,7 @@
         <span class="sub">Only:</span>
         <label class="sub"><input type="checkbox" id="org-g-wanted"> wanted</label>
         <label class="sub"><input type="checkbox" id="org-g-keep"> kept</label>
-        <label class="sub">or rated ≥ <input type="number" id="org-g-rating" min="0" max="10" value="0" style="width:52px"></label>
+        <label class="sub">or best ≥ <input type="number" id="org-g-rating" min="0" max="10" value="0" style="width:52px" title="N on the export's own scale: your 1-10 rating, or the crowd's 0-100 score / 10. Anyone rating it N or up is enough."></label>
         <span class="sub">(0 = off)</span>
       </div>
       <div id="org-help" class="org-help" hidden></div>
@@ -489,7 +489,7 @@
       <div class="filters">
         <span class="count" style="width:150px">Min rating</span>
         <input id="set-export_rating_min" type="search" placeholder="0" spellcheck="false" style="width:90px">
-        <span class="sub">1-10; with "kept &amp; rated" on, a rating at or above this exports even without Keep. 0 = ignore.</span>
+        <span class="sub">your 1-10 rating, or the crowd's score/10 (same scale the export ranks by); with "kept &amp; rated" on, a game rated at or above this exports even without Keep. 0 = ignore.</span>
       </div>
     </div>
     <div class="card">

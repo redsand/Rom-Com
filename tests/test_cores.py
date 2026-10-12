@@ -119,3 +119,59 @@ def test_one_core_serving_several_systems_downloads_once(monkeypatch, tmp_path):
     assert len(fetched) == 1, fetched
     assert "genesis_plus_gx_libretro" in fetched[0]
     assert r["installed"] == 0 and len(r["failed"]) == 1
+
+
+def test_bios_report_fills_a_slot_and_names_the_gaps(monkeypatch, tmp_path):
+    """Slots are matched case-insensitively (dumps come in any case), any one alternative
+    fills a slot, and a slot nothing fills is named — not silently skipped."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "b.db"))
+    db = connect()
+    with db:
+        for name in ("DC_BOOT.BIN", "dc_flash.bin", "bios_CD_U.bin"):
+            (tmp_path / name).write_bytes(b"x")
+            db.execute("INSERT INTO files(path,bytes) VALUES(?,1)", (str(tmp_path / name),))
+    rep = cores.bios_report(db, systems={"dreamcast", "segacd", "saturn"})
+    assert sorted(rep["picked"]["dreamcast"]) == ["dc_boot.bin", "dc_flash.bin"]
+    assert rep["picked"]["segacd"] == {"bios_CD_U.bin": (str(tmp_path / "bios_CD_U.bin"), 1)}
+    assert "segacd" not in rep["missing"] and "dreamcast" not in rep["missing"]
+    assert rep["missing"]["saturn"] == [["sega_101.bin", "sega_102.bin"]]
+    # A system not being exported is not this report's business.
+    assert cores.bios_report(db, systems={"saturn"})["picked"] == {}
+
+
+def test_bios_status_counts_what_a_missing_bios_blocks(monkeypatch, tmp_path):
+    """The point of the report is 'why are these games unplayable' — so each missing console
+    carries its game count and the total is what a missing file locks out."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "b2.db"))
+    from romcom.config import invalidate
+    invalidate()
+    db = connect()
+    with db:
+        for i, (system, n) in enumerate([("saturn", 20), ("nes", 0)]):
+            for k in range(n):
+                iid = f"{system}{i}{k}"
+                db.execute("INSERT INTO items(id,title,system) VALUES(?,?,?)",
+                           (iid, iid, system))
+                db.execute("INSERT INTO files(path,bytes,matched_item_id) VALUES(?,1,?)",
+                           (str(tmp_path / f"{iid}.rom"), iid))
+    st = cores.bios_status(db)
+    assert st["missing_count"] == 1 and st["games_blocked"] == 20
+    [row] = st["missing"]
+    assert row["system"] == "saturn" and row["have"] == []
+    assert row["missing"] == [["sega_101.bin", "sega_102.bin"]]
+
+
+def test_a_console_with_all_its_bios_is_not_reported_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "b3.db"))
+    db = connect()
+    with db:
+        for name in ("dc_boot.bin", "dc_flash.bin"):
+            (tmp_path / name).write_bytes(b"x")
+            db.execute("INSERT INTO files(path,bytes) VALUES(?,1)", (str(tmp_path / name),))
+        db.execute("INSERT INTO items(id,title,system) VALUES('dc1','D','dreamcast')")
+        db.execute("INSERT INTO files(path,bytes,matched_item_id) VALUES(?,1,'dc1')",
+                   (str(tmp_path / "dc.bin"),))
+    st = cores.bios_status(db)
+    assert st["missing_count"] == 0 and st["games_blocked"] == 0
+    dc = [r for r in st["rows"] if r["system"] == "dreamcast"][0]
+    assert dc["have"] == ["dc_boot.bin", "dc_flash.bin"]

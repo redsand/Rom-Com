@@ -801,7 +801,7 @@ function orgRender() {
     }
     for (const t of d.too_big || []) {
       help.push(`<p class="sub"><b>${esc(t.system)}</b> is ${fmtBytes(t.bytes)} — too big for this card on its own.`
-        + (t.curated_fits ? ` Just the games you kept or rated 7+ come to ${fmtBytes(t.curated_bytes)}, which fits: tick “kept” and set rating ≥ 7.`
+        + (t.curated_fits ? ` Just the games you kept or rated 7+ come to ${fmtBytes(t.curated_bytes)}, which fits: tick “kept” and set best ≥ 7.`
            : t.curated_bytes ? ` Even the kept / 7+ games are ${fmtBytes(t.curated_bytes)}.`
            : ` Mark keepers or rate games to carve out a set that fits, or use “fill the card”.`) + `</p>`);
     }
@@ -1024,6 +1024,23 @@ function renderOrganizeResult(r) {
     .map(([s, n]) => `<tr><td>${esc(s)}</td><td class="r">${n.toLocaleString()}</td></tr>`).join("");
   const errs = r.errors.map(x => `<div class="check bad"><span class="mark">✕</span>
     <span class="d">${esc(x.file)} — ${esc(x.error)}</span></div>`).join("");
+  const bios = r.console_bios;
+  const biosHtml = bios && Object.keys(bios.systems).length ? (() => {
+    const lines = Object.entries(bios.systems).map(([sys, b]) => {
+      const got = [...b.copied, ...b.skipped];
+      const miss = b.missing.join(", ");
+      return miss
+        ? `<div class="check bad"><span class="mark">✕</span><span class="d">${esc(sys)}
+            — nothing in the library for ${esc(miss)}: those games will not boot until the
+            file exists in RetroArch's system folder</span></div>`
+        : `<div class="check ok"><span class="mark">✓</span><span class="d">${esc(sys)}
+            — ${esc(got.join(", "))} ${r.dry_run ? "would go" : "in"} <code>${esc(bios.dir)}</code></span></div>`;
+    }).join("");
+    return `<details class="skiplist" open style="margin-top:12px"><summary>Console BIOS</summary>
+      <div class="checklist" style="max-height:none">${lines}</div>
+      <p class="sub">RetroArch reads these from its System Directory (Settings → Directory →
+      System) — point it at the card's <code>system</code> folder.</p></details>`;
+  })() : "";
   $("#org-result").innerHTML = (r.stopped ? `<p class="sub" style="margin-top:12px"><b>Export stopped early</b> — what was copied stays; re-running tops up the rest.</p>` : "")
     + `<div class="tiles" style="margin-top:12px">
       <div class="tile"><div class="v">${r.copied.toLocaleString()}</div><div class="l">Copied</div></div>
@@ -1034,6 +1051,7 @@ function renderOrganizeResult(r) {
       <div class="tile"><div class="v">${r.errors.length}</div><div class="l">Errors</div></div></div>`
     + (rows ? `<div class="tablewrap" style="margin-top:12px"><table>
         <thead><tr><th>System folder</th><th class="r">Files</th></tr></thead><tbody>${rows}</tbody></table></div>` : "")
+    + biosHtml
     + (errs ? `<details class="skiplist" open><summary>${r.errors.length} errors</summary><div class="checklist" style="max-height:none">${errs}</div></details>` : "");
 }
 

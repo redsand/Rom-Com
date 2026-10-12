@@ -40,12 +40,19 @@ def _device_deps(setnames):
 
 
 # The curation gate, shared by the export and the platform picker so the picker's counts are
-# exactly what an export would copy. The rating threshold only widens the keep gate while it
-# is on: the third `?` is the on/off switch, so 0 (off) cannot accidentally widen the gate to
-# everything — COALESCE(rating,0) >= 0 would have passed every unrated item to the card.
+# exactly what an export would copy. Either knob filters on its own: keep_only holds back
+# everything the keeper did not keep, rating_min holds back everything nobody rates that
+# high. "Rated at least N" speaks the library's own scale (`_SCORE`: the crowd's 0-100 score
+# or the owner's 1-10 rating scaled x10 — an owner who never rates anything still has the
+# crowd's opinion to go on). Both knobs together pass kept OR that good. 0 must stay a
+# pass-through both for the outer switch and for the threshold itself: a 0 threshold with
+# no opinion anywhere would have locked out every unrated game instead.
 _GATED = """ FROM files f JOIN items i ON i.id=f.matched_item_id
       WHERE (? = 0 OR i.wanted = 1)
-        AND (? = 0 OR i.keep = 1 OR (? > 0 AND COALESCE(i.rating,0) >= ?))"""
+        AND (CASE WHEN ? = 0 THEN 1
+                  ELSE (? AND i.keep = 1)
+                    OR (? > 0 AND MAX(COALESCE(i.community_score,0),
+                                      COALESCE(i.rating,0)*10) >= ? * 10) END)"""
 
 # The card-fill order: a game ranks by the highest opinion anyone holds about it — the
 # crowd's 0-100 score or the owner's 1-10 rating scaled to the same scale (recommend.py's
@@ -71,7 +78,8 @@ def _fill_order(db, names):
 
 def _gate_args(wanted_only, keep_only, rating_min):
     rating_min = int(rating_min or 0)
-    return (1 if wanted_only else 0, 1 if keep_only else 0, rating_min, rating_min)
+    curating = 1 if (keep_only or rating_min) else 0
+    return (1 if wanted_only else 0, curating, 1 if keep_only else 0, rating_min, rating_min)
 
 
 def _selection(wanted_only=False, keep_only=False, rating_min=None):
@@ -211,8 +219,10 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     keep their behaviour.
 
     `keep_only` restricts the export to items marked keep. `rating_min` widens that gate to
-    "keep OR rated at least N", because keep alone is all-or-nothing: an owner who rates a
-    game 8 should not have to also remember a second checkbox. 0/None disables it.
+    "keep OR at least N on the library's own scale" (the crowd's 0-100 score or the owner's
+    1-10 rating scaled x10 — same rule `_SCORE` ranks the fill order by), because keep alone
+    is all-or-nothing: an owner who rates a game 8 should not have to also remember a second
+    checkbox. 0/None disables it.
 
     `sources` restricts by `catalog_source`. Arcade is the case that needs it: a flat MAME
     dump leaves hundreds of loose chip files adopted as `local` items with names like
@@ -317,6 +327,17 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     rows, nonarcade_dupes = _canonical(rows, distinct_games)
     dupes_skipped = nonarcade_dupes + arcade_dupes_skipped
     dest = Path(dest)
+    # Console BIOS rides along: a card whose Dreamcast folder is full of games plays
+    # nothing without dc_boot.bin in RetroArch's System Directory, and no item-driven
+    # query can ever fetch it — the dump's BIOS files sit in `files` unmatched, so this
+    # looks them up by exact filename and fills only the slots the export covers.
+    from . import cores
+    if wanted_systems is not None:
+        bios_systems = wanted_systems & set(cores.BIOS)
+    else:
+        bios_systems = ({(r["system"] or "").lower() for r in rows if r["system"]}
+                        & set(cores.BIOS))
+    bios_plan = cores.bios_report(db, systems=bios_systems)
     stopped = False
     errors = []
 
@@ -408,6 +429,8 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             # read one zip per game.
             for core in arcade_cores:
                 need += build_arcade(core, dry_run=True).get("bytes_needed", 0)
+        for fills in bios_plan["picked"].values():
+            need += _bios_need(dest, fills)
         free = _free_bytes(dest)
         if free is None:
             return {"error": f"cannot read free space on {dest} — is the card mounted?",
@@ -487,6 +510,48 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                 stopped = True
                 break
     if progress: progress(len(rows), len(rows), "stopped" if stopped else "done")
+
+    # The BIOS files go in after the games — nobody browses for them, and a run that
+    # stops early has already said so. Copying is the same skip-if-present/room rule the
+    # games use; what makes the report earn its place is `missing`: the slots nothing in
+    # the library fills, which are the ones that leave a whole console unplayable.
+    console_bios = {}
+    for system in sorted(bios_plan["picked"] | bios_plan["missing"].keys()):
+        fills = bios_plan["picked"].get(system, {})
+        rep = {"copied": [], "skipped": [],
+               "missing": [" or ".join(s) for s in bios_plan["missing"].get(system, [])]}
+        console_bios[system] = rep
+        for name in sorted(fills):
+            srcb, size = fills[name]
+            if stopped or (stop is not None and stop.is_set()):
+                stopped = True
+                break
+            target = dest / "system" / name
+            if dry_run:
+                planned_bytes += size
+                rep["copied"].append(name)
+                continue
+            try:
+                if target.exists() and target.stat().st_size == size:
+                    rep["skipped"].append(name)
+                elif not room_for(size):
+                    errors.append({"file": "", "error": f"{dest} reached its free-space "
+                                                        f"reserve — stopped before {name}"})
+                    stopped = True
+                    break
+                else:
+                    (dest / "system").mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(Path(srcb), target)
+                    rep["copied"].append(name)
+            except OSError as e:
+                errors.append({"file": name, "error": str(e)})
+                if e.errno == errno.ENOSPC:
+                    _discard_partial(target)
+                    errors.append({"file": "", "error": f"{dest} is full — export stopped"})
+                    stopped = True
+                    break
+        if stopped:
+            break
     if arcade_reports:
         by_system["arcade"] = sum(r["complete"] + r["incomplete"]
                                   for r in arcade_reports.values())
@@ -498,6 +563,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
            "arcade": (next(iter(arcade_reports.values())) if len(arcade_reports) == 1
                       else arcade_reports),
            "arcade_bios_unavailable": arcade_bios_unavailable,
+           "console_bios": {"dir": str(dest / "system"), "systems": console_bios},
            "dupes_skipped": dupes_skipped, "wiped": wiped,
            "wanted_only": bool(wanted_only), "keep_only": bool(keep_only),
            "sources": sorted(sources) if sources else None, "stopped": stopped}
@@ -506,6 +572,20 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                 "would_copy_bytes": planned_bytes,
                 "would_copy_gb": round(planned_bytes / (1024 ** 3), 2)}
     return out
+
+
+def _bios_need(dest, fills):
+    """Bytes a real run would write for one system's BIOS files (same skip-if-present
+    rule as the games)."""
+    need = 0
+    for name, (_, size) in fills.items():
+        try:
+            if (dest / "system" / name).stat().st_size == size:
+                continue
+        except OSError:
+            pass
+        need += size
+    return need
 
 
 def _bytes_to_copy(rows, dest):
