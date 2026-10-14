@@ -312,3 +312,67 @@ def test_mame2003_bios_comes_from_the_fallback_dat_in_an_export(monkeypatch, tmp
     card = tmp_path / "sd" / "arcade"
     assert sorted(p.stem for p in card.glob("*.zip")) == ["cvs", "cvsgame"]
     assert not r["arcade_bios_unavailable"]
+
+
+def _owned(db, sets):
+    with db:
+        for s in sets:
+            db.execute("INSERT INTO items(id,title,system,external_id,status) "
+                       "VALUES(?,?,?,?,?)", (f"it-{s}", s, "arcade", f"arcade/{s}", "FOUND"))
+
+
+def test_metrics_count_owned_sets_by_board_and_rank_the_fixes(monkeypatch, tmp_path):
+    db, _ = _env(monkeypatch, tmp_path)
+    _owned(db, ["good", "rough", "wip", "nochip", "needsdev", "mslug", "kinst"])
+    arcadehealth.evaluate("mame", db)
+    m = arcadehealth.metrics("mame", db)
+    assert m["owned"] == 7
+    assert m["counts"] | {} == {"works": 1, "partial": 1, "broken": 5, "unknown": 0,
+                                "unjudged": 0}
+    cps2 = next(b for b in m["boards"] if b["board"] == "cps2")
+    assert (cps2["total"], cps2["works"], cps2["partial"], cps2["broken"]) == (3, 1, 1, 1)
+    fixes = {(f["kind"], f["name"]): f["unlocks"] for f in m["fixes"]}
+    assert fixes == {("device", "namco54"): 1, ("bios", "neogeo"): 1, ("chd", "kinst"): 1}
+    assert (m["roms_missing"], m["chd_sets"], m["driver_broken"]) == (1, 1, 1)
+
+
+def test_repair_previews_then_arms_the_downloads(monkeypatch, tmp_path):
+    """Nothing is queued by a preview; applying arms the dependency and the game short of
+    its own chips, back to MISSING so the acquirer — which only tries CATALOGED/MISSING —
+    actually picks them up."""
+    db, _ = _env(monkeypatch, tmp_path)
+    _owned(db, ["nochip", "needsdev", "wip"])
+    with db:
+        db.execute("INSERT INTO items(id,title,system,external_id,status,is_device) "
+                   "VALUES('it-namco54','Namco 54xx','arcade','arcade/namco54','FOUND',1)")
+    arcadehealth.evaluate("mame", db)
+    r = arcadehealth.repair("mame", db=db)
+    assert (r["to_arm"], r["applied"]) == (2, False)
+    assert db.execute("SELECT COUNT(*) FROM items WHERE wanted=1 AND authorized=1"
+                      ).fetchone()[0] == 0
+    r = arcadehealth.repair("mame", apply=True, db=db)
+    armed = {row[0]: row[1] for row in db.execute(
+        "SELECT id, status FROM items WHERE wanted=1 AND authorized=1")}
+    assert armed == {"it-nochip": "MISSING", "it-namco54": "MISSING"}   # wip: no download fixes it
+    assert arcadehealth.repair("mame", db=db)["to_arm"] == 0
+
+
+def test_library_filters_and_sorts_by_health_on_the_chosen_core(monkeypatch, tmp_path):
+    from romcom.web import create_app
+    db, _ = _env(monkeypatch, tmp_path)
+    _owned(db, ["good", "rough", "wip"])
+    arcadehealth.evaluate("mame", db)
+    c = create_app().test_client()
+    got = lambda q: [(r["title"], r["health"]) for r in
+                     c.get("/api/items?limit=50&system=arcade&" + q).get_json()["items"]]
+    assert got("sort=health") == [("good", "works"), ("rough", "partial"), ("wip", "broken")]
+    assert got("health=broken") == [("wip", "broken")]
+    assert got("board=cps2&sort=title") == [("good", "works"), ("rough", "partial")]
+    assert c.post("/api/arcade/verdict", json={"setname": "wip", "core": "mame",
+                                               "verdict": "works"}).status_code == 200
+    assert got("health=broken") == []
+    assert got("health=mine") == [("wip", "works")]
+    # fbneo was never judged, and the verdict above was for mame only
+    assert got("core=fbneo&health=unjudged&sort=title") == [
+        ("good", None), ("rough", None), ("wip", None)]
+    assert c.get("/api/arcade/health?core=mame").get_json()["counts"]["works"] == 2

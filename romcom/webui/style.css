@@ -319,3 +319,7 @@ details .label { color: var(--muted); padding: 6px 12px 0; font-size: 11px; text
 .org-help p { margin: 4px 0; }
 .org-help .bad { color: var(--critical); }
 .org-gates { gap: 10px; }
+
+/* Arcade health beside the status: the badge and verdict menu on one line, the reason under it */
+td.health { white-space: nowrap; }
+td.health .sub { white-space: normal; max-width: 240px; }

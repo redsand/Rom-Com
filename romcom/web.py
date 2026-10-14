@@ -38,6 +38,8 @@ def can_play(row):
         return bool(row["playable"])
     return (row["status"] or "") in IN_HAND
 VOLUME_FIELDS = {"authorized", "status"}
+# An arcade item's MAME set name: its external id is `arcade/<setname>`.
+_SETNAME = "substr(items.external_id, instr(items.external_id,'/')+1)"
 
 def _entity(db, ident):
     i = db.execute("SELECT * FROM items WHERE id=?", (ident,)).fetchone()
@@ -214,7 +216,22 @@ def create_app():
         # MAME device/bios sets are catalogued because their roms are hard dependencies
         # -- galaga will not run without namco54 -- but they are not games and must not
         # sit in the library ahead of them. `?devices=1` opts in.
-        q = "SELECT * FROM items WHERE 1=1"; p = []
+        # Arcade rows carry their health on one core (the `core` arg, mame by default): the
+        # owner's verdict where one exists, else the stored judgement. A derived table, so
+        # every filter below still names plain item columns.
+        core = args.get("core") if args.get("core") in ("mame", "fbneo", "mame2003") else "mame"
+        q = f"""SELECT * FROM (SELECT items.*,
+               CASE WHEN items.system='arcade' THEN (SELECT v.verdict FROM arcade_verdicts v
+                    WHERE v.setname={_SETNAME} AND v.core IN (?,'*')
+                    ORDER BY v.core='*' LIMIT 1) END verdict,
+               CASE WHEN items.system='arcade' THEN (SELECT h.status FROM arcade_health h
+                    WHERE h.core=? AND h.setname={_SETNAME}) END health_judged,
+               CASE WHEN items.system='arcade' THEN (SELECT h.reason FROM arcade_health h
+                    WHERE h.core=? AND h.setname={_SETNAME}) END health_reason,
+               CASE WHEN items.system='arcade' THEN (SELECT h.family FROM arcade_health h
+                    WHERE h.core=? AND h.setname={_SETNAME}) END health_family
+               FROM items) WHERE 1=1"""
+        p = [core, core, core, core]
         if request.args.get("devices") not in ("1", "true", "yes"):
             q += " AND COALESCE(is_device,0)=0"
         if args.get("system"): q += " AND system=?"; p.append(args["system"])
@@ -236,6 +253,15 @@ def create_app():
             q += " AND rating IS NOT NULL"
         elif view == "crowd":
             q += " AND community_score IS NOT NULL"
+        health = args.get("health")
+        if health in ("works", "partial", "broken", "unknown"):
+            q += " AND COALESCE(verdict, health_judged)=?"; p.append(health)
+        elif health == "unjudged":
+            q += " AND system='arcade' AND verdict IS NULL AND health_judged IS NULL"
+        elif health == "mine":
+            q += " AND verdict IS NOT NULL"
+        if args.get("board"):
+            q += " AND health_family LIKE ?"; p.append(f"%{args['board']}.%")
         return q, p
 
     # Whitelisted ORDER BYs. Unknown values fall back to the default; SQL here is
@@ -260,6 +286,10 @@ def create_app():
         "rank":      ("CASE WHEN COALESCE(community_score,0)>0 OR COALESCE(rating,0)>0"
                       " THEN MAX(COALESCE(community_score,0), COALESCE(rating,0)*10) END", "desc"),
         "recent":    ("last_played", "desc"),
+        # Works first, then partial, then broken; unjudged and non-arcade rows last.
+        "health":    ("CASE COALESCE(verdict, health_judged) WHEN 'works' THEN 3"
+                      " WHEN 'partial' THEN 2 WHEN 'unknown' THEN 1 WHEN 'broken' THEN 0 END",
+                      "desc"),
     }
 
     def _order_by(args):
@@ -281,7 +311,9 @@ def create_app():
         offset = int(request.args.get("offset", 0))
         q += f" ORDER BY {_order_by(request.args)} LIMIT ? OFFSET ?"; p += [limit, offset]
         # can_play is computed here so the browser never has to know the arcade rule.
-        items = [dict(r) | {"can_play": can_play(r)} for r in db.execute(q, p)]
+        items = [dict(r) | {"can_play": can_play(r),
+                            "health": r["verdict"] or r["health_judged"]}
+                 for r in db.execute(q, p)]
         return jsonify({"total": total, "items": items})
 
     @app.post("/api/items/<ident>")
@@ -739,6 +771,50 @@ def create_app():
                                       "arcade_core": body.get("arcade_core") or "mame",
                                       "arcade_status": body.get("arcade_status"),
                                       "gates": _export_gates(body.get("gates"))})
+
+    @app.get("/api/arcade/health")
+    def api_arcade_health():
+        """Where the owned arcade sets stand on one core: counts, boards, and the fixes
+        ranked by how many games each brings back."""
+        from . import arcadehealth
+        core = request.args.get("core")
+        return jsonify(arcadehealth.metrics(core if core in ("mame", "fbneo", "mame2003")
+                                            else "mame"))
+
+    @app.post("/api/arcade/health/refresh")
+    def api_arcade_health_refresh():
+        """Re-judge every core against the dats and what is on disk now (seconds, not a
+        job: three dat passes and two hash-set queries)."""
+        from . import arcadehealth
+        return jsonify(arcadehealth.evaluate_all())
+
+    @app.post("/api/arcade/verdict")
+    def api_arcade_verdict():
+        """The owner's word on a set after playing it; `verdict` null hands it back to
+        the computed status."""
+        from . import arcadehealth
+        body = request.get_json(force=True)
+        core = body.get("core") if body.get("core") in ("mame", "fbneo", "mame2003") else "*"
+        setname = str(body.get("setname") or "").strip()
+        if not setname:
+            return jsonify({"error": "setname is required"}), 400
+        try:
+            return jsonify(arcadehealth.set_verdict(setname, body.get("verdict") or None,
+                                                    core=core, note=body.get("note")))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
+    @app.post("/api/arcade/repair")
+    def api_arcade_repair():
+        """Preview, or arm, the downloads that fix owned broken sets. Armed items start
+        the acquire pipeline, exactly as marking them wanted in the library would."""
+        from . import arcadehealth
+        body = request.get_json(force=True, silent=True) or {}
+        core = body.get("core") if body.get("core") in ("mame", "fbneo", "mame2003") else "mame"
+        r = arcadehealth.repair(core, apply=bool(body.get("apply")))
+        if r["applied"] and _maybe_auto_acquire():
+            r["auto_acquire_started"] = True
+        return jsonify(r)
 
     @app.post("/api/romset")
     def api_romset():

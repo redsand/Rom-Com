@@ -63,6 +63,22 @@
       </select>
       <select id="f-system"><option value="">All systems</option></select>
       <select id="f-status"><option value="">All statuses</option></select>
+      <select id="f-health" title="Arcade only: will the set actually run on the chosen core — the dat's driver status plus every chip, CHD and bios it needs, or your own verdict">
+        <option value="">Any arcade health</option>
+        <option value="works">Works</option>
+        <option value="partial">Partial</option>
+        <option value="broken">Broken</option>
+        <option value="unknown">Unknown</option>
+        <option value="unjudged">Not in the core's romset</option>
+        <option value="mine">My verdicts</option>
+      </select>
+      <select id="f-core" title="Which core's romset the Health column judges against">
+            <option value="mame">MAME</option>
+            <option value="fbneo">FBNeo</option>
+            <option value="mame2003">MAME 2003-Plus</option>
+      </select>
+      <input id="f-board" type="search" placeholder="board (cps2…)" spellcheck="false" style="width:120px"
+        title="Arcade board family — the driver file, e.g. cps2, neogeo, naomi">
       <select id="f-sort" title="Sort order">
         <option value="system">Sort: system</option>
         <option value="title">Sort: title</option>
@@ -71,6 +87,7 @@
         <option value="rank">Sort: best (you + crowd)</option>
         <option value="rating">Sort: my rating</option>
         <option value="recent">Sort: recently played</option>
+        <option value="health">Sort: arcade health</option>
       </select>
       <span id="lib-count" class="count"></span>
       <span style="flex:1"></span>
@@ -93,6 +110,7 @@
           <th data-sort="system" data-label="System">System</th>
           <th data-sort="year" data-label="Year">Year</th>
           <th>Status</th>
+          <th data-sort="health" data-label="Health" title="Arcade: works / partial / broken on the core picked above. Your own verdict (the menu) beats the computed one">Health</th>
           <th class="c" data-sort="community" data-label="Crowd" title="Crowd score 0-100 from public pools (romcom community sync)">Crowd</th>
           <th class="c" data-sort="rank" data-label="Best" title="Best of your rating and the crowd's score — the score the card export ranks by">Best</th>
           <th class="c" data-sort="rating" data-label="Rating" title="Your 1-10 verdict after playing — drives export alongside Keep">Rating</th>
@@ -273,6 +291,22 @@
         <button id="org-stop" class="ghost">Stop export</button>
       </div>
       <div id="org-result"></div>
+    </div>
+
+    <div class="card" id="ah-card">
+      <h2>Arcade health <span class="hint">which owned sets will actually run, per core — and the fixes that bring the most back</span></h2>
+      <div class="filters">
+        <select id="ah-core" title="Whose romset to judge against">
+            <option value="mame">MAME</option>
+            <option value="fbneo">FBNeo</option>
+            <option value="mame2003">MAME 2003-Plus</option>
+        </select>
+        <button id="ah-refresh" class="ghost" title="Re-read the core dats against what is on disk now">Re-check</button>
+        <button id="ah-repair" class="ghost" title="Preview the downloads that would fix owned broken sets — nothing is queued until you confirm">Preview repair</button>
+        <span class="sub" id="ah-checked"></span>
+      </div>
+      <div id="ah-body"></div>
+      <div id="ah-repair-out"></div>
     </div>
 
     <div class="card">

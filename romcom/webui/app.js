@@ -190,7 +190,8 @@ const lib = { offset: 0, limit: 200, total: 0, sort: "system", dir: "asc" };
 // column answers the question the column implies (crowd desc = best first, year desc =
 // newest first), and the second click flips it.
 const NATURAL_DIR = { system: "asc", title: "asc", year: "desc",
-                      community: "desc", rank: "desc", rating: "desc", recent: "desc" };
+                      community: "desc", rank: "desc", rating: "desc", recent: "desc",
+                      health: "desc" };
 
 async function initFacets() {
   try {
@@ -230,6 +231,9 @@ function libQuery() {
   if ($("#f-q").value.trim()) p.set("q", $("#f-q").value.trim());
   if ($("#f-system").value) p.set("system", $("#f-system").value);
   if ($("#f-status").value) p.set("status", $("#f-status").value);
+  if ($("#f-health").value) p.set("health", $("#f-health").value);
+  if ($("#f-board").value.trim()) p.set("board", $("#f-board").value.trim());
+  p.set("core", $("#f-core").value);
   p.set("sort", lib.sort);
   p.set("dir", lib.dir);
   return p;
@@ -243,6 +247,25 @@ api("/api/emulators").then(d => { EMULATORS = d || {}; }).catch(() => {});
 // Play is offered when the server says so. The rule differs by system — arcade sets are
 // assembled from a flat dump by hash, so status cannot answer it — and keeping that
 // judgement server-side means the browser never has to know the difference.
+
+// Arcade health: will the set run on the chosen core. The badge is the verdict in force
+// (yours, else the dat's); the menu records yours after playing it, "auto" hands it back.
+const HEALTH_CLASS = {works: "good", partial: "serious", broken: "critical", unknown: ""};
+function healthBadge(h, why) {
+  if (!h) return `<span class="sub" title="not in this core's romset">—</span>`;
+  return `<span class="badge ${HEALTH_CLASS[h] ?? ""}" title="${esc(why || h)}">${esc(h)}</span>`;
+}
+function healthCell(r) {
+  if ((r.system || "").toLowerCase() !== "arcade") return `<span class="sub">—</span>`;
+  const set = (r.external_id || "").split("/").pop();
+  const why = r.verdict ? `your verdict (computed: ${r.health_judged || "—"}${r.health_reason ? " — " + r.health_reason : ""})`
+                        : r.health_reason;
+  const sel = `<select class="verdict-edit small" data-set="${esc(set)}" title="Your verdict after playing it on this core">` +
+    [["", "auto"], ["works", "works"], ["partial", "sort of"], ["broken", "broken"]].map(([v, l]) =>
+      `<option value="${v}" ${(r.verdict || "") === v ? "selected" : ""}>${l}</option>`).join("") + `</select>`;
+  return `${healthBadge(r.health, why)} ${sel}` +
+    (r.health_reason && r.health !== "works" && !r.verdict ? `<div class="sub">${esc(r.health_reason)}</div>` : "");
+}
 
 function itemRow(r) {
   const series = r.series ? `<div class="sub">${esc(r.series)}${r.series_number ? " #" + r.series_number : ""}</div>` : "";
@@ -265,6 +288,7 @@ function itemRow(r) {
     <td>${esc(r.system || "—")}</td>
     <td class="r">${r.year || "—"}</td>
     <td>${badge(r.status)} ${statusSel}</td>
+    <td class="health">${healthCell(r)}</td>
     <td class="c">${crowd}</td>
     <td class="c">${bestCell}</td>
     <td class="c">${ratingSel}</td>
@@ -297,7 +321,7 @@ async function loadLibrary(append = false) {
       // The filters (not the catalog) are hiding everything — say so and offer the way out.
       const p = libQuery(); p.set("view", "all"); p.set("limit", "1");
       const all = await api("/api/items?" + p);
-      if (all.total) body.innerHTML = `<tr><td colspan="10" class="sub" style="padding:20px">
+      if (all.total) body.innerHTML = `<tr><td colspan="11" class="sub" style="padding:20px">
         No <b>${esc($("#f-view").selectedOptions[0].text)}</b> items match — but ${all.total.toLocaleString()}
         cataloged items do. Imported catalogs start as not-wanted; switch to
         <button class="small ghost" id="lib-showall">All items</button> and use the bulk action to flag what you want.</td></tr>`;
@@ -317,7 +341,8 @@ $("#bulk-apply").addEventListener("click", async () => {
   const label = $("#bulk-action").selectedOptions[0].text.toLowerCase();
   if (!confirm(`${$("#bulk-action").selectedOptions[0].text} for ALL ${lib.total.toLocaleString()} items matching the current filters?`)) return;
   try {
-    const filters = {q: $("#f-q").value.trim(), system: $("#f-system").value, status: $("#f-status").value, view: $("#f-view").value};
+    const filters = {q: $("#f-q").value.trim(), system: $("#f-system").value, status: $("#f-status").value, view: $("#f-view").value,
+                     health: $("#f-health").value, core: $("#f-core").value, board: $("#f-board").value.trim()};
     const r = await post("/api/items/bulk", {field, value, filters});
     toast(`${r.updated.toLocaleString()} items: ${label}`);
     loadLibrary();
@@ -343,7 +368,8 @@ $("#lib-own").addEventListener("click", async () => {
 let debounce;
 $("#f-q").addEventListener("input", () => { clearTimeout(debounce); debounce = setTimeout(() => loadLibrary(), 300); });
 $("#f-view").addEventListener("change", () => { refreshSystemCounts(); loadLibrary(); });
-["#f-system", "#f-status"].forEach(s => $(s).addEventListener("change", () => loadLibrary()));
+["#f-system", "#f-status", "#f-health", "#f-core"].forEach(s => $(s).addEventListener("change", () => loadLibrary()));
+$("#f-board").addEventListener("input", () => { clearTimeout(debounce); debounce = setTimeout(() => loadLibrary(), 300); });
 $("#f-sort").addEventListener("change", () => {
   lib.sort = $("#f-sort").value; lib.dir = NATURAL_DIR[lib.sort] || "asc";
   renderSortArrows(); loadLibrary();
@@ -383,6 +409,12 @@ $("#lib-table").addEventListener("change", async e => {
       const r = await post(`/api/items/${encodeURIComponent(t.dataset.id)}`, {field: "status", value: t.value});
       toast(`${r.title}: status ${r.status}`);
       t.closest("td").querySelector(".badge").outerHTML = badge(r.status);
+    } else if (t.matches("select.verdict-edit")) {
+      await post("/api/arcade/verdict", {setname: t.dataset.set, core: $("#f-core").value,
+                                         verdict: t.value || null});
+      toast(t.value ? `${t.dataset.set}: marked ${t.selectedOptions[0].text} on ${$("#f-core").selectedOptions[0].text}`
+                    : `${t.dataset.set}: back to the computed status`);
+      loadLibrary();
     } else if (t.matches("select.rating-edit")) {
       const r = await post(`/api/items/${encodeURIComponent(t.dataset.id)}`,
                            {field: "rating", value: t.value === "" ? "" : parseInt(t.value, 10)});
@@ -594,6 +626,7 @@ function loadImport() {
   $("#rom-path").value ||= localStorage.getItem("romcom-romset-path") || "";
   loadOrgProfiles().then(loadOrgPlan);
   loadDupes();
+  loadArcadeHealth();
   for (const kind of Object.keys(JOBS)) pollJob(kind, false);
 }
 
@@ -1072,6 +1105,73 @@ function heldHtml(h, core) {
     <div class="checklist" style="max-height:none">${why}</div>
     <p class="sub">For example:</p><div class="checklist">${eg}</div></details>`;
 }
+
+/* ---------- Arcade health: per core, what runs, what is broken, what to fix first ---------- */
+async function loadArcadeHealth() {
+  let m;
+  try { m = await api("/api/arcade/health?core=" + $("#ah-core").value); }
+  catch (e) { $("#ah-body").innerHTML = `<p class="sub">${esc(e.message)}</p>`; return; }
+  $("#ah-checked").textContent = m.checked_at ? `checked ${relDate(m.checked_at.replace(" ", "T") + "Z")}` : "never checked — press Re-check";
+  const c = m.counts, core = $("#ah-core").selectedOptions[0].text;
+  const tile = (v, l, d, cls = "") => `<div class="tile ${cls}"><div class="v">${(v || 0).toLocaleString()}</div><div class="l">${l}</div>${d ? `<div class="d">${d}</div>` : ""}</div>`;
+  const elsewhere = Object.entries(m.elsewhere || {}).map(([k, n]) => `${n} run on ${esc(k)}`).join(", ");
+  const boards = m.boards.filter(b => b.broken || b.partial).slice(0, 15).map(b => `<tr>
+      <td><a href="#library" class="ah-board" data-board="${esc(b.board)}">${esc(b.board)}</a></td>
+      <td class="r">${b.total}</td><td class="r">${b.works}</td><td class="r">${b.partial}</td>
+      <td class="r">${b.broken}</td><td class="r">${b.total ? Math.round(100 * b.works / b.total) : 0}%</td></tr>`).join("");
+  const fixes = m.fixes.slice(0, 15).map(f => `<div class="check"><span class="mark">${f.unlocks}</span><span class="d">
+      ${f.kind === "chips" ? `chips <code>${esc(f.name)}</code>${f.from ? ` — from <b>${esc(f.from)}</b> (${esc(f.from_dat || "")})` : ""}`
+                           : `${esc(f.kind)} <b>${esc(f.name)}</b>`}
+      <span class="sub">— brings back ${f.unlocks} game${f.unlocks > 1 ? "s" : ""}: ${esc(f.sets.slice(0, 6).join(", "))}${f.sets.length > 6 ? "…" : ""}</span></span></div>`).join("");
+  $("#ah-body").innerHTML = `<div class="tiles" style="margin-top:12px">
+      ${tile(m.owned, "Arcade sets owned")}
+      ${tile(c.works, "Work", `on ${esc(core)}`)}
+      ${tile(c.partial, "Partly work", "imperfect sound, colours or graphics")}
+      ${tile(c.broken, "Broken", "kept off exports by default")}
+      ${tile(c.unjudged, "Not in this romset", "this core has no set by that name")}</div>
+    <p class="sub">Broken because: ${m.roms_missing.toLocaleString()} miss chips of their own ·
+      ${m.chd_sets.toLocaleString()} need a CHD · ${m.driver_broken.toLocaleString()} have a driver the core never finished${elsewhere ? ` (${elsewhere})` : ""}.</p>`
+    + (boards ? `<details class="skiplist" open><summary>Boards with trouble — click one to list it in the Library</summary>
+        <div class="tablewrap"><table><thead><tr><th>Board</th><th class="r">Owned</th><th class="r">Work</th>
+        <th class="r">Partial</th><th class="r">Broken</th><th class="r">Working</th></tr></thead><tbody>${boards}</tbody></table></div></details>` : "")
+    + (fixes ? `<details class="skiplist" open><summary>Fixes that bring the most back (${m.fix_count} in all)</summary>
+        <div class="checklist" style="max-height:none">${fixes}</div></details>` : "");
+}
+
+$("#ah-core").addEventListener("change", () => { $("#ah-repair-out").innerHTML = ""; loadArcadeHealth(); });
+$("#ah-refresh").addEventListener("click", async () => {
+  $("#ah-refresh").disabled = true;
+  try { await post("/api/arcade/health/refresh"); toast("Arcade sets re-checked"); loadArcadeHealth(); }
+  catch (e) { toast(e.message, true); }
+  $("#ah-refresh").disabled = false;
+});
+$("#ah-body").addEventListener("click", e => {
+  const a = e.target.closest(".ah-board");
+  if (!a) return;
+  $("#f-view").value = "all"; $("#f-system").value = "arcade"; $("#f-board").value = a.dataset.board;
+  $("#f-core").value = $("#ah-core").value; $("#f-health").value = "";
+  lib.sort = "health"; lib.dir = "asc"; $("#f-sort").value = "health"; renderSortArrows();
+});
+async function arcadeRepair(apply) {
+  const core = $("#ah-core").value;
+  let r;
+  try { r = await post("/api/arcade/repair", {core, apply}); } catch (e) { toast(e.message, true); return; }
+  const n = r.to_arm;
+  $("#ah-repair-out").innerHTML = `<div class="checklist" style="max-height:none;margin-top:12px">
+      <div class="check ${n ? "" : "ok"}"><span class="mark">${n ? n : "✓"}</span><span class="d">
+        ${r.applied ? `queued for download — the acquire watcher fetches them${r.auto_acquire_started ? " (started)" : ""}`
+                    : n ? `download${n > 1 ? "s" : ""} would fix owned broken sets: ${r.deps} bios/device/parent set(s), ${r.sets} game(s) missing chips or a CHD`
+                        : "nothing to queue for this core"}
+        ${r.already_queued ? `<span class="sub"> · ${r.already_queued} already queued</span>` : ""}</span></div>
+      ${r.romset_mismatch ? `<div class="check"><span class="mark">${r.romset_mismatch}</span><span class="d">need this core's own romset version —
+        the catalog is the MAME romset, so another MAME download will not fix them. Use the fixes list above, or play them on MAME.</span></div>` : ""}
+      ${r.sample.length && !r.applied ? `<div class="check"><span class="mark">·</span><span class="d sub">${esc(r.sample.join(", "))}${n > r.sample.length ? "…" : ""}</span></div>` : ""}
+    </div>` + (n && !r.applied ? `<button id="ah-repair-go" class="primary" style="margin-top:8px">Queue ${n} download${n > 1 ? "s" : ""}</button>` : "");
+}
+$("#ah-repair").addEventListener("click", () => arcadeRepair(false));
+$("#ah-repair-out").addEventListener("click", e => {
+  if (e.target.id === "ah-repair-go") { e.target.disabled = true; arcadeRepair(true); }
+});
 
 function renderRomsetResult(r) {
   if (r.error) {

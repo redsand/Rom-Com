@@ -68,7 +68,9 @@ def _parse(path):
         if m:
             cur = {"name": m.group(1), "cloneof": _attr(line, "cloneof"),
                    "romof": _attr(line, "romof"), "sourcefile": _attr(line, "sourcefile"),
-                   "isbios": _attr(line, "isbios") == "yes",
+                   # MAME 2003-Plus marks its boards (neogeo) runnable="no" instead
+                   "isbios": _attr(line, "isbios") == "yes" or (
+                       _attr(line, "runnable") == "no" and _attr(line, "isdevice") != "yes"),
                    "isdevice": _attr(line, "isdevice") == "yes",
                    "runnable": _attr(line, "runnable") != "no",
                    "driver": None, "roms": [], "nodump": 0, "disks": [], "devices": [],
@@ -90,7 +92,7 @@ def _parse(path):
         elif "<disk " in line:
             if _attr(line, "status") == "nodump" or _attr(line, "optional") == "yes":
                 continue
-            cur["disks"].append({"name": _attr(line, "name") or "",
+            cur["disks"].append({"name": _disk_name(_attr(line, "name")),
                                  "sha1": (_attr(line, "sha1") or "").lower(),
                                  "merge": _attr(line, "merge")})
         elif "<device_ref " in line:
@@ -100,6 +102,13 @@ def _parse(path):
                              ("status", "emulation", "color", "sound", "graphic")
                              if _attr(line, k)}
     return out
+
+
+def _disk_name(name):
+    """A dat's disk name as MAME looks for it on disk, without the .chd MAME 2003-Plus's
+    dat writes into the name itself."""
+    name = name or ""
+    return name[:-4] if name.lower().endswith(".chd") else name
 
 
 def needed_parents(machines, name):
@@ -404,4 +413,208 @@ def summary(db=None):
                 reasons[key] = reasons.get(key, 0) + 1
         out[core] = {"counts": counts,
                      "top_broken_reasons": sorted(reasons.items(), key=lambda kv: -kv[1])[:8]}
+    return out
+
+
+# ------------------------------------------------------------------------------ metrics
+_IN_HAND = ("FOUND", "DOWNLOADED", "VERIFIED", "NORMALIZED", "INSTALLED", "TESTED")
+_SET = "substr(external_id, instr(external_id,'/')+1)"
+
+
+def _in_hand(db):
+    """{setname: (item_id, status)} for the arcade games the library holds some of. The
+    catalog lists every machine MAME knows; metrics about sets nobody downloaded would
+    bury the ones worth fixing."""
+    return {r["s"]: (r["id"], r["status"]) for r in db.execute(
+        f"""SELECT {_SET} s, id, status FROM items
+            WHERE system='arcade' AND COALESCE(is_device,0)=0
+              AND status IN ({','.join('?' * len(_IN_HAND))})""", _IN_HAND)}
+
+
+def board(family):
+    """'capcom/cps2.cpp', 'capcom/d_cps2.cpp', 'cps2.c' -> 'cps2': the driver file is the
+    board family, spelled three ways by three dats."""
+    if not family:
+        return "unknown"
+    stem = family.replace("\\", "/").rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    return stem[2:] if stem.startswith("d_") else stem
+
+
+def _rows(db, core):
+    return {r["setname"]: r for r in db.execute(
+        "SELECT setname,status,reason,family,missing FROM arcade_health WHERE core=?", (core,))}
+
+
+def metrics(core="mame", db=None):
+    """Where the library's arcade sets stand on one core, and what to fix first.
+
+    `boards` groups by driver family (cps2, neogeo, naomi…) so a whole board's trouble shows
+    as one line; `fixes` ranks single downloads by how many owned games each would unlock
+    (one neogeo bios can bring back a hundred sets); `elsewhere` counts the sets broken
+    here that another core judges playable — a preliminary driver is fixed by switching
+    cores, not by downloading anything."""
+    db = db or connect()
+    hand = _in_hand(db)
+    rows = _rows(db, core)
+    known = statuses(core, db)
+    counts = {s: 0 for s in STATUSES} | {"unjudged": 0}
+    boards, fixes, roms_missing, chd_sets = {}, {}, [], []
+    driver_broken, short = [], {}
+    for s in hand:
+        st = known.get(s, (None, ""))[0]
+        counts[st or "unjudged"] = counts.get(st or "unjudged", 0) + 1
+        row = rows.get(s)
+        b = boards.setdefault(board(row["family"] if row else None),
+                              {s_: 0 for s_ in STATUSES} | {"unjudged": 0, "total": 0})
+        b[st or "unjudged"] += 1
+        b["total"] += 1
+        if st != "broken" or not row:
+            continue
+        missing = json.loads(row["missing"]) if row["missing"] else []
+        deps = {(k, n) for k, n in missing if k in ("bios", "device", "parent", "chd")}
+        if any(k == "rom" for k, _ in missing):
+            roms_missing.append(s)
+            short[s] = (frozenset(n for k, n in missing if k == "rom"), deps)
+        elif deps:
+            for k, n in deps:
+                fixes.setdefault((k, n), []).append(s)
+            if any(k == "chd" for k, _ in deps):
+                chd_sets.append(s)
+        elif not missing:
+            driver_broken.append(s)
+    # Chips many owned sets lack at once are a board's bios in another romset version
+    # (MAME 2003-Plus's neogeo wants sfix.sfx, mame.sm1, mamelo.lo): one download that
+    # brings back every set whose only gap is that chip group.
+    seen = {}
+    for chips_, _ in short.values():
+        for c in chips_:
+            seen[c] = seen.get(c, 0) + 1
+    for s, (chips_, deps) in short.items():
+        shared = frozenset(c for c in chips_ if seen[c] >= 3)
+        if shared and shared == chips_ and not deps:
+            fixes.setdefault(("chips", ", ".join(sorted(shared))), []).append(s)
+    elsewhere = {}
+    for other in [c for c in _cores_judged(db) if c != core]:
+        ok = statuses(other, db)
+        n = sum(1 for s in driver_broken if ok.get(s, (None,))[0] in ("works", "partial"))
+        if n:
+            elsewhere[other] = n
+    fix_list = sorted(({"kind": k, "name": n, "unlocks": len(v), "sets": sorted(v)[:12]}
+                       for (k, n), v in fixes.items()), key=lambda f: (-f["unlocks"], f["name"]))
+    _name_chip_sources(core, fix_list)
+    return {"core": core, "owned": len(hand), "counts": counts,
+            "checked_at": db.execute("SELECT MAX(checked_at) FROM arcade_health WHERE core=?",
+                                     (core,)).fetchone()[0],
+            "boards": sorted(({"board": k, **v} for k, v in boards.items()),
+                             key=lambda b: (-b["broken"], -b["total"], b["board"])),
+            "fixes": fix_list[:40], "fix_count": len(fix_list),
+            "roms_missing": len(roms_missing), "chd_sets": len(chd_sets),
+            "driver_broken": len(driver_broken), "elsewhere": elsewhere}
+
+
+def _name_chip_sources(core, fixes):
+    """Which board set carries a chip group — 'get neogeo (MAME 2003-Plus's)' is a fix an
+    owner can act on, three chip names are not. The affected games' own romof root says it
+    first (2003-Plus's neogeo is runnable="no", FBNeo's pgm is not flagged at all); failing
+    that, any bios in the core's dats that holds every chip."""
+    from . import mameset
+    chip_fixes = [f for f in fixes if f["kind"] == "chips"]
+    if not chip_fixes:
+        return
+    for dat in mameset.dat_paths(core):
+        machines = parse(dat)
+        for f in chip_fixes:
+            if f.get("from"):
+                continue
+            want = set(f["name"].split(", "))
+            # Up each affected game's romof chain, top first: the board that holds the
+            # whole chip group wins, else the top of the chain — a parent the dat never
+            # defines (FBNeo's pgm) is still the name to fetch.
+            votes = {}
+            for s_ in f["sets"]:
+                chain, m = [], machines.get(s_)
+                while m and m["romof"] and m["romof"] not in chain and m["romof"] != s_:
+                    chain.append(m["romof"])
+                    m = machines.get(m["romof"])
+                holder = next((n for n in reversed(chain) if n in machines
+                               and want <= {r[2] for r in machines[n]["roms"]}), None)
+                top = holder or (chain[-1] if chain else None)
+                if top:
+                    votes[top] = votes.get(top, 0) + 1
+            pick = max(votes, key=votes.get) if votes else None
+            if not pick:
+                pick = next((n for n, m in sorted(machines.items())
+                             if m["isbios"] and want <= {r[2] for r in m["roms"]}), None)
+            if pick:
+                f["from"], f["from_dat"] = pick, dat.name
+
+
+def _cores_judged(db):
+    return [r[0] for r in db.execute("SELECT DISTINCT core FROM arcade_health ORDER BY core")]
+
+
+def repair(core="mame", apply=False, db=None):
+    """Arm the downloads that fix owned broken sets, for the acquire pipeline to fetch.
+
+    A missing bios/device/parent is a catalog item of its own (neogeo, namco54): it is
+    marked wanted + authorized, and set back to MISSING when the library holds it only in
+    part, because the acquirer attempts CATALOGED/MISSING items only. A game missing its
+    own chips or CHD is re-armed the same way — on the mame core only: the catalog is the
+    MAME romset, so a set short of FBNeo's or 2003-Plus's chip versions is a romset
+    mismatch another download of the MAME set will not cure; those are counted, not armed.
+    A preliminary driver is not a download at all. `apply=False` is the preview."""
+    db = db or connect()
+    hand = _in_hand(db)
+    rows = _rows(db, core)
+    known = statuses(core, db)
+    want_deps, want_sets, mismatch = set(), set(), 0
+    for s in hand:
+        if known.get(s, (None,))[0] != "broken" or s not in rows:
+            continue
+        missing = json.loads(rows[s]["missing"]) if rows[s]["missing"] else []
+        for k, n in missing:
+            if k in ("bios", "device", "parent"):
+                want_deps.add(n)
+        if any(k in ("rom", "chd") for k, _ in missing):
+            if core == "mame":
+                want_sets.add(s)
+            else:
+                mismatch += 1
+    names = sorted(want_deps | want_sets)
+    items = {}
+    for i in range(0, len(names), 800):
+        chunk = names[i:i + 800]
+        for r in db.execute(
+                f"""SELECT id, {_SET} s, status, wanted, authorized FROM items
+                    WHERE system='arcade' AND {_SET} IN ({','.join('?' * len(chunk))})""",
+                chunk):
+            items[r["s"]] = r
+    # Only what would change: an item already armed and CATALOGED/MISSING is in the
+    # acquirer's queue already.
+    todo = [r for r in items.values()
+            if not (r["wanted"] and r["authorized"] and r["status"] in ("CATALOGED", "MISSING"))]
+    if core != "mame":
+        # A dependency the MAME catalog already holds whole is this core's chip-version
+        # mismatch too: fetching the MAME set again changes nothing.
+        held = [r for r in todo if r["status"] in ("VERIFIED", "NORMALIZED", "INSTALLED",
+                                                   "TESTED")]
+        mismatch += len(held)
+        todo = [r for r in todo if r not in held]
+    out = {"core": core, "deps": len(want_deps), "sets": len(want_sets),
+           "not_in_catalog": sorted(set(names) - set(items))[:40],
+           "already_queued": len(items) - len(todo), "to_arm": len(todo),
+           "romset_mismatch": mismatch,
+           "sample": sorted(r["s"] for r in todo)[:30], "applied": False}
+    if apply and todo:
+        with db:
+            for r in todo:
+                db.execute("""UPDATE items SET wanted=1, authorized=1,
+                              status=CASE WHEN status IN ('CATALOGED','MISSING') THEN status
+                                          ELSE 'MISSING' END,
+                              updated_at=CURRENT_TIMESTAMP WHERE id=?""", (r["id"],))
+                db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
+                           (r["id"], "arcade-repair",
+                            f"armed to fix broken {core} sets ({r['status']} -> "
+                            f"{r['status'] if r['status'] in ('CATALOGED', 'MISSING') else 'MISSING'})"))
+        out["applied"] = True
     return out

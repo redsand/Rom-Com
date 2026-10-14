@@ -130,8 +130,9 @@ def set_disks(setnames, path=None):
         nm = re.search(r'\bname="([^"]+)"', line)
         sha = re.search(r'\bsha1="([0-9a-fA-F]+)"', line)
         if nm:
+            from .arcadehealth import _disk_name
             out.setdefault(cur, []).append(
-                {"name": nm.group(1), "sha1": sha.group(1).lower() if sha else ""})
+                {"name": _disk_name(nm.group(1)), "sha1": sha.group(1).lower() if sha else ""})
     return out
 
 
