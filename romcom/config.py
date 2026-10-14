@@ -76,6 +76,7 @@ ENV_VARS = {
     "ra_enabled": "ROMCOM_RA_ENABLED",
     "ra_delay": "ROMCOM_RA_DELAY",
     "ra_timeout": "ROMCOM_RA_TIMEOUT",
+    "community_auto_hours": "ROMCOM_COMMUNITY_AUTO_HOURS",
 }
 # Deliberately NOT here: the web master login (ROMCOM_WEB_USER/ROMCOM_WEB_PASS), the
 # MCP key (ROMCOM_MCP_KEY), and the community-source API credentials (RA_USERNAME,
@@ -154,6 +155,9 @@ def _env_settings():
         "ra_enabled": os.getenv("ROMCOM_RA_ENABLED", "false"),
         "ra_delay": os.getenv("ROMCOM_RA_DELAY", "1.0"),
         "ra_timeout": os.getenv("ROMCOM_RA_TIMEOUT", "30"),
+        # The service re-syncs crowd scores by itself this often (hours); 0 = never.
+        # Daily matches the providers' own daily budgets: each run spends one day's.
+        "community_auto_hours": os.getenv("ROMCOM_COMMUNITY_AUTO_HOURS", "24"),
     }
 
 def _overrides(db_path):
@@ -236,6 +240,8 @@ def settings():
     for k, dflt in (("ra_delay", 1.0), ("ra_timeout", 30.0)):
         try: s[k] = max(0.0, float(s[k]))
         except (TypeError, ValueError): s[k] = dflt
+    try: s["community_auto_hours"] = max(0.0, float(s["community_auto_hours"]))
+    except (TypeError, ValueError): s["community_auto_hours"] = 24.0
     return s
 
 def load_yaml(name):

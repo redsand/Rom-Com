@@ -1074,13 +1074,33 @@ def create_app():
             pass  # the watchdog itself must never die
         return False
 
+    CROWD_CHECK_SECS = 600  # how often the scheduler asks whether a crowd sync is due
+
+    def _crowd_tick():
+        """Crowd scores keep themselves fresh: once community_auto_hours have passed
+        since the last whole-library sync, start one as an ordinary community job (so it
+        shows on the dashboard and can be watched like any other). Returns True if it
+        launched. A sync already running — started by hand or by this — is left alone."""
+        try:
+            from . import community
+            if jobs["community"]["running"] or not community.sync_due():
+                return False
+            return _launch("community", {"auto": True})
+        except Exception:
+            return False  # the scheduler must never take the watchdog down with it
+
     def _watchdog():
         """Keep the always-on watcher alive. Combined with auto_acquire's per-sweep error
         recovery, this is what makes 'always healthy' true in practice: no single failure
-        can leave downloads silently stopped until someone notices."""
+        can leave downloads silently stopped until someone notices. The same thread runs
+        the crowd-score schedule."""
+        last_crowd = 0.0
         while True:
             time.sleep(WATCHDOG_INTERVAL)
             _watchdog_tick()
+            if time.monotonic() - last_crowd >= CROWD_CHECK_SECS:
+                last_crowd = time.monotonic()
+                _crowd_tick()
 
     def start_watchdog():
         threading.Thread(target=_watchdog, daemon=True).start()
@@ -1130,6 +1150,7 @@ def create_app():
 
     app.jobs = jobs          # test seam: lets a test freeze a heartbeat
     app.watchdog_tick = _watchdog_tick
+    app.crowd_tick = _crowd_tick
     app.start_watchdog = start_watchdog
     app.start_checkpointer = start_checkpointer
 

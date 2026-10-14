@@ -32,6 +32,7 @@ import sqlite3
 import threading
 import time
 from datetime import date
+from pathlib import Path
 
 import requests
 
@@ -531,6 +532,77 @@ def _refresh_best(db, item_ids):
             WHERE id IN ({','.join('?' * len(chunk))})""", chunk)
 
 
+# Progetto-SNAPS' bestgames.ini: AntoPISA's 0-100 ranking of every working arcade parent
+# (~3.5k), in ten bands. One curator, not a crowd — so it only ever fills an arcade game
+# nobody else has an opinion on (RAWG barely knows arcade, RA has ~2.3k records), and it
+# is mirrored under DAT/ like every other reference file this library leans on.
+BESTGAMES_URL = ("https://raw.githubusercontent.com/AntoPISA/MAME_SupportFiles/main/"
+                 "bestgames.ini/bestgames.ini")
+BESTGAMES_STALE_DAYS = 30
+_BAND = re.compile(r"^\[(\d+) to (\d+)")
+
+
+def bestgames_path():
+    from .config import ROOT
+    return ROOT / "DAT" / "Progetto-SNAPS BestGames" / "bestgames.ini"
+
+
+def bestgames_refresh(force=False):
+    """Mirror bestgames.ini locally (monthly). A failed fetch keeps the old copy."""
+    p = bestgames_path()
+    if p.exists() and not force and time.time() - p.stat().st_mtime < BESTGAMES_STALE_DAYS * 86400:
+        return p
+    try:
+        r = requests.get(BESTGAMES_URL, headers={"User-Agent": UA}, timeout=60)
+        r.raise_for_status()
+        if "[90 to 100" in r.text:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(r.content)
+    except requests.RequestException:
+        pass
+    return p if p.exists() else None
+
+
+def parse_bestgames(text):
+    """setname -> score, the middle of its band ('[70 to 80 (Good)]' -> 75)."""
+    out, band = {}, None
+    for line in text.splitlines():
+        line = line.strip()
+        m = _BAND.match(line)
+        if m:
+            band = (int(m.group(1)) + int(m.group(2))) // 2
+        elif line.startswith("["):
+            band = None
+        elif band is not None and line and not line.startswith(";"):
+            out[line] = band
+    return out
+
+
+def bestgames_scores(db=None, path=None):
+    """Score arcade sets from bestgames.ini where no crowd source has: re-derived whole
+    each time (like clone inheritance), so a set RAWG/RA later scores drops its fallback.
+    Returns how many sets it scored."""
+    db = db or connect()
+    path = path or bestgames_refresh()
+    if not path:
+        return 0
+    ranks = parse_bestgames(Path(path).read_text(encoding="utf-8-sig", errors="replace"))
+    _set = "substr(external_id, instr(external_id,'/')+1)"
+    crowd = {r["item_id"] for r in db.execute(
+        "SELECT item_id FROM community_scores WHERE source IN ('rawg','retroachievements')")}
+    rows = [(r["id"], ranks[r["s"]], r["s"]) for r in db.execute(
+        f"SELECT id, {_set} s FROM items WHERE system='arcade' AND COALESCE(is_device,0)=0")
+        if r["s"] in ranks and r["id"] not in crowd]
+    with db:
+        before = [x[0] for x in db.execute(
+            "SELECT item_id FROM community_scores WHERE source='bestgames'")]
+        db.execute("DELETE FROM community_scores WHERE source='bestgames'")
+        db.executemany("INSERT INTO community_scores(item_id,source,score,votes,matched_title)"
+                       " VALUES(?,'bestgames',?,NULL,?)", rows)
+        _refresh_best(db, list(set(before) | {x[0] for x in rows}))
+    return len(rows)
+
+
 def inherit_clone_scores(db=None):
     """An arcade clone is its parent's game — '(set 2)', '(Japan, System 16A)', a
     bootleg — so an unscored clone takes the parent's crowd score, recorded as source
@@ -742,11 +814,38 @@ def sync(systems=None, db=None, progress=None):
     # instead of only what the last one scored.
     if systems is None or "arcade" in systems:
         try:
+            report["bestgames"] = bestgames_scores(db)
+        except Exception as ex:
+            report["errors"].append(f"bestgames: {ex}")
+        try:
             report["clones_inherited"] = inherit_clone_scores(db)
         except Exception as ex:
             report["errors"].append(f"clones: {ex}")
     report["gap"] = ranking_gap(db, systems)
+    if systems is None:
+        # Only a whole-library sync counts as "synced": the service's daily schedule
+        # reads this, and a one-system run must not push the next full one back.
+        _set_state(db, "sync", "last", time.time())
     return report
+
+
+def last_sync(db=None):
+    """Epoch seconds of the last whole-library sync, or None (never)."""
+    db = db or connect()
+    try:
+        return float(_state(db, "sync", "last"))
+    except (TypeError, ValueError):
+        return None
+
+
+def sync_due(db=None, now=None):
+    """Whether the service should start a sync by itself: a provider is ready, the
+    schedule is on (community_auto_hours > 0), and the last full sync is that old."""
+    hours = settings()["community_auto_hours"]
+    if hours <= 0 or not any(providers_ready().values()):
+        return False
+    last = last_sync(db)
+    return last is None or (now or time.time()) - last >= hours * 3600
 
 
 def ranking_gap(db=None, systems=None):
@@ -786,8 +885,14 @@ def status(db=None):
         " FROM community_scores GROUP BY source")}
     covered = db.execute("SELECT COUNT(*) c FROM items WHERE community_score IS NOT NULL"
                          " AND COALESCE(is_device,0)=0").fetchone()["c"]
+    last = last_sync(db)
+    hours = settings()["community_auto_hours"]
     return {"providers": ready, "covered_items": covered, "by_source": rows,
             "gap": ranking_gap(db),
+            "last_sync": time.strftime("%Y-%m-%d %H:%M", time.localtime(last)) if last else None,
+            "auto_hours": hours,
+            "next_sync": (time.strftime("%Y-%m-%d %H:%M", time.localtime(last + hours * 3600))
+                          if last and hours else ("soon" if hours else None)),
             "rawg_budget_left": _budget_left(db, "rawg"),
             "rawg_budget": settings()["rawg_budget"],
             "ra_budget_left": _budget_left(db, "ra"),

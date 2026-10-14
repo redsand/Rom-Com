@@ -666,3 +666,26 @@ def test_unscored_clones_take_their_parents_score(monkeypatch, tmp_path):
         db.execute("UPDATE community_scores SET score=80 WHERE item_id='sf2'")
     community.inherit_clone_scores(db)
     assert db.execute("SELECT community_score FROM items WHERE id='sf2j'").fetchone()[0] == 80
+
+
+def test_bestgames_fills_only_arcade_games_the_crowd_has_not_scored(monkeypatch, tmp_path):
+    """A curator's band score is a fallback: a set with a RAWG/RA score keeps it, a
+    set with none gets its band's middle, and its clones inherit that."""
+    db = setup(monkeypatch, tmp_path)
+    ini = tmp_path / "bestgames.ini"
+    ini.write_text("[FOLDER_SETTINGS]\nRootFolderIcon mame\n\n[ROOT_FOLDER]\n\n"
+                   "[70 to 80 (Good)]\nsf2\npacman\n\n[90 to 100 (Best Games)]\ndkong\n",
+                   encoding="utf-8")
+    assert community.parse_bestgames(ini.read_text()) == {"sf2": 75, "pacman": 75, "dkong": 95}
+    with db:
+        for iid, s in (("a1", "sf2"), ("a2", "pacman"), ("a3", "dkong")):
+            db.execute("INSERT INTO items(id,system,title,external_id,status) VALUES(?,?,?,?,'VERIFIED')",
+                       (iid, "arcade", s, f"mame/{s}"))
+        db.execute("INSERT INTO community_scores(item_id,source,score,votes,matched_title)"
+                   " VALUES('a2','retroachievements',40,900,'Pac-Man')")
+    assert community.bestgames_scores(db, path=ini) == 2
+    got = {r["id"]: (r["community_score"], r["community_source"]) for r in db.execute(
+        "SELECT id, community_score, community_source FROM items")}
+    assert got["a1"] == (75, "bestgames") and got["a3"] == (95, "bestgames")
+    assert db.execute("SELECT COUNT(*) FROM community_scores WHERE item_id='a2' AND source='bestgames'"
+                      ).fetchone()[0] == 0

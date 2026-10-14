@@ -1024,12 +1024,14 @@ async function refreshCommunityStatus() {
     const g = s.gap || {};
     const where = (g.unranked_by_system || []).slice(0, 4)
       .map(x => `${esc(x.system)} ${x.n.toLocaleString()}`).join(", ");
-    $("#community-status").textContent = s.covered_items
+    const sched = !s.auto_hours ? " — automatic sync off"
+      : ` — syncs by itself every ${s.auto_hours}h (last ${s.last_sync || "never"}, next ${s.next_sync || "soon"})`;
+    $("#community-status").textContent = (s.covered_items
       ? `${s.covered_items.toLocaleString()} scored (${srcs || "none yet"}) · ` +
         `${(g.unranked || 0).toLocaleString()} unranked of ${(g.universe || 0).toLocaleString()}` +
         `${where ? ` — biggest gaps: ${where}` : ""}` +
         ` — RAWG requests left today: ${s.rawg_budget_left}/${s.rawg_budget}`
-      : "no scores yet — sync first";
+      : "no scores yet — sync first") + sched;
   } catch (e) { $("#community-status").textContent = e.message; }
 }
 
@@ -1343,7 +1345,7 @@ const SET_KEYS = ["nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "s
                   "search_cache_ttl", "llm_enabled", "llm_base", "llm_model", "llm_timeout",
                   "export_wanted_only", "export_curated_only", "export_rating_min",
                   "rawg_enabled", "rawg_delay", "rawg_jitter", "rawg_timeout", "rawg_budget",
-                  "ra_enabled", "ra_delay", "ra_timeout"];
+                  "ra_enabled", "ra_delay", "ra_timeout", "community_auto_hours"];
 
 const SRC_LABEL = { ui: "saved in UI", env: "from .env", default: "default" };
 

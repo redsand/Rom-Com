@@ -412,3 +412,39 @@ def test_cancel_endpoint_stops_a_running_export(monkeypatch, tmp_path):
         time.sleep(0.05)
     assert status == "cancelled"
     assert c.post("/api/job/scan/cancel").status_code == 400
+
+
+def test_the_crowd_sync_schedules_itself(monkeypatch, tmp_path):
+    """Crowd scores refresh without anyone pressing Sync: once a day's gone by since
+    the last whole-library sync, the service's scheduler starts one; right after, it
+    doesn't; and 0 hours turns the schedule off."""
+    import time as _t
+    from romcom import community
+    from romcom.config import invalidate
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
+    monkeypatch.setenv("ROMCOM_RA_ENABLED", "true")
+    monkeypatch.setenv("RA_USERNAME", "u")
+    monkeypatch.setenv("RA_API_KEY", "k")
+    invalidate()
+    db = connect()
+    ran = threading.Event()
+    def fake_sync(systems=None, progress=None, db=None):
+        community._set_state(connect(), "sync", "last", _t.time())
+        ran.set()
+        return {}
+    monkeypatch.setattr(community, "sync", fake_sync)
+    app = create_app()
+    assert community.sync_due(db) is True            # never synced: due
+    assert app.crowd_tick() is True
+    assert ran.wait(5)
+    for _ in range(50):
+        if not app.jobs["community"]["running"]:
+            break
+        _t.sleep(0.05)
+    assert community.sync_due(db) is False           # just synced: not due
+    assert app.crowd_tick() is False
+    assert community.status(db)["last_sync"]
+    monkeypatch.setenv("ROMCOM_COMMUNITY_AUTO_HOURS", "0")
+    invalidate()
+    community._set_state(db, "sync", "last", 0)
+    assert community.sync_due(db) is False           # schedule off

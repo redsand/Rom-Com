@@ -51,6 +51,8 @@ def hermetic_env(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(ps3, "firmware", offline)
     from romcom import arcadefetch
     monkeypatch.setattr(arcadefetch, "planetemu_page", lambda name: None)
+    from romcom import community
+    monkeypatch.setattr(community, "bestgames_refresh", lambda force=False: None)
     ps3._index.clear()
     invalidate()
     yield
