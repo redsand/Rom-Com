@@ -416,8 +416,15 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
             _skip(c, "arcade: " + (detail if rep_["missing"] else "; ".join(rep_["errors"][:2])),
                   wdb, miss=not rep_["errors"])
         else:
-            _skip(c, "arcade: nothing missing by the dat (a preliminary driver, not a download)",
-                  wdb, miss=True)
+            # Complete already (another fetch brought what it lacked): in hand, not armed.
+            _retry_write(wdb, "UPDATE items SET status='VERIFIED', updated_at=CURRENT_TIMESTAMP "
+                              "WHERE id=?", (c["id"],))
+            try:
+                with wdb:
+                    wdb.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
+                                (c["id"], "arcade-fetch", "already complete by the dat"))
+            except Exception:
+                pass
 
     # --- background direct workers (romsgames/vimm), off the NZB path ---
     direct_q = queue.Queue()
