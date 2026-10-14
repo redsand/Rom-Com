@@ -505,6 +505,43 @@ hijack the build). Chips the dump is missing (a redumped bios, clone-only PROMs)
 be dropped in a folder and `romcom scan`ned — romset matches by hash, so the folder is
 otherwise irrelevant.
 
+### Fetching what arcade sets lack
+
+A title search cannot find arcade parts. A broken owned set usually lacks one chip that
+MAME's current dump added (`nbahangt` wants `459_nba_hang_time_u64.u64`), a device's chips
+(`m50dass`, `swp30`), a bios, or a CHD. `arcadefetch.py` works from the dat instead. For a
+set it lists every chip and CHD the set needs (its own, its bios parents', and every device
+it pulls in), keeps those the library has no file for, and fetches exactly those, in this
+order:
+
+1. archive.org `arcade_<set>`: the per-machine items, with the set's zip, its devices
+   and its CHDs (for a clone, its parent's item too);
+2. archive.org `mame-0.289`: one zip per set, the current release;
+3. Planet Emulation (`planetemu.net/en/rom/mame-roms-merged/<set>`, MAME 0.285 merged).
+   Its page lists every chip's CRC, so a zip is downloaded only when it holds a wanted chip.
+   Downloads go through its form (it asks `/download/quota` first, as its own page does),
+   one at a time and paced;
+4. archive.org `mame-0.264-roms-non-merged`: one real file per set, clones complete;
+5. the 0.279 and 0.278 merged full sets, one member zip at a time. archive.org streams
+   members slowly and cuts large ones short, so this is the last resort.
+
+CHDs come from the `arcade_<set>` items or the 0.278 working-only CHD collection, and are
+chosen by the SHA1 in their header, read with a range request first. Every chip is checked
+against the dat's SHA1 before it is written. Everything lands in
+`<download dir>/arcade-patches/<set>/` under the dat's names. That folder is scanned and
+the health check re-judges, so builds and the health column see it at once.
+
+```bash
+romcom arcade-fetch nbahangt puyo kbm   # these sets
+romcom arcade-fetch --broken            # every owned set broken for want of a download
+```
+
+The acquire watcher does the same for armed arcade items, by setname and never through the
+indexer. The Arcade health card's "Queue" arms the broken sets' items, and the watcher
+fetches them. An item whose dat list is complete afterwards goes back to VERIFIED;
+whatever no source has yet is reported in its activity trail and cools down before the
+next try. A set whose driver is preliminary is not a download, and is left alone.
+
 ## Exporting to a handheld (ES-DE)
 
 `romcom organize <card>` (the web app's Export card) writes a card ES-DE, RetroArch and the

@@ -413,6 +413,24 @@ def cmd_artwork(a):
     print(json.dumps(r, indent=2))
 
 
+def cmd_arcade_fetch(a):
+    from . import arcadefetch
+    sets = list(a.sets or [])
+    if a.broken:
+        sets += arcadefetch.broken_fixable(a.core)
+    if not sets:
+        print("name the sets to fetch, or --broken for every owned broken set on --core"); return 1
+    if a.limit:
+        sets = sets[:a.limit]
+    r = arcadefetch.fetch_sets(sets, progress=print)
+    for x in r["sets"]:
+        if x["chips"] or x["disks"] or x["missing"] or x["errors"]:
+            print(f"{x['set']}: +{len(x['chips'])} chip(s) +{len(x['disks'])} CHD(s)"
+                  + (f" from {', '.join(x['sources'][:3])}" if x["sources"] else "")
+                  + (f"; still missing {', '.join(x['missing'][:6])}" if x["missing"] else "")
+                  + (f"; errors {'; '.join(x['errors'][:2])}" if x["errors"] else ""))
+    print(json.dumps({k: r.get(k) for k in ("chips", "disks", "dest", "scan", "health")}, indent=2))
+
 def cmd_arcade_health(a):
     from . import arcadehealth
     if a.mark:
@@ -513,6 +531,12 @@ def main():
     aw.add_argument("--media-dir", help="ES-DE media folder (default <dest>/ES-DE/downloaded_media)")
     aw.add_argument("--refresh", action="store_true", help="re-check misses and re-read the indexes")
     aw.set_defaults(fn=cmd_artwork)
+    af=s.add_parser("arcade-fetch", help="fetch the chips, devices, bios and CHDs arcade sets lack, by setname, from archive.org's MAME items")
+    af.add_argument("sets", nargs="*")
+    af.add_argument("--broken", action="store_true", help="every owned set the health check calls broken for want of a download")
+    af.add_argument("--core", default="mame", choices=["mame", "fbneo", "mame2003"])
+    af.add_argument("--limit", type=int, default=0)
+    af.set_defaults(fn=cmd_arcade_fetch)
     ah=s.add_parser("arcade-health",
                     help="judge which arcade sets will run on each core (works/partial/broken)")
     ah.add_argument("--core", choices=["mame", "fbneo", "mame2003"],

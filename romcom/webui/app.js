@@ -1265,7 +1265,7 @@ async function arcadeRepair(apply) {
   const n = r.to_arm;
   $("#ah-repair-out").innerHTML = `<div class="checklist" style="max-height:none;margin-top:12px">
       <div class="check ${n ? "" : "ok"}"><span class="mark">${n ? n : "✓"}</span><span class="d">
-        ${r.applied ? `queued for download — the acquire watcher fetches them${r.auto_acquire_started ? " (started)" : ""}`
+        ${r.applied ? `queued — the acquire watcher fetches each set's missing chips, devices, bios and CHDs from archive.org's MAME sets by name, checks every chip against the dat, and re-judges health${r.auto_acquire_started ? " (started)" : ""}`
                     : n ? `download${n > 1 ? "s" : ""} would fix owned broken sets: ${r.deps} bios/device/parent set(s), ${r.sets} game(s) missing chips or a CHD${r.carriers.length ? `, ${r.carriers.length} chip carrier(s)` : ""}`
                         : "nothing to queue for this core"}
         ${r.already_queued ? `<span class="sub"> · ${r.already_queued} already queued</span>` : ""}</span></div>

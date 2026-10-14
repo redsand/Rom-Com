@@ -369,6 +369,56 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
             stats["downloaded"] = max(0, dl - base_dl)
             stats["download_failed"] = max(0, fl - base_fl)
 
+    # --- arcade: fetched by setname, chip by chip (arcadefetch), never by title ---
+    # A title search cannot find a MAME 0.289 set, a device's chips or a CHD; the dat
+    # says exactly what is missing and archive.org's MAME items hold it. One fetch at a
+    # time (a shared context: the dat parsed once, chips one set brought counted for the
+    # next), and the health check re-judges once at the end of the sweep.
+    arcade = {"ctx": None, "got": 0}
+    arcade_lock = threading.Lock()
+
+    def _arcade(c, wdb):
+        from . import arcadefetch
+        row = wdb.execute("SELECT external_id FROM items WHERE id=?", (c["id"],)).fetchone()
+        setname = ((row["external_id"] if row else "") or "").split("/")[-1]
+        with arcade_lock:
+            if arcade["ctx"] is None:
+                arcade["ctx"] = arcadefetch.context()
+            _emit(f"arcade fetch: {setname}")
+            with _in_flight_lock:
+                IN_FLIGHT[c["id"]]["note"] = "arcade fetch"
+            rep_ = arcadefetch.fetch_set(setname, arcade["ctx"])
+            got = len(rep_["chips"]) + len(rep_["disks"])
+            if got:
+                scan(str(arcade["ctx"]["dest"]), name_match=True, adopt=True)
+                arcade["got"] += got
+        detail = (f"{len(rep_['chips'])} chip(s), {len(rep_['disks'])} CHD(s) from "
+                  f"{', '.join(rep_['sources'][:3]) or '-'}"
+                  + (f"; still missing {', '.join(rep_['missing'][:5])}" if rep_["missing"] else ""))
+        if got:
+            with lock:
+                stats["direct"] += 1
+            try:
+                with wdb:
+                    wdb.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
+                                (c["id"], "arcade-fetch", detail))
+                    if not rep_["missing"]:
+                        # The dat's whole list is on disk now: the set is in hand, and
+                        # off the armed pile (repair set it MISSING to get it fetched).
+                        wdb.execute("UPDATE items SET status='VERIFIED', "
+                                    "updated_at=CURRENT_TIMESTAMP WHERE id=?", (c["id"],))
+            except Exception:
+                pass
+            if rep_["missing"]:
+                _skip(c, "arcade: " + detail, wdb, miss=True)   # the rest is nowhere yet
+            _emit(c["title"])
+        elif rep_["missing"] or rep_["errors"]:
+            _skip(c, "arcade: " + (detail if rep_["missing"] else "; ".join(rep_["errors"][:2])),
+                  wdb, miss=not rep_["errors"])
+        else:
+            _skip(c, "arcade: nothing missing by the dat (a preliminary driver, not a download)",
+                  wdb, miss=True)
+
     # --- background direct workers (romsgames/vimm), off the NZB path ---
     direct_q = queue.Queue()
     DONE = object()
@@ -386,6 +436,9 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                 with _in_flight_lock:
                     IN_FLIGHT[c["id"]] = {"title": c["title"],
                                           "system": c.get("system") or "", "note": ""}
+                if (c.get("system") or "").lower() == "arcade":
+                    _arcade(c, wdb)
+                    continue
                 # Round-robin which source gets first shot per item, so no single host
                 # gates the whole sweep: with romsgames always first, its 30s politeness
                 # pace is a queue every item waits in before the other sources are even
@@ -546,6 +599,9 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                                   "system": c.get("system") or "", "note": "indexer"}
         handed = False             # an item queued to direct_q is still in flight — its
         try:                       # worker re-claims the key and owns removing it
+            if (c.get("system") or "").lower() == "arcade":
+                direct_q.put(c); handed = True      # by setname, not by an indexer search
+                return
             _emit(f"search: {c['title']}")
             try:
                 results, e = indexer.search_entity(wdb, "item", c["id"])
@@ -684,6 +740,13 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
     except Exception: pass
     _refresh()
     import_new()
+    arcade_health = None
+    if arcade["got"]:
+        from . import arcadehealth
+        try:
+            arcade_health = arcadehealth.evaluate_all(db=db)
+        except Exception as ex:
+            arcade_health = {"error": str(ex)}
     # What the sweep leaves behind, for the UI and for the watcher's decision to come
     # straight back: ready items are freshly armed or finished cooling, cooling ones are
     # dated in the events table and will rejoin after their window.
@@ -696,7 +759,8 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
               "direct": stats["direct"],
               "wait_note": note, "elapsed_min": round((time.monotonic() - start) / 60, 1),
               "batch_note": None, "scan": imported.get("last_result"), "scan_note": None,
-              "sweep_capped": capped, "armed_remaining": len(ready), "cooling": cooling}
+              "sweep_capped": capped, "armed_remaining": len(ready), "cooling": cooling,
+              "arcade_fetched": arcade["got"], "arcade_health": arcade_health}
     if capped:
         result["batch_note"] = (f"sweep capped at {batch} attempted; {len(ready)} armed item(s) left"
                                 f"{f' ({cooling:,} held back by search cooldowns)' if cooling else ''}")

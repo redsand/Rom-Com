@@ -49,6 +49,8 @@ def hermetic_env(monkeypatch, tmp_path_factory):
     def offline(*a, **k):
         raise OSError("no network in tests")
     monkeypatch.setattr(ps3, "firmware", offline)
+    from romcom import arcadefetch
+    monkeypatch.setattr(arcadefetch, "planetemu_page", lambda name: None)
     ps3._index.clear()
     invalidate()
     yield
