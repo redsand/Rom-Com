@@ -583,4 +583,12 @@ about 150 MB/s.
 - A disc with no key, a PC DVD or another console's image that the library filed under
   PS3 is left out and counted as `not_playable`.
 
-aPS3e also needs the PS3 firmware (`PS3UPDAT.PUP`) installed from its own settings.
+**System firmware.** Every PS3 emulator installs Sony's system software before a game will
+boot. `ps3.firmware()` reads Sony's own update list
+(`http://fus01.ps3.update.playstation.net/update/ps3/list/us/ps3-updatelist.txt`), takes
+the full image's address from the `PS3UPDAT.PUP` line (4.93 in 2026-10, about 197 MB),
+and mirrors it to `DAT/PS3 firmware/PS3UPDAT.PUP`, with `version.json` beside it. The
+file must start with `SCEUF`. An export with PS3 games downloads it once if it is missing,
+then copies it to `<card>/system/ps3/PS3UPDAT.PUP`. On the handheld, install it once from
+aPS3e's settings ("Install firmware", then pick that file). `romcom ps3 firmware` checks
+Sony for a newer version.

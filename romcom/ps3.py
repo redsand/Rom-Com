@@ -174,6 +174,78 @@ def status():
             if KEY_DIR.exists() else []}
 
 
+# ---------------------------------------------------------------- system firmware
+
+FIRMWARE_DIR = ROOT / "DAT" / "PS3 firmware"
+# Sony's own update list for US consoles: the current full image (PS3UPDAT.PUP) is the
+# line without IncrementalUpdateVersion. Every PS3 emulator installs from this file.
+UPDATE_LIST_URL = "http://fus01.ps3.update.playstation.net/update/ps3/list/us/ps3-updatelist.txt"
+PUP_MAGIC = b"SCEUF"
+
+
+def firmware_latest(session=None):
+    """(version, url) of Sony's current full PS3 system software image."""
+    import requests
+    r = (session or requests).get(UPDATE_LIST_URL, timeout=60)
+    r.raise_for_status()
+    for line in r.text.splitlines():
+        if "PS3UPDAT.PUP" in line and "IncrementalUpdateVersion" not in line:
+            f = dict(kv.split("=", 1) for kv in line.strip().strip(";").split(";") if "=" in kv)
+            v = f.get("SystemSoftwareVersion", "")
+            try:
+                v = f"{float(v):.2f}"                # "4.9300" -> "4.93"
+            except ValueError:
+                v = v or "?"
+            return v, f["CDN"]
+    raise OSError("Sony's PS3 update list names no PS3UPDAT.PUP")
+
+
+def firmware(refresh=False, session=None):
+    """The mirrored PS3UPDAT.PUP: {path, version, bytes}, downloaded from Sony when absent
+    (or with `refresh`, when Sony's version is newer)."""
+    import json
+    FIRMWARE_DIR.mkdir(parents=True, exist_ok=True)
+    pup, meta = FIRMWARE_DIR / "PS3UPDAT.PUP", FIRMWARE_DIR / "version.json"
+    have = json.loads(meta.read_text(encoding="utf-8")) if meta.exists() else {}
+    if pup.exists() and not refresh:
+        return {"path": str(pup), "version": have.get("version", "?"), "bytes": pup.stat().st_size}
+    import requests
+    s = session or requests.Session()
+    version, url = firmware_latest(s)
+    if pup.exists() and have.get("version") == version:
+        return {"path": str(pup), "version": version, "bytes": pup.stat().st_size}
+    part = pup.with_name("PS3UPDAT.PUP.part")
+    with s.get(url, stream=True, timeout=120) as r:
+        r.raise_for_status()
+        with open(part, "wb") as fh:
+            for chunk in r.iter_content(1 << 20):
+                fh.write(chunk)
+    with open(part, "rb") as fh:
+        if fh.read(5) != PUP_MAGIC:
+            part.unlink()
+            raise OSError("the download from Sony is not a PS3 update image (no SCEUF header)")
+    _replace_soon(part, pup)
+    meta.write_text(json.dumps({"version": version, "url": url}), encoding="utf-8")
+    return {"path": str(pup), "version": version, "bytes": pup.stat().st_size}
+
+
+def _replace_soon(src, dst, tries=20):
+    """os.replace, retried briefly: a virus scanner holds a fresh 200 MB file for a moment."""
+    import time
+    for i in range(tries):
+        try:
+            return os.replace(src, dst)
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(0.5)
+
+
+def firmware_cached():
+    pup = FIRMWARE_DIR / "PS3UPDAT.PUP"
+    return pup if pup.exists() else None
+
+
 # ---------------------------------------------------------------- one disc
 
 def read_header(head):

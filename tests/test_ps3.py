@@ -123,3 +123,29 @@ def test_the_export_plan_decrypts_keyed_discs_and_drops_the_rest(tmp_path):
     assert (card / "Zipped (USA).iso").read_bytes() == zclear
     assert (card / "Folder Game (USA).ps3" / "PS3_GAME" / "PARAM.SFO").exists()
     assert not list(card.glob("*.part")) and not list(card.glob("*.unpack"))
+
+
+def test_an_export_with_ps3_games_brings_sonys_firmware(tmp_path, monkeypatch):
+    from romcom.config import invalidate
+    from romcom.db import connect
+    from romcom.organizer import organize
+    from tests.test_esde import _game
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "e.db"))
+    invalidate()
+    iso = tmp_path / "Game (USA).iso"
+    clear = _disc(iso)
+    _keys([{"name": "Game (USA).iso", "key": KEY}])
+    pup = tmp_path / "PS3UPDAT.PUP"
+    pup.write_bytes(ps3.PUP_MAGIC + b"\0" * 64)
+    monkeypatch.setattr(ps3, "firmware", lambda **k: {"path": str(pup), "version": "4.93"})
+    db = connect()
+    with db:
+        _game(db, "p", "Game (USA)", "ps3", iso)
+    card = tmp_path / "card"
+    r = organize(card)
+    assert not r["errors"], r["errors"]
+    assert (card / "ps3" / "Game (USA).iso").read_bytes() == clear
+    assert r["decrypted_ps3"] == 1
+    assert (card / "system" / "ps3" / "PS3UPDAT.PUP").read_bytes() == pup.read_bytes()
+    assert r["console_bios"]["systems"]["ps3"]["copied"] == ["PS3UPDAT.PUP"]
+    assert organize(card)["console_bios"]["systems"]["ps3"]["skipped"] == ["PS3UPDAT.PUP"]

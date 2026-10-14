@@ -827,6 +827,31 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                     break
         if stopped:
             break
+    # PS3: every emulator (aPS3e, RPCS3) installs Sony's system software from
+    # PS3UPDAT.PUP before a game will boot. It is mirrored once from Sony (ps3.firmware)
+    # and rides along in system/ps3/, where the emulator's "install firmware" can find it.
+    if not stopped and any(g["folder"] == "ps3" and g["steps"] for g in games):
+        rep = console_bios.setdefault("ps3", {"copied": [], "skipped": [], "missing": []})
+        target = dest / "system" / "ps3" / "PS3UPDAT.PUP"
+        try:
+            from . import ps3
+            fw = ps3.firmware_cached() if dry_run else Path(ps3.firmware()["path"])
+            if fw is None:
+                rep["copied"].append("PS3UPDAT.PUP (downloaded from Sony on the real run)")
+            elif dry_run:
+                planned_bytes += fw.stat().st_size
+                rep["copied"].append("PS3UPDAT.PUP")
+            elif target.exists() and target.stat().st_size == fw.stat().st_size:
+                rep["skipped"].append("PS3UPDAT.PUP")
+            elif room_for(fw.stat().st_size):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(fw, target)
+                rep["copied"].append("PS3UPDAT.PUP")
+            else:
+                rep["missing"].append("PS3UPDAT.PUP (no room left on the card)")
+        except Exception as e:                     # no network: the games are still there
+            rep["missing"].append("PS3UPDAT.PUP")
+            errors.append({"file": "PS3UPDAT.PUP", "error": f"PS3 firmware: {e}"})
     # Arcade's entries: the zips the build completed, under the folder it wrote them in.
     for core, rep_ in arcade_reports.items():
         names = [s for s, v in (rep_.get("sets") or {}).items() if v.get("complete")]

@@ -363,6 +363,8 @@ def cmd_ps3(a):
         print(json.dumps(ps3.refresh(), indent=2))
     elif a.action == "status":
         print(json.dumps(ps3.status(), indent=2))
+    elif a.action == "firmware":
+        print(json.dumps(ps3.firmware(refresh=True), indent=2))
     elif a.action == "inspect":
         if not a.iso:
             print("ps3 inspect needs an .iso"); return 1
@@ -498,8 +500,8 @@ def main():
     lb.add_argument("--label", help="label, for add/remove/clear")
     lb.add_argument("--all", action="store_true", help="counts over the whole catalog, not just games in hand")
     lb.set_defaults(fn=cmd_labels)
-    p3=s.add_parser("ps3", help="PS3 disc keys (mirrored in DAT/PS3 dkeys) and decrypting a disc for emulators")
-    p3.add_argument("action", choices=["refresh", "status", "inspect", "decrypt"])
+    p3=s.add_parser("ps3", help="PS3 disc keys (DAT/PS3 dkeys), Sony's firmware (DAT/PS3 firmware), decrypting a disc")
+    p3.add_argument("action", choices=["refresh", "status", "firmware", "inspect", "decrypt"])
     p3.add_argument("iso", nargs="?", help="a PS3 .iso, for inspect/decrypt")
     p3.add_argument("out", nargs="?", help="where decrypt writes (default '<name> (decrypted).iso' beside it)")
     p3.set_defaults(fn=cmd_ps3)

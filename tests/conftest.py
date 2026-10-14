@@ -44,6 +44,11 @@ def hermetic_env(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(esde, "chdman", lambda: None)
     monkeypatch.setattr(labels, "catver_path", lambda: None)
     monkeypatch.setattr(ps3, "KEY_DIR", tmp_path_factory.mktemp("no-ps3-keys"))
+    monkeypatch.setattr(ps3, "FIRMWARE_DIR", tmp_path_factory.mktemp("no-ps3-firmware"))
+
+    def offline(*a, **k):
+        raise OSError("no network in tests")
+    monkeypatch.setattr(ps3, "firmware", offline)
     ps3._index.clear()
     invalidate()
     yield
