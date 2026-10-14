@@ -670,6 +670,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     planned_bytes = 0
     by_system = {}
     not_playable, unpacked, converted, card_games = {}, 0, 0, {}
+    decrypted = 0
     for i, g in enumerate(games):
         if stopped or (stop is not None and stop.is_set()):
             stopped = True
@@ -714,6 +715,23 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_text(text, encoding="utf-8", newline="\n")
                     copied += 1
+                elif step[0] == "ps3":
+                    _, src, names, rel, key, size = step
+                    target = base / rel
+                    if esde.ps3_done(target, size):
+                        skipped += 1
+                        continue
+                    if not room_for(size):
+                        errors.append({"file": "", "error": f"{dest} reached its free-space "
+                                                            f"reserve — export stopped before "
+                                                            f"{rel}"})
+                        stopped = True
+                        done = False
+                        break
+                    if progress: progress(i, len(games), f"decrypting {rel} for the card…")
+                    esde.make_ps3(src, names, key, target)
+                    copied += 1
+                    decrypted += 1
                 elif step[0] == "chd":
                     _, src, names, main, rel, size = step
                     target = base / rel
@@ -850,7 +868,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
            "console_bios": {"dir": str(dest / "system"), "systems": console_bios},
            "dupes_skipped": dupes_skipped, "wiped": wiped, "artwork": artwork_report,
            "layout": layout, "not_playable": not_playable or None, "unpacked": unpacked,
-           "converted_chd": converted,
+           "converted_chd": converted, "decrypted_ps3": decrypted,
            "gamelists": gamelists,
            "wanted_only": bool(wanted_only), "keep_only": bool(keep_only),
            "sources": sorted(sources) if sources else None, "stopped": stopped}
@@ -1008,6 +1026,8 @@ def _under(step, d):
         return (step[0], step[1], step[2], f"{d}/{step[3]}" if step[3] else d, step[4])
     if step[0] == "chd":
         return step[:4] + (f"{d}/{step[4]}", step[5])
+    if step[0] == "ps3":
+        return step[:3] + (f"{d}/{step[3]}",) + step[4:]
     return step
 
 
@@ -1052,6 +1072,7 @@ def _unpacked(tdir, archive, names):
 def _bytes_to_copy(games, dest):
     """Bytes a real run would write for the planned games: what is not already on the card
     at its full size (the same rule the copy loop uses to skip)."""
+    from . import esde
     need = 0
     for g in games:
         base = dest / g["folder"] / g["sub"] if g["sub"] else dest / g["folder"]
@@ -1064,6 +1085,9 @@ def _bytes_to_copy(games, dest):
                     pass
             elif step[0] == "chd":
                 if (base / step[4]).exists():
+                    continue
+            elif step[0] == "ps3":
+                if esde.ps3_done(base / step[3], step[5]):
                     continue
             elif step[0] == "m3u":
                 continue

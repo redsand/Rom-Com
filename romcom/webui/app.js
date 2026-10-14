@@ -1162,6 +1162,11 @@ function renderOrganizeResult(r) {
       <div class="tile"><div class="v">${(r.dupes_skipped || 0).toLocaleString()}</div><div class="l">Duplicate copies skipped</div><div class="d">same game, one copy</div></div>
       <div class="tile"><div class="v">${(r.missing || 0).toLocaleString()}</div><div class="l">Source missing</div><div class="d">re-scan to fix</div></div>
       <div class="tile"><div class="v">${r.errors.length}</div><div class="l">Errors</div></div></div>`
+    + ((r.converted_chd || r.decrypted_ps3 || r.unpacked || Object.keys(r.not_playable || {}).length)
+      ? `<p class="sub" style="margin-top:12px">Made card-ready: ${(r.converted_chd || 0).toLocaleString()} disc(s) to CHD,
+        ${(r.decrypted_ps3 || 0).toLocaleString()} PS3 disc(s) decrypted, ${(r.unpacked || 0).toLocaleString()} archive(s) unpacked.
+        ${Object.keys(r.not_playable || {}).length ? `Left out as not playable: ${esc(Object.entries(r.not_playable)
+          .map(([f, n]) => `${f} ${n}`).join(", "))} (release notes, other systems' files, PS3 discs with no key).` : ""}</p>` : "")
     + (rows ? `<div class="tablewrap" style="margin-top:12px"><table>
         <thead><tr><th>System folder</th><th class="r">Files</th></tr></thead><tbody>${rows}</tbody></table></div>` : "")
     + biosHtml

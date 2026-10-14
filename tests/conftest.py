@@ -38,10 +38,13 @@ def hermetic_env(monkeypatch, tmp_path_factory):
     monkeypatch.setenv("ROMCOM_DB", str(tmp_path_factory.mktemp("db-floor") / "floor.db"))
     # The machine's own tools and data files stay out too: a real chdman would be handed
     # a test's fake disc (and once sat waiting on it), and the repo's catver.ini would
-    # label a test's made-up arcade sets. Tests that want either patch it back in.
-    from romcom import esde, labels
+    # label a test's made-up arcade sets; the mirrored PS3 keys likewise. Tests that want
+    # any of them patch it back in.
+    from romcom import esde, labels, ps3
     monkeypatch.setattr(esde, "chdman", lambda: None)
     monkeypatch.setattr(labels, "catver_path", lambda: None)
+    monkeypatch.setattr(ps3, "KEY_DIR", tmp_path_factory.mktemp("no-ps3-keys"))
+    ps3._index.clear()
     invalidate()
     yield
     invalidate()

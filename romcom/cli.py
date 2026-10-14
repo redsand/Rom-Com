@@ -356,6 +356,29 @@ def cmd_labels(a):
         labels.set_override(a.item, a.label, None if a.action == "clear" else a.action)
         print(json.dumps(labels.for_items([a.item]), indent=2))
 
+def cmd_ps3(a):
+    from pathlib import Path
+    from . import ps3
+    if a.action == "refresh":
+        print(json.dumps(ps3.refresh(), indent=2))
+    elif a.action == "status":
+        print(json.dumps(ps3.status(), indent=2))
+    elif a.action == "inspect":
+        if not a.iso:
+            print("ps3 inspect needs an .iso"); return 1
+        print(json.dumps(ps3.inspect(a.iso), indent=2))
+    else:
+        if not a.iso:
+            print("ps3 decrypt needs an .iso (and optionally an output path)"); return 1
+        info = ps3.inspect(a.iso)
+        if not info.get("ps3"):
+            print(f"{a.iso} is not a PS3 disc image"); return 1
+        if not info["already_decrypted"] and not info["fits"]:
+            print("no key in the local mirror opens this disc (try: romcom ps3 refresh)"); return 1
+        out = a.out or str(Path(a.iso).with_name(Path(a.iso).stem + " (decrypted).iso"))
+        key = None if info["already_decrypted"] else info["key"]["key"]
+        print(json.dumps(ps3.decrypt(a.iso, out, key) if key else {"already": True}, indent=2))
+
 def cmd_organize(a):
     from .organizer import organize
     print(json.dumps(organize(a.dest, systems=a.system or None,
@@ -475,6 +498,11 @@ def main():
     lb.add_argument("--label", help="label, for add/remove/clear")
     lb.add_argument("--all", action="store_true", help="counts over the whole catalog, not just games in hand")
     lb.set_defaults(fn=cmd_labels)
+    p3=s.add_parser("ps3", help="PS3 disc keys (mirrored in DAT/PS3 dkeys) and decrypting a disc for emulators")
+    p3.add_argument("action", choices=["refresh", "status", "inspect", "decrypt"])
+    p3.add_argument("iso", nargs="?", help="a PS3 .iso, for inspect/decrypt")
+    p3.add_argument("out", nargs="?", help="where decrypt writes (default '<name> (decrypted).iso' beside it)")
+    p3.set_defaults(fn=cmd_ps3)
     aw=s.add_parser("artwork", help="box art / snaps for the games in hand, and ES-DE media on a card")
     aw.add_argument("action", choices=["fetch", "export", "coverage"])
     aw.add_argument("dest", nargs="?", help="card root, for export")

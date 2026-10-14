@@ -13,6 +13,7 @@ dependencies = [
   "python-dotenv>=1.0",
   "beautifulsoup4>=4.12",
   "flask>=3.0",
+  "pycryptodome>=3.20",
 ]
 
 [tool.setuptools.package-data]

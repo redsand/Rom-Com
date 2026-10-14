@@ -504,3 +504,83 @@ which neither its own dat nor the current-MAME dat defines, so a 0.78-era dat in
 hijack the build). Chips the dump is missing (a redumped bios, clone-only PROMs) can simply
 be dropped in a folder and `romcom scan`ned — romset matches by hash, so the folder is
 otherwise irrelevant.
+
+## Exporting to a handheld (ES-DE)
+
+`romcom organize <card>` (the web app's Export card) writes a card ES-DE, RetroArch and the
+other front ends can open as it is:
+
+- **Folders by ES-DE's names**: `psx`, `gc`, `n3ds`, `psvita`, `sega32x`, `ngpc`… A folder
+  ES-DE does not know is ignored, games and all. Arcade cores go to the folder whose default
+  emulator speaks their romset: MAME → `arcade`, FBNeo → `fbneo`, MAME 2003-Plus → `mame`.
+- **Only launchable files**, per system; `.nfo`/`.txt` are dropped and counted as
+  `not_playable`. Cartridge systems keep their zips; disc systems are unpacked (nothing on
+  Android reads `.rar`).
+- **One entry per game**: discs become one `.chd` each (chdman from the MAME folder;
+  `--no-chd` to skip), a `.cue` with its tracks becomes a `Game.cue/` folder, multi-disc
+  games a `Game.m3u/` folder, and a cartridge game keeps only its best dump.
+- **gamelist.xml** in `<card>/ES-DE/gamelists/<system>/`, with clean names, ratings from
+  the community score, and genres. It is merged, so ES-DE's own fields (favorites) survive.
+- **Labels**: fruit machines, gambling and not-a-game sets stay off the card by default
+  (`--exclude-labels`); broken arcade sets are left out by the health gate.
+- `--layout ranked` brings back the old score folders. Tick "clear those platforms first"
+  the first time you switch layouts.
+
+### PS3: decrypted discs, keys kept locally
+
+A Redump PS3 ISO is the disc as pressed, and most of it is encrypted. aPS3e (what ES-DE
+launches for `ps3` on Android) and RPCS3's ISO loader need it decrypted. The export does
+that on the way to the card, with each disc's own 16-byte key ("disc key", `.dkey`).
+
+**Where the keys come from:** Redump publishes them, and https://ps3.aldostools.org/dkey.html
+lists every one with the ISO's Redump name, size, CRC32, MD5 and serial. aldostools also
+ships them in bulk: https://github.com/aldostools/Resources/raw/main/REDUMP_DKEY.7z.
+
+**The local mirror**, `DAT/PS3 dkeys/` (gitignored like the rest of `DAT/`):
+
+| file | what |
+|---|---|
+| `REDUMP_DKEY.7z` | the bulk archive, as downloaded |
+| `REDKEY/*.dkey` | the same, unpacked: one `<Redump name>.dkey` per disc, 32 hex digits |
+| `dkey.html` | the site's table, as fetched (serial, name, size, CRC32, MD5, key) |
+| `REDUMP_KEY.7z` | aldostools' companion archive of the raw `.key` files, kept for completeness |
+| `keys.tsv` | both merged; this is what lookups read |
+
+```bash
+romcom ps3 refresh            # download both again and rebuild keys.tsv
+romcom ps3 status             # how many keys, what is mirrored
+romcom ps3 inspect game.iso   # serial, the key it matched, whether that key opens it
+romcom ps3 decrypt game.iso [out.iso]
+```
+
+The site's TLS certificate had lapsed when this was written (2026-10). `refresh` reads the
+table over an unverified connection in that case, and its mod_security rejects requests
+without a browser User-Agent and Accept header. The archive comes from GitHub and is
+unaffected.
+
+**Matching a disc to its key**, in this order: the file's MD5, its Redump name (the file's
+or its archive's), then the serial in sector 1 plus the exact size. The library's catalog
+title is not used, because a wrong-region match would pick the wrong key. A key is
+always tried on the disc's first encrypted sector before anything is written. That sector
+must decrypt to `PS3LICDA` (the licence area), so a wrong key is reported and nothing is
+written to the card.
+
+**The disc format** (one sector = 2048 bytes): sector 0 starts with a big-endian u32 `n`
+(the number of plain regions), a zero u32, then `2n` u32 sector numbers: each plain
+region's first and last sector, both inclusive. Every sector between two plain regions is
+encrypted on its own with AES-128-CBC, using the disc key as the key and the sector number
+(16 bytes, big-endian) as the IV. Sector 1 holds `PlayStation3` and the serial
+(`BLES-00772`). This is what PS3Dec does; `ps3.py` does it in Python (pycryptodome), at
+about 150 MB/s.
+
+**What goes on the card** (`ps3/`):
+- A Redump ISO, loose or alone in a zip/7z/rar, becomes `<name>.iso`, decrypted. An
+  archived one is unpacked beside the target and decrypted in place.
+- An ISO that is already decrypted is copied as it is.
+- A disc dumped as its folder tree (`PS3_GAME/…`, already decrypted) becomes a
+  `<Game>.ps3/` folder, which ES-DE shows as one game. RPCS3 reads that; aPS3e wants ISOs.
+- A `.pkg` is copied (aPS3e installs it itself).
+- A disc with no key, a PC DVD or another console's image that the library filed under
+  PS3 is left out and counted as `not_playable`.
+
+aPS3e also needs the PS3 firmware (`PS3UPDAT.PUP`) installed from its own settings.

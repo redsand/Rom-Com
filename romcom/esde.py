@@ -213,6 +213,8 @@ def plan(system, files, chd=False):
     if exts is None:                                  # unknown system: as before
         steps = [("copy", src, Path(src).name, size) for src, size in files]
         return steps, [Path(src).name for src, _ in files], 0
+    if sys_ == "ps3":
+        return _plan_ps3(files)
     keep, unpack, dropped = [], [], 0
     for src, size in files:
         ext = Path(src).suffix.lower()
@@ -279,6 +281,164 @@ def plan(system, files, chd=False):
             steps.append(("extract", src, names, "", size))
             entries += [f for f in flat if Path(f).suffix.lower() in exts]
     return steps, entries, dropped
+
+
+def _plan_ps3(files):
+    """PS3: a disc goes on the card as a decrypted .iso (aPS3e on Android and RPCS3's ISO
+    loader read nothing else), decrypted on the way with its key from the local mirror
+    (`ps3.py`). Steps: ("ps3", src, [inner .iso] | None, rel, key | None, size) — key None
+    for a disc that is already decrypted. A disc with no key is dropped (not playable);
+    a .pkg (aPS3e installs those itself) is copied."""
+    from . import ps3
+    steps, entries, dropped = [], [], 0
+    for src, size in files:
+        ext = Path(src).suffix.lower()
+        if ext == ".iso":
+            info = ps3.inspect(src)
+            if info.get("ps3") and (info["already_decrypted"] or info["fits"]):
+                key = None if info["already_decrypted"] else info["key"]["key"]
+                steps.append(("ps3", src, None, Path(src).name, key, size))
+                entries.append(Path(src).name)
+            else:
+                dropped += 1
+        elif ext == ".pkg":
+            steps.append(("copy", src, Path(src).name, size))
+            entries.append(Path(src).name)
+        elif ext in UNPACK:
+            isos = [(n, s) for n, s in members(src) if n.lower().endswith(".iso")]
+            pkgs = [(n, s) for n, s in members(src) if n.lower().endswith(".pkg")]
+            if len(isos) == 1:
+                n, s = isos[0]
+                hdr = ps3.read_header(head(src, n, 2 * ps3.SECTOR))
+                row = hdr and ps3.find_key((n, Path(src).name), size=s, serial=hdr[0])
+                if row:
+                    rel = Path(n).name
+                    steps.append(("ps3", src, [n], rel, row["key"], s))
+                    entries.append(rel)
+                else:
+                    dropped += 1
+            elif _jb_root(members(src)) is not None:
+                # A disc dumped as its folder tree (PS3_GAME/…, already decrypted): the
+                # folder goes on the card as "<Game>.ps3", which ES-DE launches as one game.
+                root = _jb_root(members(src))
+                name = Path(root).name if root else Path(src).stem
+                rel = f"{_TAGLESS.sub('', name).strip() or name}.ps3"
+                total = sum(s for _, s in members(src))
+                steps.append(("ps3", src, f"tree:{root}", rel, None, total))
+                entries.append(rel)
+            elif pkgs:
+                steps.append(("extract", src, [n for n, _ in pkgs], "",
+                              sum(s for _, s in pkgs)))
+                entries += [Path(n).name for n, _ in pkgs]
+            else:
+                dropped += 1
+        else:
+            dropped += 1
+    return steps, entries, dropped
+
+
+_TAGLESS = re.compile(r'[<>:"/\\|?*]')
+
+
+def _jb_root(listing):
+    """The folder inside an archive that holds PS3_GAME/PARAM.SFO ('' for the archive's
+    top level), or None when it holds no disc folder."""
+    for n, _ in listing:
+        parts = n.replace("\\", "/").split("/")
+        if len(parts) >= 2 and parts[-1].upper() == "PARAM.SFO" and parts[-2].upper() == "PS3_GAME":
+            return "/".join(parts[:-2])
+    return None
+
+
+def ps3_done(target, size):
+    """Is this PS3 entry already on the card, finished?"""
+    target = Path(target)
+    if target.is_dir():
+        return (target / "PS3_GAME" / "PARAM.SFO").exists()
+    try:
+        return target.stat().st_size == size
+    except OSError:
+        return False
+
+
+_heads = {}
+
+
+def head(archive, name, nbytes):
+    """The first `nbytes` of one file inside an archive, without unpacking the rest."""
+    archive = Path(archive)
+    key = (str(archive), archive.stat().st_mtime, name, nbytes)
+    if key in _heads:
+        return _heads[key]
+    data = b""
+    if archive.suffix.lower() == ".zip":
+        import zipfile
+        try:
+            with zipfile.ZipFile(archive) as z, z.open(name) as fh:
+                data = fh.read(nbytes)
+        except (zipfile.BadZipFile, NotImplementedError, KeyError, OSError):
+            data = b""
+    if not data and seven_zip():
+        try:
+            p = subprocess.Popen([seven_zip(), "e", "-so", str(archive), name],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL)
+            try:
+                data = p.stdout.read(nbytes)
+            finally:
+                p.kill()
+                p.wait()
+        except OSError:
+            data = b""
+    _heads[key] = data
+    return data
+
+
+def make_ps3(src, names, key, target):
+    """Put one PS3 disc on the card decrypted: a loose .iso is read and written decrypted;
+    an archived one is unpacked beside the target and decrypted in place. Written under a
+    .part name and renamed, so an .iso on the card is always a finished, playable one."""
+    from . import ps3
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    part = target.with_name(target.name + ".part")
+    tmpdir = target.with_name(target.name + ".unpack")
+    try:
+        if isinstance(names, str) and names.startswith("tree:"):
+            root = names[5:]
+            exe = seven_zip()
+            if not exe:
+                raise OSError("7-Zip is needed to unpack a PS3 disc folder, and was not found")
+            p = subprocess.run([exe, "x", "-y", f"-o{tmpdir}", str(src)],
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                               timeout=7200, errors="replace")
+            if p.returncode != 0:
+                raise OSError(f"7-Zip could not unpack {Path(src).name}: "
+                              f"{(p.stderr or p.stdout or '').strip()[-200:]}")
+            inner = tmpdir / root if root else tmpdir
+            if not (inner / "PS3_GAME").is_dir():
+                raise OSError(f"{Path(src).name} holds no PS3_GAME folder")
+            if target.exists():
+                shutil.rmtree(target)
+            os.replace(inner, target)
+            return
+        if names:
+            extract(src, names, tmpdir)
+            inner = tmpdir / Path(names[0]).name
+            if key:
+                ps3.decrypt(inner, inner, key)
+            os.replace(inner, part)
+        elif key:
+            ps3.decrypt(src, part, key)
+        else:
+            shutil.copyfile(src, part)
+        os.replace(part, target)
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        try:
+            part.unlink()
+        except OSError:
+            pass
 
 
 # Disc systems whose ES-DE emulators read CHD (RetroArch's Beetle/SwanStation, Flycast,
