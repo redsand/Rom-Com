@@ -117,12 +117,23 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
         return {"matched":matched,"verified":verified,"reused":reused,"recent":list(recent)}
     for i,p in enumerate(paths):
         if progress: progress(i,len(paths),p.name,_stats())
-        st=p.stat()
+        # A download still being written (.part) is not a file yet, and one renamed or
+        # removed since the listing is gone: a scan of a live download folder meets both,
+        # and one vanished .chd.part used to fail the watcher's whole sweep.
+        if p.suffix.lower() in (".part",".partial",".tmp",".crdownload"):
+            continue
+        try:
+            st=p.stat()
+        except OSError:
+            continue
         prev=db.execute("SELECT bytes,mtime,crc32,md5,sha1,matched_item_id,match_method FROM files WHERE path=?",(str(p),)).fetchone()
         if prev and not rehash and prev["bytes"]==st.st_size and prev["mtime"]==st.st_mtime and prev["sha1"]:
             crc,md5,sha1=prev["crc32"],prev["md5"],prev["sha1"]; reused+=1
         else:
-            crc,md5,sha1=digest_file(p)
+            try:
+                crc,md5,sha1=digest_file(p)
+            except OSError:
+                continue
         match=db.execute("""SELECT item_id FROM file_hashes
           WHERE (algorithm='sha1' AND digest=?) OR (algorithm='md5' AND digest=?) OR (algorithm='crc' AND digest=?)
           LIMIT 1""",(sha1,md5,crc)).fetchone()

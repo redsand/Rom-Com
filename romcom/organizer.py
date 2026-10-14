@@ -1208,9 +1208,14 @@ def romset(profile, dest, leave_bytes=0, progress=None, db=None, stop=None,
     in the profile's own folder — a core's games may need bios sets of another romset
     era (MAME 2003-Plus's cvs, taitofx1…) that neither dat of its own defines. What
     still cannot be built is reported, not guessed at."""
-    from . import mameset
+    from . import mameset, esde
     db = db or connect()
     dest = Path(dest)
+    if dest.parent == dest:
+        # A drive root is a card, not a romset folder: 4,365 zips once landed loose beside
+        # Android's DCIM and Music, where ES-DE never looks. They go to the core's ES-DE
+        # folder on that card instead (J:\ -> J:\arcade for MAME).
+        dest = dest / esde.ARCADE_FOLDERS.get(profile, profile)
     empty = {"copied": 0, "bytes": 0, "bytes_needed": 0, "complete": 0, "incomplete": 0,
              "stopped": False, "out_of_room": False, "sets": {}}
     dat = mameset.dat_path(profile)

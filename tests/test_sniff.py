@@ -152,3 +152,19 @@ def test_a_disc_converts_once_and_later_cards_copy_it(monkeypatch, tmp_path):
     esde.make_chd(src, None, src.name, tmp_path / "card2" / "Crazy Taxi.chd", "dreamcast")
     assert len(runs) == 1 and str(runs[0]).startswith(str(tmp_path / "cache"))
     assert (tmp_path / "card2" / "Crazy Taxi.chd").read_bytes() == b"CHD"
+
+
+def test_a_scan_steps_over_partial_and_vanished_files(tmp_path, monkeypatch):
+    """A live download folder holds .part files and files renamed mid-scan; neither may
+    fail the scan (one vanished .chd.part failed the watcher's whole sweep)."""
+    roms = tmp_path / "roms"
+    roms.mkdir()
+    (roms / "929jbb02.chd.part").write_bytes(b"x")
+    gone = roms / "gone.zip"
+    gone.write_bytes(b"x")
+    import romcom.scanner as sc
+    real_digest = sc.digest_file
+    monkeypatch.setattr(sc, "digest_file", lambda p: (_ for _ in ()).throw(FileNotFoundError(p))
+                        if Path(p).name == "gone.zip" else real_digest(p))
+    r = scan(roms, adopt=False)
+    assert r["files"] == 0
