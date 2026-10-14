@@ -44,6 +44,7 @@ def _clean(p):
                 "mame", "fbneo", "mame2003", "all") else None,
             "arcade_status": p.get("arcade_status") if p.get("arcade_status") in (
                 "all", "no_broken", "works_only") else None,
+            "artwork": bool(p.get("artwork")),
             "wipe": bool(p.get("wipe"))}
 
 

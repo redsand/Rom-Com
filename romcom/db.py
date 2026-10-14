@@ -169,6 +169,12 @@ CREATE TABLE IF NOT EXISTS arcade_verdicts (
  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
  PRIMARY KEY(core, setname)
 );
+-- Artwork found for a game (artwork.fetch): a cached image path, or NULL path for a
+-- checked miss (re-tried after a week, not on every run).
+CREATE TABLE IF NOT EXISTS artwork (
+ item_id TEXT NOT NULL, kind TEXT NOT NULL, path TEXT, source TEXT, checked_at TEXT,
+ PRIMARY KEY(item_id, kind)
+);
 -- Provider bookkeeping (e.g. RAWG's daily request count) — state, not settings.
 CREATE TABLE IF NOT EXISTS community_state (
  source TEXT NOT NULL, k TEXT NOT NULL, v TEXT,

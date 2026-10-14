@@ -346,6 +346,27 @@ def cmd_organize(a):
                              arcade_status=a.arcade_status), indent=2))
 
 
+def cmd_artwork(a):
+    from . import artwork
+    if a.action == "fetch":
+        last = [0]
+        def progress(i, total, msg):
+            if i >= last[0] + 500 or i >= total:
+                last[0] = i
+                print(msg)
+        r = artwork.fetch(systems=a.system or None, kinds=a.kind or artwork.DEFAULT_KINDS,
+                          refresh=a.refresh, progress=progress)
+    elif a.action == "export":
+        if not a.dest:
+            print("artwork export needs a card folder, e.g. romcom artwork export J:\\")
+            return 1
+        r = artwork.export_media(a.dest, kinds=a.kind or artwork.DEFAULT_KINDS,
+                                 media_dir=a.media_dir, systems=a.system or None)
+    else:
+        r = artwork.coverage()
+    print(json.dumps(r, indent=2))
+
+
 def cmd_arcade_health(a):
     from . import arcadehealth
     if a.mark:
@@ -426,6 +447,14 @@ def main():
     rs.add_argument("--status", choices=["no_broken", "works_only", "all"], default=None,
                     help="arcade health gate: skip broken sets (default), only working ones, or everything")
     rs.set_defaults(fn=cmd_romset)
+    aw=s.add_parser("artwork", help="box art / snaps for the games in hand, and ES-DE media on a card")
+    aw.add_argument("action", choices=["fetch", "export", "coverage"])
+    aw.add_argument("dest", nargs="?", help="card root, for export")
+    aw.add_argument("--system", action="append")
+    aw.add_argument("--kind", action="append", choices=["boxart", "snap", "title"])
+    aw.add_argument("--media-dir", help="ES-DE media folder (default <dest>/ES-DE/downloaded_media)")
+    aw.add_argument("--refresh", action="store_true", help="re-check misses and re-read the indexes")
+    aw.set_defaults(fn=cmd_artwork)
     ah=s.add_parser("arcade-health",
                     help="judge which arcade sets will run on each core (works/partial/broken)")
     ah.add_argument("--core", choices=["mame", "fbneo", "mame2003"],

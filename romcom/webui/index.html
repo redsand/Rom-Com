@@ -77,6 +77,11 @@
             <option value="fbneo">FBNeo</option>
             <option value="mame2003">MAME 2003-Plus</option>
       </select>
+      <select id="f-art" title="Box art / snap cached for the game (Files → Artwork)">
+        <option value="">Any artwork</option>
+        <option value="has">Has artwork</option>
+        <option value="missing">No artwork</option>
+      </select>
       <input id="f-board" type="search" placeholder="board (cps2…)" spellcheck="false" style="width:120px"
         title="Arcade board family — the driver file, e.g. cps2, neogeo, naomi">
       <select id="f-sort" title="Sort order">
@@ -276,6 +281,8 @@
             <option value="works_only">only sets that work</option>
             <option value="all">everything</option>
           </select></label>
+        <label class="sub" title="Copy the box art and snaps already fetched (Artwork card below) into ES-DE's media folders on the card — point ES-DE's Game media directory at <card>\ES-DE\downloaded_media">
+          <input type="checkbox" id="org-art"> artwork for ES-DE</label>
         <label class="sub" title="Delete the ticked platforms' folders on the card before copying — a clean card instead of a top-up. Nothing outside those folders is touched">
           <input type="checkbox" id="org-wipe"> clear those platforms first</label>
       </div>
@@ -291,6 +298,27 @@
         <button id="org-stop" class="ghost">Stop export</button>
       </div>
       <div id="org-result"></div>
+    </div>
+
+    <div class="card" id="art-card">
+      <h2>Artwork <span class="hint">box art, snaps and title screens from libretro-thumbnails, for the games you have</span></h2>
+      <div class="filters">
+        <label class="sub"><input type="checkbox" class="art-kind" value="boxart" checked> box art</label>
+        <label class="sub"><input type="checkbox" class="art-kind" value="snap" checked> snaps</label>
+        <label class="sub"><input type="checkbox" class="art-kind" value="title"> title screens</label>
+        <label class="sub" title="Re-check games nothing matched before, and re-read the thumbnail indexes"><input type="checkbox" id="art-refresh"> retry misses</label>
+        <button id="art-start" class="primary">Fetch artwork</button>
+      </div>
+      <p class="sub">Matched by name — the exact libretro spelling, then the same title without its
+        region and revision tags. Images are cached on this PC and shared by every card; the export's
+        <b>artwork for ES-DE</b> box copies them beside the games. In ES-DE, set
+        <i>Other settings → Game media directory</i> to <code>&lt;card&gt;\ES-DE\downloaded_media</code>.</p>
+      <div id="art-progress" hidden>
+        <div class="meter big"><i id="art-bar" style="width:0%"></i></div>
+        <div class="sub" id="art-current"></div>
+        <button id="art-stop" class="ghost">Stop</button>
+      </div>
+      <div id="art-result"></div>
     </div>
 
     <div class="card" id="ah-card">

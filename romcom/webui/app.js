@@ -233,6 +233,7 @@ function libQuery() {
   if ($("#f-status").value) p.set("status", $("#f-status").value);
   if ($("#f-health").value) p.set("health", $("#f-health").value);
   if ($("#f-board").value.trim()) p.set("board", $("#f-board").value.trim());
+  if ($("#f-art").value) p.set("art", $("#f-art").value);
   p.set("core", $("#f-core").value);
   p.set("sort", lib.sort);
   p.set("dir", lib.dir);
@@ -284,7 +285,7 @@ function itemRow(r) {
     Array.from({length: 10}, (_, i) => i + 1).map(n =>
       `<option ${n === r.rating ? "selected" : ""}>${n}</option>`).join("") + `</select>`;
   return `<tr data-id="${esc(r.id)}">
-    <td><div>${esc(r.title)}</div>${series}<div class="sub">${esc(r.id)}</div></td>
+    <td><div>${esc(r.title)}${r.art ? ` <span class="badge good" title="artwork cached: ${esc(r.art)}">art</span>` : ""}</div>${series}<div class="sub">${esc(r.id)}</div></td>
     <td>${esc(r.system || "—")}</td>
     <td class="r">${r.year || "—"}</td>
     <td>${badge(r.status)} ${statusSel}</td>
@@ -368,7 +369,7 @@ $("#lib-own").addEventListener("click", async () => {
 let debounce;
 $("#f-q").addEventListener("input", () => { clearTimeout(debounce); debounce = setTimeout(() => loadLibrary(), 300); });
 $("#f-view").addEventListener("change", () => { refreshSystemCounts(); loadLibrary(); });
-["#f-system", "#f-status", "#f-health", "#f-core"].forEach(s => $(s).addEventListener("change", () => loadLibrary()));
+["#f-system", "#f-status", "#f-health", "#f-core", "#f-art"].forEach(s => $(s).addEventListener("change", () => loadLibrary()));
 $("#f-board").addEventListener("input", () => { clearTimeout(debounce); debounce = setTimeout(() => loadLibrary(), 300); });
 $("#f-sort").addEventListener("change", () => {
   lib.sort = $("#f-sort").value; lib.dir = NATURAL_DIR[lib.sort] || "asc";
@@ -614,6 +615,7 @@ const JOBS = {
   romset:   {wrap: "#rom-progress",  bar: "#rom-bar",  cur: "#rom-current",  btn: "#rom-start",  out: "#rom-result",   render: renderRomsetResult,   doneMsg: "Romset finished"},
   acquire:  {wrap: "#acq-progress",  bar: "#acq-bar",  cur: "#acq-current",  btn: "#acq-start",  out: "#acq-result",   render: renderAcquireResult, liveRender: renderAcquireLive, doneMsg: "Download run finished"},
   // Lives on the Settings tab; its render refills the coverage line under the button.
+  artwork:  {wrap: "#art-progress",  bar: "#art-bar",  cur: "#art-current",  btn: "#art-start",  out: "#art-result",   render: renderArtworkResult, doneMsg: "Artwork fetched"},
   community:{wrap: "#community-progress", bar: "#community-bar", cur: "#community-current", btn: "#community-sync", out: "#community-result", render: renderCommunityResult, doneMsg: "Crowd scores synced"},
 };
 const jobTimers = {};
@@ -627,6 +629,7 @@ function loadImport() {
   loadOrgProfiles().then(loadOrgPlan);
   loadDupes();
   loadArcadeHealth();
+  api("/api/artwork").then(renderArtworkResult).catch(() => {});
   for (const kind of Object.keys(JOBS)) pollJob(kind, false);
 }
 
@@ -738,6 +741,7 @@ const orgForm = () => ({name: orgCurrent()?.name, path: $("#org-path").value.tri
                         fill: $("#org-fill").checked, capacity_gb: $("#org-capacity").value || null,
                         distinct_games: $("#org-distinct").checked,
                         arcade_core: $("#org-core").value, arcade_status: $("#org-status").value,
+                        artwork: $("#org-art").checked,
                         wipe: $("#org-wipe").checked, gates: orgGates()});
 let orgPendingSystems = null;     // a profile's ticks, applied once the plan has drawn the list
 let orgGatesKnown = false;        // gates come from Settings until the owner or a profile sets them
@@ -759,6 +763,7 @@ function orgApplyProfile(p) {
   $("#org-wipe").checked = !!p.wipe;
   $("#org-core").value = p.arcade_core || "mame";
   $("#org-status").value = p.arcade_status || "no_broken";
+  $("#org-art").checked = !!p.artwork;
   orgSetGates(p.gates || {}); orgGatesKnown = true;
   orgPendingSystems = p.systems || [];
   $("#org-delete").disabled = false;
@@ -903,6 +908,7 @@ $("#org-start").addEventListener("click", () => {
                                           distinct_games: $("#org-distinct").checked,
                                           arcade_core: $("#org-core").value,
                                           arcade_status: $("#org-status").value,
+                                          artwork: $("#org-art").checked,
                                           wipe: $("#org-wipe").checked, gates: orgGates()});
 });
 
@@ -1089,6 +1095,10 @@ function renderOrganizeResult(r) {
     + (rows ? `<div class="tablewrap" style="margin-top:12px"><table>
         <thead><tr><th>System folder</th><th class="r">Files</th></tr></thead><tbody>${rows}</tbody></table></div>` : "")
     + biosHtml
+    + (r.artwork ? `<p class="sub" style="margin-top:12px">Artwork for ES-DE: ${r.artwork.written.toLocaleString()} image(s) written
+        (${fmtBytes(r.artwork.bytes || 0)}), ${r.artwork.skipped.toLocaleString()} already there;
+        ${r.artwork.without_art.toLocaleString()} of ${r.artwork.games.toLocaleString()} games have none cached yet.
+        Media folder: <code>${esc(r.artwork.media_dir)}</code></p>` : "")
     + Object.entries(r.arcade_held_back || {}).map(([core, h]) => heldHtml(h, core)).join("")
     + (errs ? `<details class="skiplist" open><summary>${r.errors.length} errors</summary><div class="checklist" style="max-height:none">${errs}</div></details>` : "");
 }
@@ -1105,6 +1115,27 @@ function heldHtml(h, core) {
     <div class="checklist" style="max-height:none">${why}</div>
     <p class="sub">For example:</p><div class="checklist">${eg}</div></details>`;
 }
+
+/* ---------- Artwork: what is cached per system, and the fetch job ---------- */
+function renderArtworkResult(r) {
+  const rows = (r.systems || []).map(s => {
+    const pct = k => s.games ? Math.round(100 * s[k] / s.games) : 0;
+    return `<tr><td>${esc(s.system)}</td><td class="r">${s.games.toLocaleString()}</td>
+      <td class="r">${s.source ? pct("boxart") + "%" : "—"}</td><td class="r">${s.source ? pct("snap") + "%" : "—"}</td>
+      <td class="r">${s.source ? pct("title") + "%" : "—"}</td></tr>`;
+  }).join("");
+  $("#art-result").innerHTML = (r.stopped ? `<p class="sub"><b>Stopped</b> — what was fetched stays; fetching again carries on.</p>` : "")
+    + (rows ? `<div class="tablewrap" style="margin-top:12px"><table><thead><tr><th>System</th><th class="r">Games</th>
+        <th class="r">Box art</th><th class="r">Snaps</th><th class="r">Titles</th></tr></thead><tbody>${rows}</tbody></table></div>` : "")
+    + ((r.no_source || []).length ? `<p class="sub">No libretro thumbnail set for: ${esc(r.no_source.join(", "))}.</p>` : "");
+}
+$("#art-start").addEventListener("click", () => {
+  startJob("artwork", "/api/artwork", {kinds: $$(".art-kind:checked").map(x => x.value),
+                                       refresh: $("#art-refresh").checked});
+});
+$("#art-stop").addEventListener("click", async () => {
+  try { await post("/api/job/artwork/cancel"); toast("Stopping…"); } catch (e) { toast(e.message, true); }
+});
 
 /* ---------- Arcade health: per core, what runs, what is broken, what to fix first ---------- */
 async function loadArcadeHealth() {

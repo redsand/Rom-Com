@@ -229,7 +229,9 @@ def create_app():
                CASE WHEN items.system='arcade' THEN (SELECT h.reason FROM arcade_health h
                     WHERE h.core=? AND h.setname={_SETNAME}) END health_reason,
                CASE WHEN items.system='arcade' THEN (SELECT h.family FROM arcade_health h
-                    WHERE h.core=? AND h.setname={_SETNAME}) END health_family
+                    WHERE h.core=? AND h.setname={_SETNAME}) END health_family,
+               (SELECT group_concat(a.kind) FROM artwork a
+                    WHERE a.item_id=items.id AND a.path IS NOT NULL) art
                FROM items) WHERE 1=1"""
         p = [core, core, core, core]
         if request.args.get("devices") not in ("1", "true", "yes"):
@@ -260,6 +262,10 @@ def create_app():
             q += " AND system='arcade' AND verdict IS NULL AND health_judged IS NULL"
         elif health == "mine":
             q += " AND verdict IS NOT NULL"
+        if args.get("art") == "missing":
+            q += " AND art IS NULL"
+        elif args.get("art") == "has":
+            q += " AND art IS NOT NULL"
         if args.get("board"):
             q += " AND health_family LIKE ?"; p.append(f"%{args['board']}.%")
         return q, p
@@ -489,11 +495,13 @@ def create_app():
     # One background job per kind at a time; state polled by the UI.
     jobs = {k: {"running": False, "done": 0, "total": 0, "current": "", "stats": None,
                 "result": None, "error": None, "last_beat": None}
-            for k in ("import", "scan", "organize", "romset", "adopt", "acquire", "community")}
+            for k in ("import", "scan", "organize", "romset", "adopt", "acquire", "community",
+                      "artwork")}
     job_lock = threading.Lock()
     # Jobs the UI can stop. Acquire is stopped through the watcher toggle (acquirer.STOP),
     # which the watchdog also reads, so it is deliberately not here.
-    stops = {"organize": threading.Event(), "romset": threading.Event()}
+    stops = {"organize": threading.Event(), "romset": threading.Event(),
+             "artwork": threading.Event()}
 
     def _job_fn(kind, params):
         if kind == "import":
@@ -516,7 +524,8 @@ def create_app():
                                           distinct_games=bool(params.get("distinct_games")),
                                           wipe=bool(params.get("wipe")),
                                           arcade_core=params.get("arcade_core") or "mame",
-                                          arcade_status=params.get("arcade_status"))
+                                          arcade_status=params.get("arcade_status"),
+                                          artwork=bool(params.get("artwork")))
         if kind == "romset":
             return lambda prog: romset(params["profile"], params["path"],
                                        leave_bytes=int(float(params.get("leave_gb") or 0) * 1024 ** 3),
@@ -525,6 +534,12 @@ def create_app():
         if kind == "acquire":
             return lambda prog: acquirer.auto_acquire(progress=prog, watch=bool(params.get("watch")),
                                                       stop=acquirer.STOP)
+        if kind == "artwork":
+            from . import artwork
+            return lambda prog: artwork.fetch(systems=params.get("systems") or None,
+                                              kinds=params.get("kinds") or artwork.DEFAULT_KINDS,
+                                              refresh=bool(params.get("refresh")),
+                                              progress=prog, stop=stops["artwork"])
         if kind == "community":
             from . import community
             return lambda prog: community.sync(systems=params.get("systems") or None, progress=prog)
@@ -770,7 +785,24 @@ def create_app():
                                       "wipe": bool(body.get("wipe")),
                                       "arcade_core": body.get("arcade_core") or "mame",
                                       "arcade_status": body.get("arcade_status"),
+                                      "artwork": bool(body.get("artwork")),
                                       "gates": _export_gates(body.get("gates"))})
+
+    @app.get("/api/artwork")
+    def api_artwork_coverage():
+        """How many games in hand have box art / snaps / title screens cached, per system."""
+        from . import artwork
+        return jsonify(artwork.coverage())
+
+    @app.post("/api/artwork")
+    def api_artwork_fetch():
+        """Fetch artwork for the games in hand from libretro-thumbnails, as a job."""
+        from . import artwork
+        body = request.get_json(force=True, silent=True) or {}
+        kinds = [k for k in (body.get("kinds") or []) if k in artwork.KINDS]
+        return start_job("artwork", {"systems": [s for s in (body.get("systems") or []) if s],
+                                     "kinds": kinds or list(artwork.DEFAULT_KINDS),
+                                     "refresh": bool(body.get("refresh"))})
 
     @app.get("/api/arcade/health")
     def api_arcade_health():

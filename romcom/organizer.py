@@ -266,7 +266,8 @@ def _safe(name):
 
 def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
              dry_run=False, keep_only=False, rating_min=None, stop=None, fill=False,
-             distinct_games=False, wipe=False, arcade_core="mame", arcade_status=None):
+             distinct_games=False, wipe=False, arcade_core="mame", arcade_status=None,
+             artwork=False):
     """Copy files matched to a catalog item into <dest>/<system>/<score>/<filename> — the
     score folder (90, 80, ... 0) is the ranking the copy order sorts by, made visible to
     RetroArch, which cannot show a rating.
@@ -326,6 +327,10 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     everything. Each core is judged against its own dat before its sets are chosen, and
     the gate runs before 'one copy per game' picks a family's survivor, so a working clone
     takes the place of a broken parent instead of the family vanishing.
+
+    `artwork` copies the cached box art and snaps (`artwork.fetch`) of the games on the
+    card into ES-DE's media folders on it, last, after every game and bios — nothing is
+    downloaded during an export.
 
     `wipe` clears the card first: every <dest>/<system> folder for a ticked platform (and
     arcade, when ticked) is deleted before anything is copied — a clean card instead of a
@@ -688,6 +693,17 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                     break
         if stopped:
             break
+    artwork_report = None
+    if artwork and not dry_run and not stopped:
+        from . import artwork as art
+        folders = ({s for s in wanted_systems} | ({"arcade"} if arcade_wanted else set())
+                   if wanted_systems is not None else None)
+        if progress: progress(0, 0, "artwork for ES-DE…")
+        artwork_report = art.export_media(dest, systems=folders, room_for=room_for,
+                                          progress=progress, db=db)
+        if artwork_report.get("stopped"):
+            errors.append({"file": "", "error": f"{dest} reached its free-space reserve "
+                                                f"while copying artwork — stopped"})
     if arcade_reports:
         by_system["arcade"] = sum(r["complete"] + r["incomplete"]
                                   for r in arcade_reports.values())
@@ -704,7 +720,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
            "arcade_held_back": {core: _held_summary(h) for core, h in arcade_held_back.items()}
                                or None,
            "console_bios": {"dir": str(dest / "system"), "systems": console_bios},
-           "dupes_skipped": dupes_skipped, "wiped": wiped,
+           "dupes_skipped": dupes_skipped, "wiped": wiped, "artwork": artwork_report,
            "wanted_only": bool(wanted_only), "keep_only": bool(keep_only),
            "sources": sorted(sources) if sources else None, "stopped": stopped}
     if dry_run:
