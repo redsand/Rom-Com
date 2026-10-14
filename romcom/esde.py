@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
+from . import memtrim
 from pathlib import Path
 
 # Our system slug -> ES-DE's folder name, where they differ.
@@ -127,6 +128,7 @@ _listing = {}
 def members(archive):
     """[(inner path, size)] of an archive's files, from its headers (no extraction)."""
     archive = Path(archive)
+    memtrim.use("esde.listings", _listing)
     key = (str(archive), archive.stat().st_mtime)
     if key in _listing:
         return _listing[key]
@@ -367,6 +369,7 @@ _heads = {}
 def head(archive, name, nbytes):
     """The first `nbytes` of one file inside an archive, without unpacking the rest."""
     archive = Path(archive)
+    memtrim.use("esde.heads", _heads)
     key = (str(archive), archive.stat().st_mtime, name, nbytes)
     if key in _heads:
         return _heads[key]

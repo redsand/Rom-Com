@@ -25,6 +25,7 @@ import re
 from pathlib import Path
 
 from .db import connect
+from . import memtrim
 
 STATUSES = ("works", "partial", "broken", "unknown")
 
@@ -51,6 +52,7 @@ def parse(path):
     shape of reader `mameset` uses, because these dats run to 85 MB and every attribute this
     needs sits on one line. Cached per file and mtime: an export judges a core and then
     asks the same dat for its parents."""
+    memtrim.use("arcadehealth.dats", _parsed)
     key = (str(path), Path(path).stat().st_mtime)
     if key in _parsed:
         return _parsed[key]

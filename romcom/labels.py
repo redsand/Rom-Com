@@ -20,6 +20,7 @@ import re
 from pathlib import Path
 
 from .db import connect
+from . import memtrim
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -108,6 +109,7 @@ def catver(path=None):
     path = path or catver_path()
     if not path:
         return {}
+    memtrim.use("labels.catver", _catver)
     key = (str(path), Path(path).stat().st_mtime)
     if key not in _catver:
         out, on = {}, False

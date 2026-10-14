@@ -1134,6 +1134,11 @@ def create_app():
             except Exception:
                 pass  # a busy checkpoint is fine — the next tick tries again
             try:
+                from . import memtrim
+                memtrim.trim()   # parsed dats etc. untouched for 15 min go back to the OS
+            except Exception:
+                pass
+            try:
                 wal = _P(str(settings()["db"]) + "-wal")
                 size = wal.stat().st_size if wal.exists() else 0
                 if size > WAL_WARN_BYTES and not warned:
@@ -1188,12 +1193,17 @@ def create_app():
     @app.get("/api/jobs")
     def api_jobs():
         db = connect()
-        rows = db.execute("""SELECT j.*, COALESCE(i.title,v.title,j.entity_id) entity_title
+        # The platform and Play come along so a fresh download can be told apart (which
+        # console?) and tried on the spot, the same Play the Library row offers.
+        rows = db.execute("""SELECT j.*, COALESCE(i.title,v.title,j.entity_id) entity_title,
+          i.system, i.status item_status, i.playable
           FROM jobs j
           LEFT JOIN items i ON j.entity_type='item' AND i.id=j.entity_id
           LEFT JOIN volumes v ON j.entity_type='volume' AND v.id=j.entity_id
           ORDER BY j.id DESC LIMIT 200""").fetchall()
-        return jsonify([dict(r) for r in rows])
+        return jsonify([dict(r) | {"can_play": bool(r["system"]) and can_play(
+            {"system": r["system"], "status": r["item_status"], "playable": r["playable"]})}
+            for r in rows])
 
     # Assistant. `ctx` is how tools reach closure state that lives in here — the job dict,
     # the launcher, the watcher toggle — without chattools importing web.py (circular).

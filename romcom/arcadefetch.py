@@ -31,6 +31,7 @@ import threading
 import time
 import zipfile
 import hashlib
+from . import memtrim
 from pathlib import Path
 from urllib.parse import quote
 
@@ -84,6 +85,7 @@ def _get(s, url, **kw):
 
 def _cached(key, loader):
     """A listing from memory, then from CACHE (under LISTING_DAYS old), then the network."""
+    memtrim.use("arcadefetch.listings", _mem)
     with _lock:
         if key in _mem:
             return _mem[key]

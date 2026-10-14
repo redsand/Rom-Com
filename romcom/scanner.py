@@ -2,6 +2,7 @@ from pathlib import Path
 import hashlib, re, zipfile, zlib
 from .db import connect, NOT_CONTENT_EXTS
 from .status import promote, own
+from . import sniff
 
 CHUNK=1024*1024
 
@@ -29,6 +30,41 @@ def _name_index(db):
         n=_norm(r["title"])
         if n: idx[n]=r["id"]  # wanted titles win over generic aliases
     return idx
+
+def _system_name_index(db):
+    """(system, normalized name) -> item_id for the stamped disc consoles, so a vetoed
+    name match can land on the same title for the console the disc really is."""
+    idx={}
+    marks=",".join("?"*len(sniff.MOVABLE))
+    for r in db.execute(f"SELECT id,title,system FROM items WHERE system IN ({marks})",sniff.MOVABLE):
+        n=_norm(r["title"])
+        if n: idx.setdefault((r["system"],n,_disc(r["title"])),r["id"])
+    for r in db.execute(f"""SELECT a.item_id,a.alias,i.system FROM aliases a JOIN items i ON i.id=a.item_id
+                           WHERE i.system IN ({marks})""",sniff.MOVABLE):
+        n=_norm(r["alias"])
+        if n: idx.setdefault((r["system"],n,_disc(r["alias"])),r["item_id"])
+    return idx
+
+_DISC=re.compile(r"\b(?:disc|disk|cd)\s*([0-9]+)",re.I)
+
+def _disc(name):
+    """Which disc of a set a name is — _norm drops '(Disc 2)' with the other groups, and
+    a disc 2 file must never land on the disc 1 item. A single-disc game is disc 1."""
+    m=_DISC.search(name or "")
+    return int(m.group(1)) if m else 1
+
+def _release(db,item_id,p):
+    """A name match the scanner now rejects took the item with it: FOUND, wanted and
+    authorized all came from that one file (scan's own()). With no other file left
+    claiming the item, it goes back to plain catalog — not MISSING-and-wanted, which
+    would send the acquirer after a game the owner never asked for."""
+    if db.execute("SELECT 1 FROM files WHERE matched_item_id=? LIMIT 1",(item_id,)).fetchone():
+        return
+    cur=db.execute("""UPDATE items SET status='CATALOGED',wanted=0,authorized=0,updated_at=CURRENT_TIMESTAMP
+      WHERE id=? AND status='FOUND'""",(item_id,))
+    if cur.rowcount:
+        db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
+                   (item_id,"scan-unmatch",f"not this game after all: {p}"))
 
 def _zip_member_matches(db,p):
     """Match a zip by its members. Zip central directories store each member's CRC32 of the
@@ -73,13 +109,14 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
     else:  # top-level only — sometimes a folder holds one system's roms and you don't
         paths=[p for p in root.iterdir() if p.is_file()]  # want to sweep every subfolder
     idx=_name_index(db) if name_match else {}
+    by_sys=None  # (system, name) -> item, built only if a disc stamp vetoes a name match
     recent=[]
     def _stats():
         return {"matched":matched,"verified":verified,"reused":reused,"recent":list(recent)}
     for i,p in enumerate(paths):
         if progress: progress(i,len(paths),p.name,_stats())
         st=p.stat()
-        prev=db.execute("SELECT bytes,mtime,crc32,md5,sha1,matched_item_id FROM files WHERE path=?",(str(p),)).fetchone()
+        prev=db.execute("SELECT bytes,mtime,crc32,md5,sha1,matched_item_id,match_method FROM files WHERE path=?",(str(p),)).fetchone()
         if prev and not rehash and prev["bytes"]==st.st_size and prev["mtime"]==st.st_mtime and prev["sha1"]:
             crc,md5,sha1=prev["crc32"],prev["md5"],prev["sha1"]; reused+=1
         else:
@@ -106,6 +143,17 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
                 row = db.execute("SELECT system FROM items WHERE id=?", (cand,)).fetchone()
                 if ext_sys and row and (row["system"] or "").lower() != ext_sys:
                     cand = None
+                elif row and (row["system"] or "").lower() in sniff.CHECKED:
+                    # Disc consoles stamp their discs: a PC installer or a PS1 bin/cue
+                    # that shares a PS3 game's name is vetoed by what's inside, and the
+                    # same title on the console the stamp does name takes its place.
+                    ev = sniff.evidence(p)
+                    if sniff.consistent(ev, row["system"].lower()) is False:
+                        if by_sys is None:
+                            by_sys = _system_name_index(db)
+                        key = (_norm(p.name), _disc(p.name))
+                        cand = next((by_sys[(s,) + key] for s in sniff.systems(ev)
+                                     if (s,) + key in by_sys), None)
             item_id = cand; method = "filename-exact" if item_id else None
         if item_id:
             matched+=1
@@ -134,6 +182,9 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
           md5=excluded.md5,sha1=excluded.sha1,matched_item_id=excluded.matched_item_id,
           match_method=excluded.match_method,content=excluded.content,scanned_at=CURRENT_TIMESTAMP""",
           (str(p),st.st_size,st.st_mtime,crc,md5,sha1,item_id,method,content)); count+=1
+        if prev and prev["matched_item_id"] and prev["matched_item_id"]!=item_id \
+                and prev["match_method"]=="filename-exact":
+            _release(db,prev["matched_item_id"],p)
         # Commit per FILE, not per 200: the first write of the loop opens the implicit
         # transaction, and with batched commits every later file's digest_file — seconds
         # each for ISO-sized dumps — ran inside it, holding SQLite's single write lock

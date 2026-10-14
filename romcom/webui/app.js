@@ -631,12 +631,18 @@ async function loadActivity() {
     const jobs = await api("/api/jobs");
     $("#jobs-table tbody").innerHTML = jobs.length ? jobs.map(j => `<tr>
       <td><div>${esc(j.entity_title)}</div><div class="sub">${esc(j.entity_type)} · ${esc(j.source || "sab")} · ${esc(j.nzo_id || "direct")}</div></td>
+      <td>${j.system ? `<span class="badge">${esc(j.system)}</span>` : `<span class="sub">—</span>`}</td>
       <td class="sub">${esc(j.result_title || "")}</td>
       <td class="r">${fmtBytes(j.bytes)}</td>
       <td>${badge(j.status || "UNKNOWN")}</td>
       <td class="sub" title="${esc(absDate(j.queued_at))}">${relDate(j.queued_at)}</td>
       <td class="sub" title="${esc(absDate(j.completed_at))}">${relDate(j.completed_at)}</td>
-    </tr>`).join("") : `<tr><td colspan="6" class="sub">No downloads yet — grab something from Acquire or the Library.</td></tr>`;
+      <td class="nowrap">${j.can_play ? `${(EMULATORS[j.system] || []).length > 1
+          ? `<select class="small emu-pick" title="Emulator">${
+              (EMULATORS[j.system] || []).map(n => `<option>${esc(n)}</option>`).join("")}</select>`
+          : ""}<button class="small act-play" data-id="${esc(j.entity_id)}" data-title="${esc(j.entity_title)}"
+          title="Launch in your emulator (needs: romcom agent)">Play</button>` : ""}</td>
+    </tr>`).join("") : `<tr><td colspan="8" class="sub">No downloads yet — grab something from Acquire or the Library.</td></tr>`;
   } catch (e) { toast("Jobs failed: " + e.message, true); }
 }
 
