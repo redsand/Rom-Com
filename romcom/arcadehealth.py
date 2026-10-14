@@ -116,7 +116,9 @@ def needed_parents(machines, name):
     clone's shared roms itself (marked merge=), so a zip built from the clone's own list
     carries them and the plain parent is not needed — but a bios is (FBNeo's mslug lists no
     neogeo chips), and so is a set the dat never defines (the 0.78 bios MAME 2003-Plus
-    leans on), and a parent of a clone that lists nothing merged at all."""
+    leans on). A clone that lists nothing merged shares no chip with its parent in any of
+    the three dats (CPS3's no-CD sfiii3n): it stands alone, and pulling its parent in put
+    a CHD-less sfiii3 on the card beside it."""
     out, cur, seen = [], machines.get(name), {name}
     while cur and cur["romof"] and cur["romof"] not in seen:
         parent = cur["romof"]
@@ -125,7 +127,7 @@ def needed_parents(machines, name):
         if pm is None:
             out.append(parent)
             break
-        if pm["isbios"] or not cur["merged"]:
+        if pm["isbios"]:
             out.append(parent)
         cur = pm
     return out

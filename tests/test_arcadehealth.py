@@ -204,9 +204,10 @@ def test_export_holds_broken_sets_back_and_a_working_clone_takes_the_slot(
     card = tmp_path / "sd"
     r = organizer.organize(card, systems=["arcade"], distinct_games=True)
     built = sorted(p.stem for p in (card / "arcade").glob("*.zip"))
-    # kinstc won its family's one slot; kinst.zip still rides along as its romof parent
-    # (the neogeo.zip rule), and wip — nothing in its family runs — stays off the card.
-    assert built == ["good", "kinst", "kinstc"]
+    # kinstc won its family's one slot and shares no chip with kinst, so the broken
+    # parent stays off the card (CPS3's sfiii3n once dragged a CHD-less sfiii3 along);
+    # wip — nothing in its family runs — stays off too.
+    assert built == ["good", "kinstc"]
     assert not r["clones_pruned"]
     held = r["arcade_held_back"]["mame"]
     assert held["count"] == 2
@@ -245,7 +246,7 @@ def test_a_clone_that_lists_its_merged_roms_needs_no_parent_zip(monkeypatch, tmp
 </datafile>""", encoding="utf-8")
     machines = arcadehealth.parse(dat)
     assert arcadehealth.needed_parents(machines, "c") == []
-    assert arcadehealth.needed_parents(machines, "s") == ["p"]       # nothing merged listed
+    assert arcadehealth.needed_parents(machines, "s") == []          # shares nothing: alone
     assert arcadehealth.needed_parents(machines, "gc") == ["bios"]   # up the chain to the bios
 
 

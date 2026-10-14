@@ -492,7 +492,7 @@ CORE_DAT = """<?xml version="1.0"?><datafile>
 </datafile>"""
 
 MAME_DAT = """<?xml version="1.0"?><datafile>
-<machine name="neogeo">
+<machine name="neogeo" isbios="yes">
 <rom name="bios.bin" size="16" crc="aaaa1111"/>
 </machine>
 </datafile>"""
@@ -507,7 +507,7 @@ def test_export_builds_the_arcade_bios_parents_of_its_selection(tmp_path, monkey
     # one dat, as the real mame one: the games with their romof parents, parents defined
     export_dat = tmp_path / "mame.dat"
     export_dat.write_text(CORE_DAT.replace("</datafile>",
-                        '<machine name="neogeo">\n'
+                        '<machine name="neogeo" isbios="yes">\n'
                         '<rom name="bios.bin" size="16" crc="aaaa1111"/>\n'
                         '</machine>\n</datafile>'), encoding="utf-8")
     db = _romset_env(monkeypatch, tmp_path, {"mame": export_dat},
@@ -642,7 +642,7 @@ def test_export_gets_the_arcade_core_it_is_asked_for(tmp_path, monkeypatch):
     <dest>/arcade, all three get one folder each."""
     two = {"mame": '<?xml version="1.0"?><datafile>\n'
                    '<game name="mslug" romof="neogeo">\n<rom name="m1.bin" size="16" crc="aaaa1111"/>\n</game>\n'
-                   '<machine name="neogeo">\n<rom name="bios.bin" size="16" crc="aaaa1111"/>\n</machine>\n'
+                   '<machine name="neogeo" isbios="yes">\n<rom name="bios.bin" size="16" crc="aaaa1111"/>\n</machine>\n'
                    '</datafile>',
            "fbneo": '<?xml version="1.0"?><datafile>\n'
                     '<game name="mslug">\n<rom name="m1.bin" size="16" crc="aaaa1111"/>\n</game>\n'
