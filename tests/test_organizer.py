@@ -638,8 +638,8 @@ def test_distinct_games_reaches_the_arcade_build(tmp_path, monkeypatch):
 
 
 def test_export_gets_the_arcade_core_it_is_asked_for(tmp_path, monkeypatch):
-    """The export builds the chosen core's romset — one core writes zips straight into
-    <dest>/arcade, all three get one folder each."""
+    """The export builds the chosen core's romset into the ES-DE system that launches it
+    with that core: mame -> arcade/, fbneo -> fbneo/, mame2003 -> mame/."""
     two = {"mame": '<?xml version="1.0"?><datafile>\n'
                    '<game name="mslug" romof="neogeo">\n<rom name="m1.bin" size="16" crc="aaaa1111"/>\n</game>\n'
                    '<machine name="neogeo" isbios="yes">\n<rom name="bios.bin" size="16" crc="aaaa1111"/>\n</machine>\n'
@@ -658,13 +658,13 @@ def test_export_gets_the_arcade_core_it_is_asked_for(tmp_path, monkeypatch):
                        f"VALUES('{iid}','{setname}','arcade','arcade/{setname}')")
             db.execute("UPDATE files SET matched_item_id=? WHERE path LIKE ?", (iid, f"%{chip}"))
     r = organize(tmp_path / "sd", systems=["arcade"], arcade_core="fbneo")
-    card = tmp_path / "sd" / "arcade"
+    card = tmp_path / "sd" / "fbneo"
     assert (card / "mslug.zip").exists() and (card / "kof97.zip").exists()
     assert r["arcade"]["complete"] == 2        # one core, its dat alone decides what builds
     alla = organize(tmp_path / "sd3", systems=["arcade"], arcade_core="all")
-    assert (tmp_path / "sd3" / "arcade" / "mame" / "mslug.zip").exists()
-    assert (tmp_path / "sd3" / "arcade" / "mame" / "neogeo.zip").exists()   # mame's bios parent
-    assert (tmp_path / "sd3" / "arcade" / "fbneo" / "kof97.zip").exists()   # fbneo's own set
+    assert (tmp_path / "sd3" / "arcade" / "mslug.zip").exists()
+    assert (tmp_path / "sd3" / "arcade" / "neogeo.zip").exists()   # mame's bios parent
+    assert (tmp_path / "sd3" / "fbneo" / "kof97.zip").exists()   # fbneo's own set
     assert set(alla["arcade"].keys()) == {"mame", "fbneo", "mame2003"}
     # mame builds mslug plus the neogeo parent before it; fbneo builds both of its sets.
     assert alla["arcade"]["mame"]["complete"] == 2 and alla["arcade"]["fbneo"]["complete"] == 2

@@ -30,6 +30,11 @@ FOLDERS = {
     "cdi": "cdimono1",
 }
 
+# Each arcade romset into the ES-DE system whose default emulator speaks it: `arcade`
+# launches MAME (current), `fbneo` FinalBurn Neo, `mame` MAME 2003-Plus. An FBNeo zip in
+# `arcade` is handed to current MAME, and many will not start there.
+ARCADE_FOLDERS = {"mame": "arcade", "fbneo": "fbneo", "mame2003": "mame"}
+
 _ARCH = (".zip", ".7z")
 # ES-DE's launchable extensions per system (its es_systems.xml, the parts that matter for a
 # library like this). Systems whose list includes .zip/.7z are cartridge systems: an

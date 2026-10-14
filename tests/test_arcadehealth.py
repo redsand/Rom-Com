@@ -276,7 +276,7 @@ def test_every_core_gets_its_bios_parents_not_just_mame(monkeypatch, tmp_path):
                    "VALUES('m','Metal Slug','arcade','arcade/mslug')")
         db.execute("UPDATE files SET matched_item_id='m' WHERE crc32='aaaa0002'")
     organizer.organize(tmp_path / "sd", systems=["arcade"], arcade_core="fbneo")
-    card = tmp_path / "sd" / "arcade"
+    card = tmp_path / "sd" / "fbneo"           # ES-DE launches it with FBNeo
     assert sorted(p.stem for p in card.glob("*.zip")) == ["mslug", "neogeo"]
 
 
@@ -310,7 +310,7 @@ def test_mame2003_bios_comes_from_the_fallback_dat_in_an_export(monkeypatch, tmp
         db.execute("UPDATE files SET matched_item_id='c' WHERE crc32='aaaa0002'")
     r = organizer.organize(tmp_path / "sd", systems=["arcade"], arcade_core="mame2003")
     assert arcadehealth.statuses("mame2003", db)["cvsgame"][0] == "works"
-    card = tmp_path / "sd" / "arcade"
+    card = tmp_path / "sd" / "mame"            # ES-DE: MAME 2003-Plus
     assert sorted(p.stem for p in card.glob("*.zip")) == ["cvs", "cvsgame"]
     assert not r["arcade_bios_unavailable"]
 

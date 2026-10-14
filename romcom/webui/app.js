@@ -978,6 +978,15 @@ $("#org-stop").addEventListener("click", async () => {
   catch (e) { toast(e.message, true); $("#org-stop").disabled = false; }
 });
 
+// ES-DE launches a folder with its own default core: arcade = MAME, fbneo = FBNeo,
+// mame = MAME 2003-Plus. The hint follows the chosen core.
+const ROM_FOLDER = {mame: "arcade", fbneo: "fbneo", mame2003: "mame"};
+function romPathHint() {
+  $("#rom-path").placeholder = `J:\\${ROM_FOLDER[$("#rom-profile").value] || "arcade"} (ES-DE launches that folder with this core)`;
+}
+$("#rom-profile").addEventListener("change", romPathHint);
+romPathHint();
+
 $("#rom-start").addEventListener("click", () => {
   const path = $("#rom-path").value.trim();
   if (!path) { toast("Enter the destination folder on the card first", true); return; }

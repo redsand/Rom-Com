@@ -544,6 +544,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         targets = set(wanted_systems) | {esde.folder(s) for s in wanted_systems}
         if arcade_wanted:
             targets.add("arcade")
+            targets |= {esde.ARCADE_FOLDERS[c] for c in arcade_cores if c in esde.ARCADE_FOLDERS}
         if dest.exists():
             for child in dest.iterdir():
                 if not child.is_dir() or child.name.lower() not in targets:
@@ -574,13 +575,13 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     fresh_wipe = bool(wipe and arcade_wanted)
 
     def build_arcade(core, dry_run):
-        """One core's zip build. A single-core card writes the zips straight into
-        <dest>/arcade — the layout a frontend scans — but three cores cannot share it
-        (the same set name would be three different zips), so each gets its own folder.
+        """One core's zip build, into the ES-DE system folder whose default emulator is
+        that core (`esde.ARCADE_FOLDERS`: arcade, fbneo, mame) — three cores cannot share
+        one folder anyway (the same set name is three different zips).
         The measuring pass wants the full rebuild under a wipe; the real build does not,
         because the wipe (if any) has already cleared the folder by then."""
-        dest_dir = dest / "arcade" if len(arcade_cores) == 1 else dest / "arcade" / core
-        base = "arcade" if len(arcade_cores) == 1 else f"arcade/{core}"
+        base = esde.ARCADE_FOLDERS.get(core, "arcade")
+        dest_dir = dest / base
         label = f"measuring {base}" if dry_run else base
         dat = mameset.dat_path(core)
         if not dat:
@@ -809,11 +810,10 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             break
     # Arcade's entries: the zips the build completed, under the folder it wrote them in.
     for core, rep_ in arcade_reports.items():
-        sub = "" if len(arcade_cores) == 1 else f"{core}/"
         names = [s for s, v in (rep_.get("sets") or {}).items() if v.get("complete")]
         rows_by_set = _arcade_rows(db, names)
-        card_games.setdefault("arcade", []).extend(
-            (f"{sub}{s}.zip", rows_by_set[s]) for s in names if s in rows_by_set)
+        card_games.setdefault(esde.ARCADE_FOLDERS.get(core, "arcade"), []).extend(
+            (f"{s}.zip", rows_by_set[s]) for s in names if s in rows_by_set)
     gamelists = None
     if not dry_run and card_games:
         try:
@@ -1062,7 +1062,8 @@ def _write_gamelists(dest, card_games, db):
         for entry, r in lst:
             genre = next((l[6:].replace("-", " ").title() for l in tags.get(r["item_id"], [])
                           if l.startswith("genre:")), None)
-            name = r["title"] if fold == "arcade" else esde.display_name(r["title"])
+            name = (r["title"] if fold in esde.ARCADE_FOLDERS.values()
+                    else esde.display_name(r["title"]))
             games.setdefault(fold, []).append({"path": entry, "name": name, "genre": genre,
                                                "rating": esde.rating(_score(r))})
     return esde.write_gamelists(dest, games)
