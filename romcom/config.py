@@ -77,6 +77,7 @@ ENV_VARS = {
     "ra_delay": "ROMCOM_RA_DELAY",
     "ra_timeout": "ROMCOM_RA_TIMEOUT",
     "community_auto_hours": "ROMCOM_COMMUNITY_AUTO_HOURS",
+    "chd_cache_dir": "ROMCOM_CHD_CACHE",
 }
 # Deliberately NOT here: the web master login (ROMCOM_WEB_USER/ROMCOM_WEB_PASS), the
 # MCP key (ROMCOM_MCP_KEY), and the community-source API credentials (RA_USERNAME,
@@ -158,6 +159,9 @@ def _env_settings():
         # The service re-syncs crowd scores by itself this often (hours); 0 = never.
         # Daily matches the providers' own daily budgets: each run spends one day's.
         "community_auto_hours": os.getenv("ROMCOM_COMMUNITY_AUTO_HOURS", "24"),
+        # Where converted CHDs are kept, so a disc is converted once for every card
+        # (empty: <download dir>/chd-cache). It grows to roughly half the disc library.
+        "chd_cache_dir": (os.getenv("ROMCOM_CHD_CACHE") or "").strip().strip('"'),
     }
 
 def _overrides(db_path):

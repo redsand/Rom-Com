@@ -2,6 +2,7 @@
 PS3 title's name must not become that PS3 game (it did — 11 of the library's 13 'PS3
 games' were PC DVDs, Xbox 360 folders and other consoles' discs)."""
 import zipfile
+from pathlib import Path
 
 from romcom import sniff
 from romcom.db import connect
@@ -132,3 +133,22 @@ def test_a_download_for_the_wrong_platform_is_refused(tmp_path):
     assert check_download(pc, "ps3")[0] is False
     good = _zip(tmp_path / "Mega Man 2.zip", ["Mega Man 2 (USA).nes"])
     assert check_download(good, "nes")[0] is True
+
+
+def test_a_disc_converts_once_and_later_cards_copy_it(monkeypatch, tmp_path):
+    from romcom import esde
+    monkeypatch.setenv("ROMCOM_CHD_CACHE", str(tmp_path / "cache"))
+    from romcom.config import invalidate
+    invalidate()
+    src = tmp_path / "Crazy Taxi (USA).gdi"
+    src.write_text("disc")
+    runs = []
+    def convert(src_, names, main, target, system):
+        runs.append(target)
+        Path(target).parent.mkdir(parents=True, exist_ok=True)
+        Path(target).write_bytes(b"CHD")
+    monkeypatch.setattr(esde, "_convert_chd", convert)
+    esde.make_chd(src, None, src.name, tmp_path / "card1" / "Crazy Taxi.chd", "dreamcast")
+    esde.make_chd(src, None, src.name, tmp_path / "card2" / "Crazy Taxi.chd", "dreamcast")
+    assert len(runs) == 1 and str(runs[0]).startswith(str(tmp_path / "cache"))
+    assert (tmp_path / "card2" / "Crazy Taxi.chd").read_bytes() == b"CHD"

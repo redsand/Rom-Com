@@ -425,6 +425,12 @@ def cmd_artwork(a):
     print(json.dumps(r, indent=2))
 
 
+def cmd_chd_cache(a):
+    from .organizer import precache_chds
+    r = precache_chds(a.system, progress=lambda i, t, n: print(f"[{i + 1}/{t}] {n}", flush=True))
+    print(json.dumps(r, indent=2))
+
+
 def cmd_arcade_fetch(a):
     from . import arcadefetch
     sets = list(a.sets or [])
@@ -543,6 +549,9 @@ def main():
     aw.add_argument("--media-dir", help="ES-DE media folder (default <dest>/ES-DE/downloaded_media)")
     aw.add_argument("--refresh", action="store_true", help="re-check misses and re-read the indexes")
     aw.set_defaults(fn=cmd_artwork)
+    cc=s.add_parser("chd-cache", help="convert a system's discs to CHD ahead of a card export (they are kept for every later card)")
+    cc.add_argument("system", nargs="+")
+    cc.set_defaults(fn=cmd_chd_cache)
     af=s.add_parser("arcade-fetch", help="fetch the chips, devices, bios and CHDs arcade sets lack, by setname, from archive.org's MAME items")
     af.add_argument("sets", nargs="*")
     af.add_argument("--broken", action="store_true", help="every owned set the health check calls broken for want of a download")

@@ -1299,3 +1299,37 @@ def romset(profile, dest, leave_bytes=0, progress=None, db=None, stop=None,
             "held_back": _held_summary(held) if held else None,
             **{k: v for k, v in r.items() if k != "sets"},
             "stopped": bool(r.get("stopped") or r.get("out_of_room"))}
+
+
+def precache_chds(systems, progress=None, stop=None, distinct_games=True, exclude_labels=None):
+    """Convert ahead of time every disc an export of `systems` would turn into a CHD,
+    into the CHD cache (esde.chd_cache_dir) — the hours chdman takes are spent now, and the
+    card export later only copies. Same selection as the export (one copy per game, the
+    leave-out labels). Returns {converted, cached, failed: [...], dir}."""
+    from . import esde
+    if esde.chd_cache_dir() is None:
+        return {"error": "no CHD cache folder: set a download folder or chd_cache_dir"}
+    systems = {s.lower() for s in systems}
+    rows = [r for r in _selection(exclude_labels=exclude_labels)
+            if (r["system"] or "").lower() in systems]
+    rows, _ = _canonical(rows, distinct_games)
+    games = _plan_games(rows, "flat", chd=True, one_file=distinct_games)
+    work = [(g["row"]["system"], st) for g in games for st in g["steps"] if st[0] == "chd"]
+    out = {"converted": 0, "cached": 0, "failed": [], "dir": str(esde.chd_cache_dir())}
+    for i, (system, (_, src, names, main, rel, size)) in enumerate(work):
+        if stop is not None and stop.is_set():
+            break
+        cached = esde.chd_cached(src, main, system)
+        if cached.exists():
+            out["cached"] += 1
+            continue
+        if progress:
+            progress(i, len(work), f"converting {main} to CHD…")
+        try:
+            esde._convert_chd(src, names, main, cached, system)
+            out["converted"] += 1
+        except Exception as e:
+            out["failed"].append({"disc": main, "error": str(e)[:200]})
+    if progress:
+        progress(len(work), len(work), "done")
+    return out

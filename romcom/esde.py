@@ -499,7 +499,51 @@ def chdman():
     return None
 
 
+def chd_cache_dir():
+    """Where converted discs are kept between exports (None: no cache)."""
+    from .config import settings
+    s = settings()
+    d = (s.get("chd_cache_dir") or "").strip()
+    if d:
+        return Path(d)
+    base = (s.get("download_dir") or "").strip()
+    return Path(base) / "chd-cache" if base else None
+
+
+def chd_cached(src, main, system):
+    """The cache file a disc converts to: named for the game, keyed by the source file's
+    path, size and date — a re-downloaded or changed source converts afresh."""
+    import hashlib
+    d = chd_cache_dir()
+    if not d:
+        return None
+    st = Path(src).stat()
+    key = hashlib.sha1(f"{Path(src).resolve()}|{st.st_size}|{int(st.st_mtime)}|{main}"
+                       .encode("utf-8", "replace")).hexdigest()[:12]
+    stem = _TAGLESS.sub("_", Path(main).stem)[:90]
+    return d / folder(system) / f"{stem} [{key}].chd"
+
+
 def make_chd(src, names, main, target, system):
+    """`target` (.chd) for one disc — from the CHD cache when this disc was converted for
+    an earlier card (a copy: seconds, not the minutes chdman takes), else converted into
+    the cache and copied from there. Without a cache it converts straight to `target`."""
+    target = Path(target)
+    try:
+        cached = chd_cached(src, main, system)
+    except OSError:
+        cached = None
+    if cached is None:
+        return _convert_chd(src, names, main, target, system)
+    if not cached.exists():
+        _convert_chd(src, names, main, cached, system)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    part = target.with_name(target.name + ".part")
+    shutil.copyfile(cached, part)
+    os.replace(part, target)
+
+
+def _convert_chd(src, names, main, target, system):
     """Convert one disc to `target` (.chd). `names` set: `src` is an archive, unpacked to a
     temp dir first; None: `src` is the loose main file, its tracks beside it. Written to a
     .part file and renamed, so a .chd on the card is always a finished one."""
