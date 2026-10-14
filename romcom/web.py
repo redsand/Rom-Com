@@ -804,14 +804,17 @@ def create_app():
                                      "kinds": kinds or list(artwork.DEFAULT_KINDS),
                                      "refresh": bool(body.get("refresh"))})
 
+    _ARCADE_CORES = ("mame", "fbneo", "mame2003")
+
     @app.get("/api/arcade/health")
     def api_arcade_health():
         """Where the owned arcade sets stand on one core: counts, boards, and the fixes
         ranked by how many games each brings back."""
         from . import arcadehealth
-        core = request.args.get("core")
-        return jsonify(arcadehealth.metrics(core if core in ("mame", "fbneo", "mame2003")
-                                            else "mame"))
+        core = request.args.get("core") or "mame"
+        if core not in _ARCADE_CORES:
+            return jsonify({"error": f"unknown core {core!r}"}), 400
+        return jsonify(arcadehealth.metrics(core))
 
     @app.post("/api/arcade/health/refresh")
     def api_arcade_health_refresh():
@@ -842,7 +845,9 @@ def create_app():
         the acquire pipeline, exactly as marking them wanted in the library would."""
         from . import arcadehealth
         body = request.get_json(force=True, silent=True) or {}
-        core = body.get("core") if body.get("core") in ("mame", "fbneo", "mame2003") else "mame"
+        core = body.get("core") or "mame"
+        if core not in _ARCADE_CORES:
+            return jsonify({"error": f"unknown core {core!r}"}), 400
         r = arcadehealth.repair(core, apply=bool(body.get("apply")))
         if r["applied"] and _maybe_auto_acquire():
             r["auto_acquire_started"] = True

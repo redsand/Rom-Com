@@ -553,6 +553,46 @@ def _cores_judged(db):
     return [r[0] for r in db.execute("SELECT DISTINCT core FROM arcade_health ORDER BY core")]
 
 
+def _chip_carriers(core, short, hand, db):
+    """MAME sets not in hand that hold the chips `short` ({set: [missing rom names]}) lack
+    on `core`, matched by CRC — the catalog only fetches MAME sets, so a chip another
+    romset version wants is reachable when MAME files it under some other machine.
+
+    Returns (carrier setnames, sets every one of whose chips a carrier covers). Greedy: the
+    carrier covering the most still-uncovered chips first, the smaller set on a tie, so one
+    PCB set stands in for a whole board's games rather than a download per game."""
+    from . import mameset
+    own, ref = mameset.dat_path(core), mameset.dat_path("mame")
+    if not own or not ref or own == ref:
+        return set(), set()
+    machines, mame = parse(own), parse(ref)
+    need = {}
+    for s, names in short.items():
+        crcs = {n: crc for _, crc, n in (machines.get(s) or {}).get("roms", [])}
+        got = {crcs.get(n) for n in names}
+        if got and None not in got and "" not in got:
+            need[s] = got
+    wanted = set().union(*need.values()) if need else set()
+    catalog = {r["s"] for r in db.execute(
+        f"SELECT {_SET} s FROM items WHERE system='arcade'")}
+    holds = {}
+    for name, m in mame.items():
+        if name in hand or name not in catalog:
+            continue
+        have = {crc for _, crc, _ in m["roms"]} & wanted
+        if have:
+            holds[name] = (have, len(m["roms"]))
+    reachable = set().union(*(h for h, _ in holds.values())) if holds else set()
+    fixable = {s: c for s, c in need.items() if c <= reachable}
+    todo = set().union(*fixable.values()) if fixable else set()
+    picked = set()
+    while todo:
+        best = max(holds, key=lambda n: (len(holds[n][0] & todo), -holds[n][1], n))
+        picked.add(best)
+        todo -= holds[best][0]
+    return picked, set(fixable)
+
+
 def repair(core="mame", apply=False, db=None):
     """Arm the downloads that fix owned broken sets, for the acquire pipeline to fetch.
 
@@ -561,13 +601,16 @@ def repair(core="mame", apply=False, db=None):
     part, because the acquirer attempts CATALOGED/MISSING items only. A game missing its
     own chips or CHD is re-armed the same way — on the mame core only: the catalog is the
     MAME romset, so a set short of FBNeo's or 2003-Plus's chip versions is a romset
-    mismatch another download of the MAME set will not cure; those are counted, not armed.
+    mismatch another download of the MAME set will not cure. Unless MAME files the same
+    chip under another set: FBNeo's pgm wants bios.u42, which MAME keeps in thegladpcb —
+    that carrier is armed instead (`_chip_carriers`), and the set counts as a mismatch
+    only when some chip has no carrier at all.
     A preliminary driver is not a download at all. `apply=False` is the preview."""
     db = db or connect()
     hand = _in_hand(db)
     rows = _rows(db, core)
     known = statuses(core, db)
-    want_deps, want_sets, mismatch = set(), set(), 0
+    want_deps, want_sets, mismatch, short = set(), set(), 0, {}
     for s in hand:
         if known.get(s, (None,))[0] != "broken" or s not in rows:
             continue
@@ -578,9 +621,14 @@ def repair(core="mame", apply=False, db=None):
         if any(k in ("rom", "chd") for k, _ in missing):
             if core == "mame":
                 want_sets.add(s)
-            else:
+            elif any(k == "chd" for k, _ in missing):
                 mismatch += 1
-    names = sorted(want_deps | want_sets)
+            else:
+                short[s] = [n for k, n in missing if k == "rom"]
+    carriers, carried = (_chip_carriers(core, short, hand, db) if short
+                         else (set(), set()))
+    mismatch += len(short) - len(carried)
+    names = sorted(want_deps | want_sets | carriers)
     items = {}
     for i in range(0, len(names), 800):
         chunk = names[i:i + 800]
@@ -604,6 +652,7 @@ def repair(core="mame", apply=False, db=None):
            "not_in_catalog": sorted(set(names) - set(items))[:40],
            "already_queued": len(items) - len(todo), "to_arm": len(todo),
            "romset_mismatch": mismatch,
+           "carriers": sorted(carriers), "carried_sets": len(carried),
            "sample": sorted(r["s"] for r in todo)[:30], "applied": False}
     if apply and todo:
         with db:

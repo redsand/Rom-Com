@@ -1191,9 +1191,12 @@ async function arcadeRepair(apply) {
   $("#ah-repair-out").innerHTML = `<div class="checklist" style="max-height:none;margin-top:12px">
       <div class="check ${n ? "" : "ok"}"><span class="mark">${n ? n : "✓"}</span><span class="d">
         ${r.applied ? `queued for download — the acquire watcher fetches them${r.auto_acquire_started ? " (started)" : ""}`
-                    : n ? `download${n > 1 ? "s" : ""} would fix owned broken sets: ${r.deps} bios/device/parent set(s), ${r.sets} game(s) missing chips or a CHD`
+                    : n ? `download${n > 1 ? "s" : ""} would fix owned broken sets: ${r.deps} bios/device/parent set(s), ${r.sets} game(s) missing chips or a CHD${r.carriers.length ? `, ${r.carriers.length} chip carrier(s)` : ""}`
                         : "nothing to queue for this core"}
         ${r.already_queued ? `<span class="sub"> · ${r.already_queued} already queued</span>` : ""}</span></div>
+      ${r.carried_sets ? `<div class="check"><span class="mark">${r.carried_sets}</span><span class="d">set(s) short of chips MAME keeps under another set —
+        ${r.carriers.length} MAME download${r.carriers.length > 1 ? "s" : ""} carry them${r.applied ? " (queued)" : ""}:
+        <span class="sub">${esc(r.carriers.slice(0, 12).join(", "))}${r.carriers.length > 12 ? "…" : ""}</span></span></div>` : ""}
       ${r.romset_mismatch ? `<div class="check"><span class="mark">${r.romset_mismatch}</span><span class="d">need this core's own romset version —
         the catalog is the MAME romset, so another MAME download will not fix them. Use the fixes list above, or play them on MAME.</span></div>` : ""}
       ${r.sample.length && !r.applied ? `<div class="check"><span class="mark">·</span><span class="d sub">${esc(r.sample.join(", "))}${n > r.sample.length ? "…" : ""}</span></div>` : ""}

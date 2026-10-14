@@ -376,3 +376,61 @@ def test_library_filters_and_sorts_by_health_on_the_chosen_core(monkeypatch, tmp
     assert got("core=fbneo&health=unjudged&sort=title") == [
         ("good", None), ("rough", None), ("wip", None)]
     assert c.get("/api/arcade/health?core=mame").get_json()["counts"]["works"] == 2
+
+
+def test_repair_on_another_core_arms_the_mame_set_that_carries_the_missing_chip(
+        monkeypatch, tmp_path):
+    """The catalog fetches MAME sets only. FBNeo's pgm wants bios.u42, which MAME files
+    under thegladpcb: arming that one PCB set fixes every pgm game, where re-fetching the
+    games themselves would change nothing. A chip no MAME set holds stays a mismatch."""
+    db, _ = _env(monkeypatch, tmp_path)
+    fb = tmp_path / "fbneo.dat"
+    fb.write_text("""<?xml version="1.0"?><datafile>
+<game name="kov" sourcefile="pgm/d_pgm.cpp">
+<rom name="k.bin" size="16" crc="aaaa0001"/>
+<rom name="bios.u42" size="16" crc="b10542aa"/>
+<driver status="good"/>
+</game>
+<game name="drgw2" sourcefile="pgm/d_pgm.cpp">
+<rom name="d.bin" size="16" crc="aaaa0002"/>
+<rom name="bios.u42" size="16" crc="b10542aa"/>
+<driver status="good"/>
+</game>
+<game name="odd" sourcefile="misc/odd.cpp">
+<rom name="o.bin" size="16" crc="0dd00dd0"/>
+<driver status="good"/>
+</game>
+</datafile>""", encoding="utf-8")
+    mame = tmp_path / "mame.dat"
+    mame.write_text("""<?xml version="1.0"?><datafile>
+<machine name="kov">
+<rom name="k.bin" size="16" crc="aaaa0001"/>
+</machine>
+<machine name="drgw2">
+<rom name="d.bin" size="16" crc="aaaa0002"/>
+</machine>
+<machine name="odd">
+<rom name="o.bin" size="16" crc="aaaa0003"/>
+</machine>
+<machine name="thegladpcb">
+<rom name="bios.u42" size="16" crc="b10542aa"/>
+<rom name="big1" size="16" crc="12345678"/>
+</machine>
+<machine name="thegladpcba">
+<rom name="bios.u42" size="16" crc="b10542aa"/>
+</machine>
+</datafile>""", encoding="utf-8")
+    monkeypatch.setattr(mameset, "dat_path",
+                        lambda profile="mame": fb if profile == "fbneo" else mame)
+    _owned(db, ["kov", "drgw2", "odd"])
+    with db:
+        for s in ("thegladpcb", "thegladpcba"):
+            db.execute("INSERT INTO items(id,title,system,external_id,status) "
+                       "VALUES(?,?,'arcade',?,'CATALOGED')", (f"it-{s}", s, f"arcade/{s}"))
+    arcadehealth.evaluate("fbneo", db)
+    r = arcadehealth.repair("fbneo", db=db)
+    assert r["carriers"] == ["thegladpcba"]                 # the smaller of the two carriers
+    assert (r["carried_sets"], r["romset_mismatch"], r["to_arm"]) == (2, 1, 1)
+    arcadehealth.repair("fbneo", apply=True, db=db)
+    assert db.execute("SELECT wanted, authorized, status FROM items WHERE id='it-thegladpcba'"
+                      ).fetchone()[:] == (1, 1, "CATALOGED")
