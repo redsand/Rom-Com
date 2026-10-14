@@ -363,7 +363,8 @@ def cmd_organize(a):
                              rating_min=int(settings().get("export_rating_min", 0) or 0),
                              fill=a.fill, dry_run=a.dry_run,
                              arcade_status=a.arcade_status,
-                             exclude_labels=_exclude(a.exclude_labels)), indent=2))
+                             exclude_labels=_exclude(a.exclude_labels),
+                             layout=a.layout, chd=not a.no_chd), indent=2))
 
 
 def cmd_artwork(a):
@@ -519,6 +520,8 @@ def main():
     og.add_argument("--dry-run",action="store_true",help="report what would be copied, copy nothing")
     og.add_argument("--arcade-status",choices=["no_broken","works_only","all"],default=None,help="arcade health gate: skip broken sets (default), only working ones, or everything")
     og.add_argument("--exclude-labels",default=None,help="labels to leave out, comma-separated (default fruit-machine,gambling,not-a-game; 'none' keeps everything)")
+    og.add_argument("--layout",choices=["flat","ranked"],default="flat",help="flat: every game in its ES-DE system folder (default); ranked: <system>/<score>/ folders")
+    og.add_argument("--no-chd",action="store_true",help="copy/unpack disc images as they are instead of converting .cue/.gdi (and PS2 .iso) to CHD")
     og.set_defaults(fn=cmd_organize)
     rec=s.add_parser("recommend", help="the n best games to play next, in hand now")
     rec.add_argument("--system", help="one system, or omit for the whole shelf")

@@ -288,10 +288,14 @@ def coverage(db=None, systems=None):
 
 
 def export_media(dest, kinds=DEFAULT_KINDS, media_dir=None, systems=None, room_for=None,
-                 progress=None, db=None, dry_run=False):
+                 progress=None, db=None, dry_run=False, entries=None):
     """Copy cached artwork for the games on a card into ES-DE's media layout. Only games
     actually on the card get images, named after the file ES-DE lists. Never downloads —
-    `fetch` does that — so a card export stays an offline copy."""
+    `fetch` does that — so a card export stays an offline copy.
+
+    `entries` ({folder: [(path ES-DE lists, item_id)]}) is the export's own record of what
+    it wrote — needed once it unpacks archives, since a card file's name is then the
+    archive's inner name, not a file the library knows. Without it the card is walked."""
     db = db or connect()
     dest = Path(dest)
     media = Path(media_dir) if media_dir else dest / "ES-DE" / "downloaded_media"
@@ -315,6 +319,48 @@ def export_media(dest, kinds=DEFAULT_KINDS, media_dir=None, systems=None, room_f
     wanted = {s.lower() for s in systems} if systems else None
     written = skipped = nbytes = games = without = 0
     stopped = False
+    if entries is not None:
+        listed = [(fold, Path(e), iid) for fold, lst in sorted(entries.items())
+                  for e, iid in lst]
+    else:
+        listed = _walk_card(dest, wanted, by_set, by_file)
+    for fold, entry, iid in listed:
+        games += 1
+        imgs = art.get(iid, {})
+        if not any(k in imgs for k in kinds):
+            without += 1
+            continue
+        # ES-DE names media after the entry without its extension — for a directory
+        # interpreted as a file ("Game.cue/") too.
+        for k in kinds:
+            src = imgs.get(k)
+            if not src or not Path(src).exists():
+                continue
+            target = media / fold / ESDE[k] / entry.parent / f"{entry.stem}.png"
+            size = Path(src).stat().st_size
+            if target.exists() and target.stat().st_size == size:
+                skipped += 1
+                continue
+            if room_for is not None and not room_for(size):
+                stopped = True
+                break
+            nbytes += size
+            if not dry_run:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(src, target)
+            written += 1
+        if stopped:
+            break
+        if progress and games % 200 == 0:
+            progress(games, 0, f"artwork: {fold}/{entry}")
+    return {"written": written, "skipped": skipped, "bytes": nbytes, "games": games,
+            "without_art": without, "media_dir": str(media), "stopped": stopped}
+
+
+def _walk_card(dest, wanted, by_set, by_file):
+    """(folder, entry, item_id) for the games found on a card by walking it — the
+    standalone `artwork export`, when no export just said what it wrote."""
+    out = []
     for top in sorted(p for p in dest.iterdir() if p.is_dir()):
         sys_ = top.name.lower()
         if sys_ in _NOT_GAMES or sys_.startswith(".") or (wanted and sys_ not in wanted):
@@ -328,36 +374,6 @@ def export_media(dest, kinds=DEFAULT_KINDS, media_dir=None, systems=None, room_f
                 iid = by_set.get(f.stem)
             else:
                 iid = by_file.get(f.name.lower())
-            if not iid:
-                continue
-            games += 1
-            imgs = art.get(iid, {})
-            if not any(k in imgs for k in kinds):
-                without += 1
-                continue
-            rel = f.parent.relative_to(top)
-            for k in kinds:
-                src = imgs.get(k)
-                if not src or not Path(src).exists():
-                    continue
-                target = media / top.name / ESDE[k] / rel / f"{f.stem}.png"
-                size = Path(src).stat().st_size
-                if target.exists() and target.stat().st_size == size:
-                    skipped += 1
-                    continue
-                if room_for is not None and not room_for(size):
-                    stopped = True
-                    break
-                nbytes += size
-                if not dry_run:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(src, target)
-                written += 1
-            if stopped:
-                break
-            if progress and games % 200 == 0:
-                progress(games, 0, f"artwork: {top.name}/{f.name}")
-        if stopped:
-            break
-    return {"written": written, "skipped": skipped, "bytes": nbytes, "games": games,
-            "without_art": without, "media_dir": str(media), "stopped": stopped}
+            if iid:
+                out.append((top.name, f.relative_to(top), iid))
+    return out

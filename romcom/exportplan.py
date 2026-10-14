@@ -46,6 +46,8 @@ def _clean(p):
             "arcade_status": p.get("arcade_status") if p.get("arcade_status") in (
                 "all", "no_broken", "works_only") else None,
             "artwork": bool(p.get("artwork")),
+            "layout": p.get("layout") if p.get("layout") in ("flat", "ranked") else "flat",
+            "chd": p.get("chd", True) is not False,
             # None (never chosen) keeps the default; a list, even empty, is the choice.
             "exclude_labels": (None if p.get("exclude_labels") is None
                                else labels.normalize_exclude(p.get("exclude_labels"))),

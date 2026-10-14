@@ -290,13 +290,18 @@
           Leave&nbsp;out: <span id="org-labels" class="labels-out"></span></span>
         <label class="sub" title="Copy the box art and snaps already fetched (Artwork card below) into ES-DE's media folders on the card — point ES-DE's Game media directory at <card>\ES-DE\downloaded_media">
           <input type="checkbox" id="org-art"> artwork for ES-DE</label>
+        <label class="sub" title="Off: every game sits straight in its ES-DE system folder, and gamelist.xml carries the rating (ES-DE can sort by it). On: the old <system>\<score>\ folders (90, 80 …), for RetroArch's own browser">
+          <input type="checkbox" id="org-ranked"> score folders</label>
+        <label class="sub" title="Disc games (PS1, PS2, Dreamcast, Saturn, Sega CD…) as one compressed .chd each — what ES-DE's emulators prefer: one entry per game, about the size of the archive. Converting takes a while the first time; games already converted on the card are skipped">
+          <input type="checkbox" id="org-chd" checked> discs as CHD</label>
         <label class="sub" title="Delete the ticked platforms' folders on the card before copying — a clean card instead of a top-up. Nothing outside those folders is touched">
           <input type="checkbox" id="org-wipe"> clear those platforms first</label>
       </div>
       <div id="org-systems" class="org-pick"></div>
-      <p class="sub">Copies the ticked platforms into &lt;dest&gt;\&lt;system&gt;\&lt;score&gt;\ folders (90, 80,
-        &hellip; 0 — RetroArch can't show a rating, so the folder does), best-rated games first
-        (your rating or the crowd's score). Nothing is moved or
+      <p class="sub">Copies the ticked platforms into &lt;dest&gt;\&lt;system&gt;\ under the folder names ES-DE
+        knows (psx, gc, n3ds…), only files the system can launch; .7z/.rar (and disc games in a .zip)
+        are unpacked, and a multi-file disc becomes one entry. gamelist.xml gives ES-DE each game's
+        name, rating and genre. Best-rated games go first (your rating or the crowd's score). Nothing is moved or
         deleted; files already on the card are skipped, so re-running tops up. An export that would not
         fit is refused before anything is written, and a card is never filled past its last 1 GB (or 1%).</p>
       <div id="org-progress" hidden>

@@ -304,7 +304,7 @@ def _safe(name):
 def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
              dry_run=False, keep_only=False, rating_min=None, stop=None, fill=False,
              distinct_games=False, wipe=False, arcade_core="mame", arcade_status=None,
-             artwork=False, exclude_labels=None):
+             artwork=False, exclude_labels=None, layout="flat", chd=True):
     """Copy files matched to a catalog item into <dest>/<system>/<score>/<filename> — the
     score folder (90, 80, ... 0) is the ranking the copy order sorts by, made visible to
     RetroArch, which cannot show a rating.
@@ -504,6 +504,14 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     rows, nonarcade_dupes = _canonical(rows, distinct_games)
     dupes_skipped = nonarcade_dupes + arcade_dupes_skipped
     dest = Path(dest)
+    # What reaches the card is what ES-DE can list and launch (esde.py): its folder name,
+    # its file types, archives unpacked where the emulator cannot read them, one entry per
+    # disc. `layout` 'ranked' keeps the old <system>/<score>/ folders; 'flat' (the default)
+    # puts every game straight in the system folder — gamelist.xml carries the rating.
+    from . import esde
+    layout = layout if layout in ("flat", "ranked") else "flat"
+    if progress and rows: progress(0, 0, "planning the card layout (reading archives)…")
+    games = _plan_games(rows, layout, chd=chd)
     # Console BIOS rides along: a card whose Dreamcast folder is full of games plays
     # nothing without dc_boot.bin in RetroArch's System Directory, and no item-driven
     # query can ever fetch it — the dump's BIOS files sit in `files` unmatched, so this
@@ -533,7 +541,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                              "unfiltered destination",
                     "copied": 0, "matched_files": len(rows), "by_system": {}, "errors": [],
                     "dupes_skipped": dupes_skipped, "stopped": False}
-        targets = set(wanted_systems)
+        targets = set(wanted_systems) | {esde.folder(s) for s in wanted_systems}
         if arcade_wanted:
             targets.add("arcade")
         if dest.exists():
@@ -602,7 +610,8 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         # selection's full bytes; without one, present same-size files are skipped and the
         # need reflects that. Clearing the ticked platforms counts as room the copy may use.
         if progress: progress(0, 0, "measuring what's left to copy…")
-        need = (sum(r["bytes"] or 0 for r in rows) if wipe else _bytes_to_copy(rows, dest))
+        need = (sum(s[-1] or 0 for g in games for s in g["steps"]) if wipe
+                else _bytes_to_copy(games, dest))
         if arcade_any:
             # A wipe clears the arcade folder before rebuilding it, so the sizing pass
             # must measure the FULL build — fresh=True — not the delta over the old
@@ -658,42 +667,104 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     copied = skipped = missing = 0
     planned_bytes = 0
     by_system = {}
-    for i, r in enumerate(rows):
+    not_playable, unpacked, converted, card_games = {}, 0, 0, {}
+    for i, g in enumerate(games):
         if stopped or (stop is not None and stop.is_set()):
             stopped = True
             break
-        src = Path(r["path"])
-        if progress: progress(i, len(rows), src.name)
-        if not src.exists():
-            missing += 1; continue
-        if dry_run:
-            planned_bytes += src.stat().st_size
-            by_system[r["system"] or "unknown"] = by_system.get(r["system"] or "unknown", 0) + 1
+        r = g["row"]
+        system = r["system"] or "unknown"
+        if progress: progress(i, len(games), r["title"] or "")
+        missing += g["missing"]
+        if g["dropped"]:
+            not_playable[g["folder"]] = not_playable.get(g["folder"], 0) + g["dropped"]
+        if not g["steps"]:
             continue
-        folder = dest / (r["system"] or "unknown") / _rank_folder(r)
-        target = folder / src.name
-        try:
-            size = src.stat().st_size
-            if target.exists() and target.stat().st_size == size:
-                skipped += 1
-            elif not room_for(size):
-                errors.append({"file": "", "error": f"{dest} reached its free-space reserve "
-                                                    f"— export stopped before {src.name}"})
-                stopped = True
-                break
-            else:
-                folder.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, target)
-                copied += 1
-            by_system[r["system"] or "unknown"] = by_system.get(r["system"] or "unknown", 0) + 1
-        except OSError as e:
-            errors.append({"file": src.name, "error": str(e)})
-            if e.errno == errno.ENOSPC:
-                _discard_partial(target)
-                errors.append({"file": "", "error": f"{dest} is full — export stopped"})
-                stopped = True
-                break
-    if progress: progress(len(rows), len(rows), "stopped" if stopped else "done")
+        base = dest / g["folder"] / g["sub"] if g["sub"] else dest / g["folder"]
+        done = True
+        for step in g["steps"]:
+            if dry_run:
+                planned_bytes += step[-1] or 0
+                continue
+            try:
+                if step[0] == "copy":
+                    _, src, rel, size = step
+                    target = base / rel
+                    if target.exists() and target.stat().st_size == size:
+                        skipped += 1
+                        continue
+                    if not room_for(size):
+                        errors.append({"file": "", "error": f"{dest} reached its free-space "
+                                                            f"reserve — export stopped before "
+                                                            f"{Path(src).name}"})
+                        stopped = True
+                        done = False
+                        break
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, target)
+                    copied += 1
+                elif step[0] == "m3u":
+                    _, rel, text, size = step
+                    target = base / rel
+                    if target.exists() and target.read_text(encoding="utf-8") == text:
+                        skipped += 1
+                        continue
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(text, encoding="utf-8", newline="\n")
+                    copied += 1
+                elif step[0] == "chd":
+                    _, src, names, main, rel, size = step
+                    target = base / rel
+                    if target.exists() and target.stat().st_size > 0:
+                        skipped += 1
+                        continue
+                    if not room_for(size):
+                        errors.append({"file": "", "error": f"{dest} reached its free-space "
+                                                            f"reserve — export stopped before "
+                                                            f"{main}"})
+                        stopped = True
+                        done = False
+                        break
+                    if progress: progress(i, len(games), f"converting {main} to CHD…")
+                    esde.make_chd(src, names, main, target, system)
+                    copied += 1
+                    converted += 1
+                else:
+                    _, src, names, rel_dir, size = step
+                    tdir = base / rel_dir if rel_dir else base
+                    if _unpacked(tdir, src, names):
+                        skipped += 1
+                        continue
+                    if not room_for(size):
+                        errors.append({"file": "", "error": f"{dest} reached its free-space "
+                                                            f"reserve — export stopped before "
+                                                            f"{Path(src).name}"})
+                        stopped = True
+                        done = False
+                        break
+                    try:
+                        esde.extract(src, names, tdir)
+                    except OSError:
+                        for n in names:
+                            _discard_partial(tdir / Path(n).name)
+                        raise
+                    copied += 1
+                    unpacked += 1
+            except OSError as e:
+                errors.append({"file": Path(step[1]).name, "error": str(e)})
+                done = False
+                if getattr(e, "errno", None) == errno.ENOSPC:
+                    errors.append({"file": "", "error": f"{dest} is full — export stopped"})
+                    stopped = True
+                    break
+        if stopped and not done:
+            break
+        if done or dry_run:
+            by_system[system] = by_system.get(system, 0) + 1
+            prefix = f"{g['sub']}/" if g["sub"] else ""
+            card_games.setdefault(g["folder"], []).extend(
+                (prefix + e, r) for e in g["entries"])
+    if progress: progress(len(games), len(games), "stopped" if stopped else "done")
 
     # The BIOS files go in after the games — nobody browses for them, and a run that
     # stops early has already said so. Copying is the same skip-if-present/room rule the
@@ -736,14 +807,26 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                     break
         if stopped:
             break
+    # Arcade's entries: the zips the build completed, under the folder it wrote them in.
+    for core, rep_ in arcade_reports.items():
+        sub = "" if len(arcade_cores) == 1 else f"{core}/"
+        names = [s for s, v in (rep_.get("sets") or {}).items() if v.get("complete")]
+        rows_by_set = _arcade_rows(db, names)
+        card_games.setdefault("arcade", []).extend(
+            (f"{sub}{s}.zip", rows_by_set[s]) for s in names if s in rows_by_set)
+    gamelists = None
+    if not dry_run and card_games:
+        try:
+            gamelists = _write_gamelists(dest, card_games, db)
+        except OSError as e:
+            errors.append({"file": "gamelist.xml", "error": str(e)})
     artwork_report = None
     if artwork and not dry_run and not stopped:
         from . import artwork as art
-        folders = ({s for s in wanted_systems} | ({"arcade"} if arcade_wanted else set())
-                   if wanted_systems is not None else None)
         if progress: progress(0, 0, "artwork for ES-DE…")
-        artwork_report = art.export_media(dest, systems=folders, room_for=room_for,
-                                          progress=progress, db=db)
+        artwork_report = art.export_media(
+            dest, room_for=room_for, progress=progress, db=db,
+            entries={f: [(e, r["item_id"]) for e, r in lst] for f, lst in card_games.items()})
         if artwork_report.get("stopped"):
             errors.append({"file": "", "error": f"{dest} reached its free-space reserve "
                                                 f"while copying artwork — stopped"})
@@ -765,6 +848,9 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                                or None,
            "console_bios": {"dir": str(dest / "system"), "systems": console_bios},
            "dupes_skipped": dupes_skipped, "wiped": wiped, "artwork": artwork_report,
+           "layout": layout, "not_playable": not_playable or None, "unpacked": unpacked,
+           "converted_chd": converted,
+           "gamelists": gamelists,
            "wanted_only": bool(wanted_only), "keep_only": bool(keep_only),
            "sources": sorted(sources) if sources else None, "stopped": stopped}
     if dry_run:
@@ -813,24 +899,173 @@ def _bios_need(dest, fills):
     return need
 
 
-def _bytes_to_copy(rows, dest):
-    """Bytes a real run would write for non-arcade rows: present sources whose target is
-    missing or a different size (the same rule the copy loop uses to skip)."""
-    need = 0
+def _plan_games(rows, layout, chd=False):
+    """Group the selection's files by game (adjacent in `_ORDER`) and plan each one's way
+    onto the card with `esde.plan`: folder, files to copy, archives to unpack."""
+    from . import esde
+    groups = []
     for r in rows:
-        src = Path(r["path"])
-        try:
-            size = src.stat().st_size
-        except OSError:
+        if groups and groups[-1][0]["item_id"] == r["item_id"]:
+            groups[-1].append(r)
+        else:
+            groups.append([r])
+    out = []
+    for g in groups:
+        r0, present, missing = g[0], [], 0
+        for r in g:
+            try:
+                present.append((r["path"], Path(r["path"]).stat().st_size))
+            except OSError:
+                missing += 1
+        steps, entries, dropped = (esde.plan(r0["system"], present, chd=chd) if present
+                                   else ([], [], 0))
+        out.append({"row": r0, "folder": esde.folder(r0["system"]),
+                    "sub": _rank_folder(r0) if layout == "ranked" else "",
+                    "steps": steps, "entries": entries, "dropped": dropped,
+                    "missing": missing})
+    _group_discs(out)
+    return out
+
+
+_DISC = re.compile(r"\s*\((?:disc|disk|cd)\s*(\d+)(?:\s*of\s*\d+)?\)", re.I)
+
+
+def _group_discs(games):
+    """A multi-disc game is one catalog item per disc, so ES-DE listed 'Disc 1' and
+    'Disc 2' as two games and the emulator could not swap between them. Discs of one
+    title go into one `<Game>.m3u/` folder with the playlist ES-DE launches (a directory
+    interpreted as a file): one entry, and the core swaps discs from the .m3u."""
+    from . import esde
+    disc_systems = esde.CHD_SYSTEMS | {"gc", "wii"}
+    # One item holding every disc (Killer7's two .rvz under one catalog entry).
+    for g in games:
+        if g["folder"] not in disc_systems or len(g["entries"]) < 2:
             continue
-        target = dest / (r["system"] or "unknown") / _rank_folder(r) / src.name
+        found = [(_DISC.search(Path(e).stem), e) for e in g["entries"]]
+        if not all(m for m, _ in found) or len({int(m.group(1)) for m, _ in found}) < 2:
+            continue
+        bases = {_DISC.sub("", Path(e).stem).strip() for _, e in found}
+        if len(bases) != 1:
+            continue
+        d = f"{_safe(bases.pop())}.m3u"
+        found.sort(key=lambda x: int(x[0].group(1)))
+        lines = [_disc_line(g, e) for _, e in found]
+        g["steps"] = [_under(s, d) for s in g["steps"]]
+        text = "\n".join(lines) + "\n"
+        g["steps"].append(("m3u", f"{d}/{d}", text, len(text.encode())))
+        g["entries"] = [d]
+    groups = {}
+    for g in games:
+        if g["folder"] not in disc_systems or len(g["entries"]) != 1:
+            continue
+        m = _DISC.search(g["row"]["title"] or "")
+        if not m:
+            continue
+        base = _DISC.sub("", g["row"]["title"]).strip()
+        groups.setdefault((g["folder"], g["sub"], base.lower()), []).append(
+            (int(m.group(1)), g, base))
+    for key, members in groups.items():
+        if len({n for n, _, _ in members}) < 2:
+            continue
+        members.sort(key=lambda x: x[0])
+        base = _safe(members[0][2])
+        d = f"{base}.m3u"
+        lines = []
+        for _, g, _ in members:
+            lines.append(_disc_line(g, g["entries"][0]))
+            g["steps"] = [_under(s, d) for s in g["steps"]]
+            g["entries"] = []
+        last = members[-1][1]
+        text = "\n".join(lines) + "\n"
+        last["steps"].append(("m3u", f"{d}/{d}", text, len(text.encode())))
+        members[0][1]["entries"] = [d]
+
+
+def _disc_line(g, entry):
+    """A disc's line in the .m3u: the entry itself, or the main file inside it when the
+    entry is a directory interpreted as a file ("Disc 1.cue/Disc 1.cue")."""
+    nested = any(s[0] == "copy" and s[2].startswith(entry + "/") or
+                 s[0] == "extract" and s[3] == entry for s in g["steps"])
+    return f"{entry}/{entry}" if nested else entry
+
+
+def _under(step, d):
+    """The same step, written inside folder `d` of the system folder."""
+    if step[0] == "copy":
+        return (step[0], step[1], f"{d}/{step[2]}", step[3])
+    if step[0] == "extract":
+        return (step[0], step[1], step[2], f"{d}/{step[3]}" if step[3] else d, step[4])
+    if step[0] == "chd":
+        return step[:4] + (f"{d}/{step[4]}", step[5])
+    return step
+
+
+def _unpacked(tdir, archive, names):
+    """Is an archive's unpack already on the card, every file at its full size?"""
+    from . import esde
+    sizes = dict(esde.members(archive))
+    for n in names:
         try:
-            if target.stat().st_size == size:
-                continue
+            if (tdir / Path(n).name).stat().st_size != sizes.get(n):
+                return False
         except OSError:
-            pass
-        need += size
+            return False
+    return True
+
+
+def _bytes_to_copy(games, dest):
+    """Bytes a real run would write for the planned games: what is not already on the card
+    at its full size (the same rule the copy loop uses to skip)."""
+    need = 0
+    for g in games:
+        base = dest / g["folder"] / g["sub"] if g["sub"] else dest / g["folder"]
+        for step in g["steps"]:
+            if step[0] == "copy":
+                try:
+                    if (base / step[2]).stat().st_size == step[3]:
+                        continue
+                except OSError:
+                    pass
+            elif step[0] == "chd":
+                if (base / step[4]).exists():
+                    continue
+            elif step[0] == "m3u":
+                continue
+            elif _unpacked(base / step[3] if step[3] else base, step[1], step[2]):
+                continue
+            need += step[-1] or 0
     return need
+
+
+def _arcade_rows(db, names):
+    """{setname: item row} for built sets, for their gamelist entries."""
+    out, lst = {}, list(names)
+    for i in range(0, len(lst), 900):
+        chunk = lst[i:i + 900]
+        for r in db.execute(
+                "SELECT id item_id, title, system, rating, community_score, "
+                "substr(external_id, instr(external_id,'/')+1) s FROM items "
+                f"WHERE system='arcade' AND substr(external_id, instr(external_id,'/')+1) "
+                f"IN ({','.join('?' * len(chunk))})", chunk):
+            out.setdefault(r["s"], r)
+    return out
+
+
+def _write_gamelists(dest, card_games, db):
+    """Every game the export put on the card, as ES-DE gamelist entries: a clean name, the
+    rating the export ranked by, and the arcade genre."""
+    from . import esde, labels
+    ids = {r["item_id"] for lst in card_games.values() for _, r in lst}
+    tags = labels.for_items(ids, db)
+    games = {}
+    for fold, lst in card_games.items():
+        for entry, r in lst:
+            genre = next((l[6:].replace("-", " ").title() for l in tags.get(r["item_id"], [])
+                          if l.startswith("genre:")), None)
+            name = r["title"] if fold == "arcade" else esde.display_name(r["title"])
+            games.setdefault(fold, []).append({"path": entry, "name": name, "genre": genre,
+                                               "rating": esde.rating(_score(r))})
+    return esde.write_gamelists(dest, games)
 
 
 def _volume(dest):

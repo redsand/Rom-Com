@@ -133,7 +133,7 @@ def test_a_good_rating_exports_without_keep(monkeypatch, tmp_path):
     db, rom = setup(monkeypatch, tmp_path, {"snes": '{rom}'})
     player.set_rating("snes-ct", 8, db=db)
     r = organize(str(tmp_path / "card"), keep_only=True, rating_min=7, dry_run=True)
-    assert r["would_copy"] == 2          # the rom + its manual, i.e. this item
+    assert r["would_copy"] == 1          # one game: this item (its manual is no game)
     # and one star short of the threshold keeps it off the card
     player.set_rating("snes-ct", 6, db=db)
     r2 = organize(str(tmp_path / "card2"), keep_only=True, rating_min=7, dry_run=True)
@@ -158,7 +158,7 @@ def test_organize_can_export_only_what_is_kept(monkeypatch, tmp_path):
     (tmp_path / "other.sfc").write_bytes(b"z")
     player.set_keep("snes-ct", True, db=db)
     r = organize(str(tmp_path / "card"), keep_only=True, dry_run=True)
-    assert r["keep_only"] is True and r["would_copy"] == 2   # the kept item's rom + its manual
+    assert r["keep_only"] is True and r["would_copy"] == 1   # the kept game
     assert (tmp_path / "card").exists() is False             # dry run wrote nothing
 
 
@@ -273,7 +273,7 @@ def test_non_arcade_games_land_in_a_score_folder(monkeypatch, tmp_path):
     db, rom = setup(monkeypatch, tmp_path, {})
     player.set_keep("snes-ct", True, db=db)
     dest = tmp_path / "card2"
-    organize(str(dest), keep_only=True)
+    organize(str(dest), keep_only=True, layout="ranked")
     assert (dest / "snes" / "0" / rom.name).exists()
 
 

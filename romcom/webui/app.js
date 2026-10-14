@@ -793,6 +793,7 @@ const orgForm = () => ({name: orgCurrent()?.name, path: $("#org-path").value.tri
                         distinct_games: $("#org-distinct").checked,
                         arcade_core: $("#org-core").value, arcade_status: $("#org-status").value,
                         artwork: $("#org-art").checked, exclude_labels: leaveOut("#org-labels"),
+                        layout: $("#org-ranked").checked ? "ranked" : "flat", chd: $("#org-chd").checked,
                         wipe: $("#org-wipe").checked, gates: orgGates()});
 let orgPendingSystems = null;     // a profile's ticks, applied once the plan has drawn the list
 let orgGatesKnown = false;        // gates come from Settings until the owner or a profile sets them
@@ -816,6 +817,8 @@ function orgApplyProfile(p) {
   $("#org-status").value = p.arcade_status || "no_broken";
   $("#org-art").checked = !!p.artwork;
   setLeaveOut("#org-labels", p.exclude_labels);
+  $("#org-ranked").checked = p.layout === "ranked";
+  $("#org-chd").checked = p.chd !== false;
   orgSetGates(p.gates || {}); orgGatesKnown = true;
   orgPendingSystems = p.systems || [];
   $("#org-delete").disabled = false;
@@ -964,6 +967,8 @@ $("#org-start").addEventListener("click", () => {
                                           arcade_status: $("#org-status").value,
                                           artwork: $("#org-art").checked,
                                           exclude_labels: leaveOut("#org-labels"),
+                                          layout: $("#org-ranked").checked ? "ranked" : "flat",
+                                          chd: $("#org-chd").checked,
                                           wipe: $("#org-wipe").checked, gates: orgGates()});
 });
 

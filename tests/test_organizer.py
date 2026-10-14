@@ -25,7 +25,7 @@ def test_scan_then_organize(tmp_path, monkeypatch):
     dest = tmp_path / "sd"
     o = organize(dest)
     assert o["copied"] == 1 and not o["errors"]
-    assert (dest / "nes" / "0" / "Example Game (USA).nes").read_bytes() == payload
+    assert (dest / "nes" / "Example Game (USA).nes").read_bytes() == payload
 
     # Re-run: already present, nothing recopied
     o2 = organize(dest)
@@ -176,8 +176,8 @@ def test_fill_mode_keeps_top_games_when_space_runs_out(tmp_path, monkeypatch):
     monkeypatch.setattr(organizer.shutil, "copy2", copy)
     r = organize(tmp_path / "sd", fill=True)
     assert r["copied"] == 1 and r["stopped"]
-    assert (tmp_path / "sd" / "nes" / "90" / "High.nes").exists()
-    assert not (tmp_path / "sd" / "nes" / "10" / "Low.nes").exists()
+    assert (tmp_path / "sd" / "nes" / "High.nes").exists()
+    assert not (tmp_path / "sd" / "nes" / "Low.nes").exists()
 
 
 def test_unranked_games_sort_last(tmp_path, monkeypatch):
@@ -271,7 +271,7 @@ def test_export_skips_same_content_copies(tmp_path, monkeypatch):
         ("Cars (archive).zip", 9, "aa", None)])
     r = organize(tmp_path / "sd")
     assert r["copied"] == 1 and r["dupes_skipped"] == 2
-    assert len(list((tmp_path / "sd" / "nes" / "0").iterdir())) == 1
+    assert len(list((tmp_path / "sd" / "nes").iterdir())) == 1
 
 
 def test_export_prefers_the_hash_verified_copy(tmp_path, monkeypatch):
@@ -279,8 +279,8 @@ def test_export_prefers_the_hash_verified_copy(tmp_path, monkeypatch):
     _files_for(tmp_path, monkeypatch, "c1", "nes", "Cars", [
         ("guess.zip", 9, "aa", "filename-exact"), ("proof.zip", 9, "aa", "hash")])
     organize(tmp_path / "sd")
-    assert (tmp_path / "sd" / "nes" / "0" / "proof.zip").exists()
-    assert not (tmp_path / "sd" / "nes" / "0" / "guess.zip").exists()
+    assert (tmp_path / "sd" / "nes" / "proof.zip").exists()
+    assert not (tmp_path / "sd" / "nes" / "guess.zip").exists()
 
 
 def test_export_keeps_distinct_content_under_one_item(tmp_path, monkeypatch):
@@ -315,8 +315,8 @@ def test_distinct_games_collapses_variants(tmp_path, monkeypatch):
         db.execute("UPDATE items SET community_score=10 WHERE id='ger'")
     r = organize(tmp_path / "sd", distinct_games=True)
     assert r["copied"] == 1 and r["dupes_skipped"] == 1
-    assert (tmp_path / "sd" / "nes" / "90" / "Cars (USA).zip").exists()
-    assert not (tmp_path / "sd" / "nes" / "10" / "Cars (Germany).zip").exists()
+    assert (tmp_path / "sd" / "nes" / "Cars (USA).zip").exists()
+    assert not (tmp_path / "sd" / "nes" / "Cars (Germany).zip").exists()
 
 
 def test_distinct_games_off_keeps_variants(tmp_path, monkeypatch):
@@ -345,7 +345,7 @@ def test_distinct_games_prefers_the_hash_verified_variant(tmp_path, monkeypatch)
         db.execute("UPDATE items SET community_score=90 WHERE id='ger'")
     r = organize(tmp_path / "sd", distinct_games=True)
     assert r["copied"] == 1
-    assert (tmp_path / "sd" / "nes" / "10" / "Cars (USA).zip").exists()
+    assert (tmp_path / "sd" / "nes" / "Cars (USA).zip").exists()
 
 
 def test_planner_counts_match_a_deduped_export(tmp_path, monkeypatch):
@@ -374,7 +374,7 @@ def test_export_files_games_into_score_folders(tmp_path, monkeypatch):
         db.execute("UPDATE items SET rating=7 WHERE id='b'")
     _files_for(tmp_path, monkeypatch, "c", "nes", "Mystery",
                [("Mystery.zip", 9, "cc", None)])
-    organize(tmp_path / "sd")
+    organize(tmp_path / "sd", layout="ranked")
     assert sorted(p.name for p in (tmp_path / "sd" / "nes").iterdir()) == ["0", "70", "80"]
     assert (tmp_path / "sd" / "nes" / "80" / "Golden.zip").exists()   # 87 -> 80
     assert (tmp_path / "sd" / "nes" / "70" / "Silver.zip").exists()   # rating 7 -> 70
@@ -396,7 +396,7 @@ def test_wipe_clears_the_ticked_platforms_folder(tmp_path, monkeypatch):
     assert r["copied"] == 1 and not r["skipped"]
     assert r["wiped"]["folders"] == ["nes"] and r["wiped"]["files"] == 1
     assert not (dest / "nes" / "Stale.nes").exists()
-    assert (dest / "nes" / "0" / "New.nes").exists()
+    assert (dest / "nes" / "New.nes").exists()
     assert (dest / "snes" / "Keepme.sfc").exists()    # unticked: untouched
     assert (dest / "notes.txt").exists()              # loose file: untouched
 
@@ -458,7 +458,7 @@ def test_a_wipe_that_makes_it_fit_clears_and_copies(tmp_path, monkeypatch):
     r = organize(dest, systems=["nes"], wipe=True)
     assert r["copied"] == 1 and r["wiped"]["files"] == 1
     assert not (dest / "nes" / "Stale.nes").exists()
-    assert (dest / "nes" / "0" / "New.nes").exists()
+    assert (dest / "nes" / "New.nes").exists()
 
 
 def _romset_env(monkeypatch, tmp_path, dats, disk):

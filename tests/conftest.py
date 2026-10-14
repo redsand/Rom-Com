@@ -36,6 +36,12 @@ def hermetic_env(monkeypatch, tmp_path_factory):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("ROMCOM_MCP_SERVERS", str(tmp_path_factory.mktemp("no-servers") / "mcp-servers.json"))
     monkeypatch.setenv("ROMCOM_DB", str(tmp_path_factory.mktemp("db-floor") / "floor.db"))
+    # The machine's own tools and data files stay out too: a real chdman would be handed
+    # a test's fake disc (and once sat waiting on it), and the repo's catver.ini would
+    # label a test's made-up arcade sets. Tests that want either patch it back in.
+    from romcom import esde, labels
+    monkeypatch.setattr(esde, "chdman", lambda: None)
+    monkeypatch.setattr(labels, "catver_path", lambda: None)
     invalidate()
     yield
     invalidate()

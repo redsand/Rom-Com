@@ -540,7 +540,9 @@ def create_app():
                                           arcade_core=params.get("arcade_core") or "mame",
                                           arcade_status=params.get("arcade_status"),
                                           artwork=bool(params.get("artwork")),
-                                          exclude_labels=params.get("exclude_labels"))
+                                          exclude_labels=params.get("exclude_labels"),
+                                          layout=params.get("layout") or "flat",
+                                          chd=params.get("chd", True) is not False)
         if kind == "romset":
             return lambda prog: romset(params["profile"], params["path"],
                                        leave_bytes=int(float(params.get("leave_gb") or 0) * 1024 ** 3),
@@ -803,6 +805,8 @@ def create_app():
                                       "arcade_status": body.get("arcade_status"),
                                       "artwork": bool(body.get("artwork")),
                                       "exclude_labels": body.get("exclude_labels"),
+                                      "layout": body.get("layout") or "flat",
+                                      "chd": body.get("chd", True) is not False,
                                       "gates": _export_gates(body.get("gates"))})
 
     @app.get("/api/artwork")
