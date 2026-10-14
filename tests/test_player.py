@@ -258,7 +258,8 @@ def test_arcade_export_is_delegated_to_the_set_builder(monkeypatch, tmp_path):
         return {"sets": {}, "copied": 3, "bytes": 0, "bytes_needed": 0,
                 "complete": 1, "incomplete": 0}
     monkeypatch.setattr(mameset, "build", build)
-    r = organize(str(tmp_path / "card"), keep_only=True)
+    # The build is a stub here, so nothing on disk could pass the health gate.
+    r = organize(str(tmp_path / "card"), keep_only=True, arcade_status="all")
     assert seen["sets"] == ["galaga"]
     assert seen["dest"].endswith("arcade")
     assert r["arcade"]["complete"] == 1

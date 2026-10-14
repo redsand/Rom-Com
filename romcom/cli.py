@@ -276,7 +276,7 @@ def cmd_romset(a):
             last[0] = i
             print(f"[{i}/{total}] {name}")
     r = romset(a.profile, a.dest, leave_bytes=int(float(a.leave_gb) * 1024 ** 3),
-               progress=progress)
+               progress=progress, arcade_status=a.status)
     print(json.dumps({k: v for k, v in r.items() if k != "sets"}, indent=2))
 
 def cmd_cores(a):
@@ -342,7 +342,24 @@ def cmd_organize(a):
     print(json.dumps(organize(a.dest, systems=a.system or None,
                              wanted_only=a.wanted_only, keep_only=a.keep_only, sources=a.source or None,
                              rating_min=int(settings().get("export_rating_min", 0) or 0),
-                             fill=a.fill, dry_run=a.dry_run), indent=2))
+                             fill=a.fill, dry_run=a.dry_run,
+                             arcade_status=a.arcade_status), indent=2))
+
+
+def cmd_arcade_health(a):
+    from . import arcadehealth
+    if a.mark:
+        setname, verdict = a.mark
+        print(json.dumps(arcadehealth.set_verdict(
+            setname, None if verdict == "clear" else verdict, core=a.core or "*",
+            note=a.note), indent=2))
+        return
+    if not a.cached:
+        if a.core:
+            arcadehealth.evaluate(a.core)
+        else:
+            arcadehealth.evaluate_all(progress=lambda i, t, msg: print(msg))
+    print(json.dumps(arcadehealth.summary(), indent=2))
 
 def cmd_recommend(a):
     from . import recommend
@@ -406,7 +423,20 @@ def main():
     rs.add_argument("dest", help="target folder on the card, e.g. J:\\arcade-fbneo")
     rs.add_argument("--leave-gb", default="0",
                     help="gigabytes to leave free on the volume for what comes after")
+    rs.add_argument("--status", choices=["no_broken", "works_only", "all"], default=None,
+                    help="arcade health gate: skip broken sets (default), only working ones, or everything")
     rs.set_defaults(fn=cmd_romset)
+    ah=s.add_parser("arcade-health",
+                    help="judge which arcade sets will run on each core (works/partial/broken)")
+    ah.add_argument("--core", choices=["mame", "fbneo", "mame2003"],
+                    help="judge one core only (default: every core with a dat)")
+    ah.add_argument("--cached", action="store_true",
+                    help="show the last stored judgement without re-reading the dats")
+    ah.add_argument("--mark", nargs=2, metavar=("SET", "VERDICT"),
+                    help="record your own verdict after playing: works|partial|broken|clear "
+                         "(applies to --core, or every core)")
+    ah.add_argument("--note", help="why, for --mark")
+    ah.set_defaults(fn=cmd_arcade_health)
     cr=s.add_parser("cores", help="which libretro cores this library needs, and fetch them")
     cr.add_argument("--install", action="store_true", help="download the missing ones")
     cr.add_argument("--all", action="store_true", help="every system, not just those with files")
@@ -431,6 +461,7 @@ def main():
     og.add_argument("--keep-only",action="store_true",help="only items marked keep")
     og.add_argument("--fill",action="store_true",help="copy until the card's free-space reserve instead of refusing when the selection will not fit")
     og.add_argument("--dry-run",action="store_true",help="report what would be copied, copy nothing")
+    og.add_argument("--arcade-status",choices=["no_broken","works_only","all"],default=None,help="arcade health gate: skip broken sets (default), only working ones, or everything")
     og.set_defaults(fn=cmd_organize)
     rec=s.add_parser("recommend", help="the n best games to play next, in hand now")
     rec.add_argument("--system", help="one system, or omit for the whole shelf")

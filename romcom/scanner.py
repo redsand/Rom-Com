@@ -157,6 +157,13 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
         out["playable"]=refresh_playable(db)
     except Exception:
         pass   # a missing dat must not fail a scan
+    # The same new files can fix a broken arcade set (a CHD, a bios parent); the export
+    # planner reads the stored verdicts, so they are refreshed here too.
+    try:
+        from .arcadehealth import evaluate_all
+        out["arcade_health"]=evaluate_all(db)
+    except Exception:
+        pass
     return out
 
 # Extensions that pin down a system on their own; ambiguous ones (.bin/.iso/.cue/.zip) rely on folder names.

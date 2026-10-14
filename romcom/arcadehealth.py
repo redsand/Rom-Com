@@ -1,0 +1,407 @@
+"""Will this arcade set actually run? One verdict per set, per core.
+
+`playable` answers a narrower question — are all the chips on disk — and a set can pass it
+and still sit on the card doing nothing:
+
+1. The emulator never finished the machine. Every romset dat says so in its own words,
+   `<driver status="good|imperfect|preliminary">` (MAME 2003-Plus adds color/sound/graphic),
+   and a preliminary driver boots to a black screen however perfect the zip is.
+2. The set needs more than chips. A CHD (the hard disk / CD of Killer Instinct, area51mx,
+   every Naomi GD-ROM game) is a `<disk>` entry no chip hash can satisfy; a device set
+   (namco54) or a romof bios parent (neogeo) is a zip of its own beside the game's.
+
+Each core is judged against its own dat — a set fine on FBNeo can be preliminary on MAME
+2003-Plus — and stored in `arcade_health`. The owner's verdict after actually playing it
+(`arcade_verdicts`) beats the computed one: the dat is a guess about emulation, the owner
+has seen the screen. A verdict for core '*' covers every core.
+
+    works    complete, driver good
+    partial  complete, but the dat says imperfect emulation (sound, colours, graphics)
+    broken   something is missing, or the driver is preliminary / not runnable
+    unknown  complete, but the dat carries no driver status at all (the 0.78 fallbacks)
+"""
+import json
+import re
+from pathlib import Path
+
+from .db import connect
+
+STATUSES = ("works", "partial", "broken", "unknown")
+
+# Export gates: which statuses reach a card. 'no_broken' is the default — a broken set is
+# disk space spent on a game that will not start.
+GATES = {"all": None,
+         "no_broken": {"works", "partial", "unknown"},
+         "works_only": {"works"}}
+DEFAULT_GATE = "no_broken"
+
+_MACHINE = re.compile(r'<(?:game|machine)\s+name="([^"]+)"')
+
+
+def _attr(line, name):
+    m = re.search(r'\b' + name + r'="([^"]*)"', line)
+    return m.group(1) if m else None
+
+
+_parsed = {}
+
+
+def parse(path):
+    """{setname: machine} for every machine in a dat, in one line-by-line pass — the same
+    shape of reader `mameset` uses, because these dats run to 85 MB and every attribute this
+    needs sits on one line. Cached per file and mtime: an export judges a core and then
+    asks the same dat for its parents."""
+    key = (str(path), Path(path).stat().st_mtime)
+    if key in _parsed:
+        return _parsed[key]
+    out = _parse(path)
+    if len(_parsed) >= 3:
+        _parsed.clear()
+    _parsed[key] = out
+    return out
+
+
+def _parse(path):
+    out, cur = {}, None
+    for line in Path(path).open(encoding="utf-8", errors="replace"):
+        m = _MACHINE.search(line)
+        if m:
+            cur = {"name": m.group(1), "cloneof": _attr(line, "cloneof"),
+                   "romof": _attr(line, "romof"), "sourcefile": _attr(line, "sourcefile"),
+                   "isbios": _attr(line, "isbios") == "yes",
+                   "isdevice": _attr(line, "isdevice") == "yes",
+                   "runnable": _attr(line, "runnable") != "no",
+                   "driver": None, "roms": [], "nodump": 0, "disks": [], "devices": [],
+                   "merged": False}
+            out[cur["name"]] = cur
+            continue
+        if cur is None:
+            continue
+        if "<rom " in line:
+            if 'merge="' in line:
+                cur["merged"] = True
+            if _attr(line, "status") == "nodump":
+                cur["nodump"] += 1      # never dumped: MAME runs it as "best available"
+                continue
+            sha, crc = _attr(line, "sha1"), _attr(line, "crc")
+            if sha or crc:
+                cur["roms"].append(((sha or "").lower(), (crc or "").lower(),
+                                    _attr(line, "name") or ""))
+        elif "<disk " in line:
+            if _attr(line, "status") == "nodump" or _attr(line, "optional") == "yes":
+                continue
+            cur["disks"].append({"name": _attr(line, "name") or "",
+                                 "sha1": (_attr(line, "sha1") or "").lower(),
+                                 "merge": _attr(line, "merge")})
+        elif "<device_ref " in line:
+            cur["devices"].append(_attr(line, "name"))
+        elif "<driver " in line:
+            cur["driver"] = {k: _attr(line, k) for k in
+                             ("status", "emulation", "color", "sound", "graphic")
+                             if _attr(line, k)}
+    return out
+
+
+def needed_parents(machines, name):
+    """The romof ancestors a set cannot boot without, nearest first. Every dat here lists a
+    clone's shared roms itself (marked merge=), so a zip built from the clone's own list
+    carries them and the plain parent is not needed — but a bios is (FBNeo's mslug lists no
+    neogeo chips), and so is a set the dat never defines (the 0.78 bios MAME 2003-Plus
+    leans on), and a parent of a clone that lists nothing merged at all."""
+    out, cur, seen = [], machines.get(name), {name}
+    while cur and cur["romof"] and cur["romof"] not in seen:
+        parent = cur["romof"]
+        seen.add(parent)
+        pm = machines.get(parent)
+        if pm is None:
+            out.append(parent)
+            break
+        if pm["isbios"] or not cur["merged"]:
+            out.append(parent)
+        cur = pm
+    return out
+
+
+def alt_dats(core, dat):
+    """Where a core's undefined bios parents come from: the current-MAME dat, then the
+    extra dats beside the core's own (`organizer.romset`'s order)."""
+    from . import mameset
+    return [p for p in [mameset.dat_path("mame"), *mameset.dat_paths(core)[1:]]
+            if p and p != dat]
+
+
+def chd_sha1(path):
+    """The sha1 a dat's `<disk>` names, read from the CHD's own header — a CHD is matched by
+    this, never by a hash of the file (the file sha1 the scanner records is a different
+    number). v3/v4/v5 headers keep it at different offsets; anything else returns None."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(124)
+    except OSError:
+        return None
+    if len(head) < 100 or head[:8] != b"MComprHD":
+        return None
+    version = int.from_bytes(head[12:16], "big")
+    at = {3: 80, 4: 48, 5: 84}.get(version)
+    return head[at:at + 20].hex() if at else None
+
+
+def chd_index(db):
+    """{lower-cased disk name: [paths]} for every .chd on disk. A dat names a disk by its
+    file stem (`area51mx` -> area51mx.chd), which is how MAME itself looks for it."""
+    out = {}
+    for r in db.execute("SELECT path FROM files WHERE lower(path) LIKE '%.chd'"):
+        out.setdefault(Path(r["path"]).stem.lower(), []).append(r["path"])
+    return out
+
+
+def find_chd(disk, index):
+    """A path on disk holding this CHD, or None. The header sha1 decides when it can be
+    read; a CHD whose header cannot be read is trusted by name, because refusing it would
+    call a playable game broken over a header version this reader does not know."""
+    for p in index.get(disk["name"].lower(), []):
+        if not Path(p).exists():
+            continue
+        got = chd_sha1(p)
+        if got is None or not disk["sha1"] or got == disk["sha1"]:
+            return p
+    return None
+
+
+def _have(db):
+    have_sha = {(r[0] or "").lower() for r in db.execute(
+        "SELECT sha1 FROM files WHERE sha1 IS NOT NULL")}
+    have_crc = {(r[0] or "").lower() for r in db.execute(
+        "SELECT crc32 FROM files WHERE crc32 IS NOT NULL")}
+    return have_sha, have_crc
+
+
+def judge(machines, have_sha, have_crc, chds, outside=frozenset()):
+    """{setname: {status, reason, driver, family, missing, is_bios}} for every machine that
+    is not itself a device. `outside` names the bios parents another dat can supply (the
+    0.78 fallbacks MAME 2003-Plus needs) — a romof parent this dat never defines is fine
+    when it is in there."""
+    chips_ok = {}
+
+    def chips(name, seen=()):
+        """The set's own chips and every device it pulls in, recursively — a device can
+        reference devices of its own. Returns the list of what is missing."""
+        if name in chips_ok:
+            return chips_ok[name]
+        m = machines.get(name)
+        if m is None:
+            return [("device", name)]
+        miss = [("rom", r[2]) for r in m["roms"]
+                if not ((r[0] and r[0] in have_sha) or (r[1] and r[1] in have_crc))]
+        for d in m["devices"]:
+            if d and d != name and d not in seen:
+                if chips(d, seen + (name,)):
+                    miss.append(("device", d))
+        chips_ok[name] = miss
+        return miss
+
+    out = {}
+    for name, m in machines.items():
+        if m["isdevice"]:
+            continue
+        missing = list(chips(name))
+        for parent in needed_parents(machines, name):
+            if parent in machines:
+                if chips(parent):
+                    missing.append(("bios" if machines[parent]["isbios"] else "parent", parent))
+            elif parent not in outside:
+                missing.append(("bios", parent))
+        for d in m["disks"]:
+            if not find_chd(d, chds):
+                missing.append(("chd", d["name"]))
+        drv = m["driver"] or {}
+        status, reason = _verdict(m, drv, missing)
+        out[name] = {"status": status, "reason": reason,
+                     "driver": drv.get("status"), "family": m["sourcefile"],
+                     "missing": missing, "is_bios": m["isbios"]}
+    return out
+
+
+def _verdict(m, drv, missing):
+    """The status and the one-line reason the badge shows. Missing parts outrank the driver:
+    a fix for those is a download, a fix for a preliminary driver is a different core."""
+    if missing:
+        kinds = {}
+        for kind, name in missing:
+            kinds.setdefault(kind, []).append(name)
+        parts = []
+        for kind in ("chd", "bios", "parent", "device", "rom"):
+            names = kinds.get(kind)
+            if not names:
+                continue
+            if kind == "rom":
+                parts.append(f"missing {len(names)} rom{'s' if len(names) > 1 else ''}")
+            else:
+                parts.append(f"needs {kind} {', '.join(names[:3])}"
+                             + (f" +{len(names) - 3}" if len(names) > 3 else ""))
+        return "broken", "; ".join(parts)
+    if not m["runnable"]:
+        return "broken", "not runnable on its own"
+    status = drv.get("status") or drv.get("emulation")
+    if status == "preliminary":
+        return "broken", "driver preliminary — the core cannot really run it"
+    if status == "protection":
+        return "broken", "unemulated protection"
+    rough = [k for k in ("color", "sound", "graphic")
+             if drv.get(k) in ("imperfect", "preliminary")]
+    if status == "imperfect" or rough:
+        what = ", ".join(rough) if rough else "emulation"
+        return "partial", f"{what} imperfect"
+    if status == "good":
+        return "works", ("best available — some chips were never dumped"
+                         if m["nodump"] else "")
+    return "unknown", "dat has no driver status"
+
+
+def evaluate(core, db=None, store=True):
+    """Judge every set of one core's romset against what is on disk, and store it.
+    Returns {setname: verdict}, or {} when the core has no dat installed."""
+    from . import mameset
+    db = db or connect()
+    dat = mameset.dat_path(core)
+    if not dat:
+        return {}
+    machines = parse(dat)
+    have_sha, have_crc = _have(db)
+    chds = chd_index(db)
+    # Bios parents a core's dat references but never defines come from the other dats
+    # `organizer.romset` builds them from — the same fallbacks, so the verdict and the
+    # build agree on what can be supplied.
+    gaps = {m["romof"] for m in machines.values()
+            if m["romof"] and m["romof"] not in machines}
+    outside = set()
+    if gaps:
+        for alt in alt_dats(core, dat):
+            outside |= gaps & mameset.assemblable(db, alt)
+    res = judge(machines, have_sha, have_crc, chds, outside)
+    if store:
+        _store(db, core, res)
+    return res
+
+
+def _store(db, core, res):
+    with db:
+        db.execute("DELETE FROM arcade_health WHERE core=?", (core,))
+        db.executemany(
+            """INSERT INTO arcade_health(core,setname,status,reason,driver,family,missing,
+                                         is_bios,checked_at)
+               VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)""",
+            [(core, s, v["status"], v["reason"], v["driver"], v["family"],
+              json.dumps(v["missing"][:40]) if v["missing"] else None, int(v["is_bios"]))
+             for s, v in res.items()])
+
+
+def evaluate_all(db=None, progress=None):
+    """Every installed core's verdicts. {core: {status: count}}."""
+    from . import mameset
+    db = db or connect()
+    out = {}
+    for i, core in enumerate(mameset.PROFILES):
+        if progress:
+            progress(i, len(mameset.PROFILES), f"judging {core} sets…")
+        res = evaluate(core, db)
+        if res:
+            counts = {s: 0 for s in STATUSES}
+            for v in res.values():
+                counts[v["status"]] += 1
+            out[core] = counts
+    return out
+
+
+def set_verdict(setname, verdict, core="*", note=None, db=None):
+    """The owner's word on a set after playing it. `verdict` None clears it, putting the
+    computed status back in charge."""
+    if verdict is not None and verdict not in ("works", "partial", "broken"):
+        raise ValueError("verdict must be works, partial or broken")
+    db = db or connect()
+    with db:
+        if verdict is None:
+            db.execute("DELETE FROM arcade_verdicts WHERE core=? AND setname=?",
+                       (core, setname))
+        else:
+            db.execute("""INSERT INTO arcade_verdicts(core,setname,verdict,note)
+                          VALUES(?,?,?,?)
+                          ON CONFLICT(core,setname) DO UPDATE SET verdict=excluded.verdict,
+                          note=excluded.note, updated_at=CURRENT_TIMESTAMP""",
+                       (core, setname, verdict, note))
+    return {"setname": setname, "core": core, "verdict": verdict}
+
+
+def statuses(core, db=None):
+    """{setname: (status, reason)} as it stands for a core — the owner's verdict where one
+    exists (this core's first, then '*'), the computed status otherwise."""
+    db = db or connect()
+    out = {r["setname"]: (r["status"], r["reason"] or "") for r in db.execute(
+        "SELECT setname,status,reason FROM arcade_health WHERE core=?", (core,))}
+    for r in db.execute("""SELECT setname,verdict,note,core FROM arcade_verdicts
+                           WHERE core IN (?,'*') ORDER BY core='*' DESC""", (core,)):
+        # '*' rows first, the core's own rows after — so the specific one wins.
+        out[r["setname"]] = (r["verdict"], r["note"] or "your verdict")
+    return out
+
+
+def gate(core, sets, level=DEFAULT_GATE, db=None, known=None):
+    """Split `sets` into what may reach a card under `level` and what is held back,
+    ({kept...}, {set: reason}). A set never judged passes: no verdict is not a reason to
+    keep a game off the card. `known` is a `statuses()` result, when the caller has one."""
+    allowed = GATES[level if level in GATES else DEFAULT_GATE]
+    if allowed is None:
+        return list(sets), {}
+    known = statuses(core, db) if known is None else known
+    kept, held = [], {}
+    for s in sets:
+        st = known.get(s)
+        if st is None or st[0] in allowed:
+            kept.append(s)
+        else:
+            held[s] = f"{st[0]}: {st[1]}" if st[1] else st[0]
+    return kept, held
+
+
+def blocked(cores, level=DEFAULT_GATE, db=None):
+    """Sets the gate keeps off a card for every one of `cores` — what the export planner
+    subtracts from the arcade figure, from stored verdicts only (no dat parse), so the plan
+    stays fast. A set any chosen core can run is not blocked."""
+    allowed = GATES[level if level in GATES else DEFAULT_GATE]
+    if allowed is None:
+        return set()
+    out = None
+    for core in cores:
+        bad = {s for s, (st, _) in statuses(core, db).items() if st not in allowed}
+        out = bad if out is None else out & bad
+    return out or set()
+
+
+def _reason_kind(why):
+    """'needs chd area51mx; missing 3 roms' -> 'needs chd': the first, biggest problem,
+    without the names — so reasons group into the fixes they call for."""
+    first = why.split(";")[0].strip()
+    if first.startswith("needs "):
+        return " ".join(first.split(" ")[:2])
+    if first.startswith("missing "):
+        return "missing roms"
+    return first or "broken"
+
+
+def summary(db=None):
+    """Counts per core and status, plus the biggest reasons sets are broken — the start of
+    the metrics the UI grows into."""
+    db = db or connect()
+    out = {}
+    for core in [r["core"] for r in db.execute(
+            "SELECT DISTINCT core FROM arcade_health ORDER BY core")]:
+        counts = {s: 0 for s in STATUSES}
+        reasons = {}
+        for s, (st, why) in statuses(core, db).items():
+            counts[st] = counts.get(st, 0) + 1
+            if st == "broken":
+                key = _reason_kind(why)
+                reasons[key] = reasons.get(key, 0) + 1
+        out[core] = {"counts": counts,
+                     "top_broken_reasons": sorted(reasons.items(), key=lambda kv: -kv[1])[:8]}
+    return out

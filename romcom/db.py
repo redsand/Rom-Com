@@ -155,6 +155,20 @@ CREATE TABLE IF NOT EXISTS community_scores (
  PRIMARY KEY(item_id, source),
  FOREIGN KEY(item_id) REFERENCES items(id) ON DELETE CASCADE
 );
+-- Will an arcade set run on a core: computed from that core's dat and the disk
+-- (arcadehealth.evaluate), rewritten whole per core on every judgement.
+CREATE TABLE IF NOT EXISTS arcade_health (
+ core TEXT NOT NULL, setname TEXT NOT NULL,
+ status TEXT NOT NULL, reason TEXT, driver TEXT, family TEXT, missing TEXT,
+ is_bios INTEGER NOT NULL DEFAULT 0, checked_at TEXT,
+ PRIMARY KEY(core, setname)
+);
+-- The owner's word after playing a set; beats arcade_health. core '*' = every core.
+CREATE TABLE IF NOT EXISTS arcade_verdicts (
+ core TEXT NOT NULL, setname TEXT NOT NULL, verdict TEXT NOT NULL, note TEXT,
+ updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY(core, setname)
+);
 -- Provider bookkeeping (e.g. RAWG's daily request count) — state, not settings.
 CREATE TABLE IF NOT EXISTS community_state (
  source TEXT NOT NULL, k TEXT NOT NULL, v TEXT,

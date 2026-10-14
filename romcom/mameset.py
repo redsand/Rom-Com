@@ -64,44 +64,74 @@ def dat_path(profile="mame"):
 def set_roms(setnames, path=None):
     """{setname: [{name, crc, sha1}]} for the machines asked for, plus their device sets.
 
-    Device refs are followed one level, which is what MAME itself needs: galaga cannot boot
-    without namco54's roms, and the dat is where that dependency is written down. The
-    FBNeo and MAME 2003-Plus dats carry everything inline instead — every set is
-    self-contained, bios chips included — so there is nothing to follow there.
+    Device refs are followed all the way down — galaga cannot boot without namco54's roms,
+    and a device can pull in devices of its own — with every set read at most once, so a
+    dat whose devices reference each other cannot recurse forever. The FBNeo and MAME
+    2003-Plus dats carry everything inline instead — every set is self-contained, bios
+    chips included — so there is nothing to follow there. Never-dumped roms
+    (status="nodump") carry no hash and are skipped: MAME runs those sets as "best
+    available".
     """
     path = path or dat_path()
     if not path:
         return {}
-    want, out, deps = set(setnames), {}, set()
-    cur = None
+    out, seen, want = {}, set(), set(setnames)
+    while want:
+        seen |= want
+        deps, cur = set(), None
+        for line in path.open(encoding="utf-8", errors="replace"):
+            m = re.search(r'<(?:game|machine)\s+name="([^"]+)"', line)
+            if m:
+                cur = m.group(1)
+                continue
+            if cur not in want:
+                continue
+            d = re.search(r'<device_ref\s+name="([^"]+)"', line)
+            if d:
+                deps.add(d.group(1))
+                continue
+            if '<rom ' not in line:
+                continue
+            # Attributes are read one at a time on purpose. A single pattern with optional
+            # crc/sha1 groups matched the name and silently dropped both hashes, which made
+            # every set look like it had zero roms.
+            nm = re.search(r'\bname="([^"]+)"', line)
+            if not nm:
+                continue
+            crc = re.search(r'\bcrc="([0-9a-fA-F]+)"', line)
+            sha = re.search(r'\bsha1="([0-9a-fA-F]+)"', line)
+            if not (crc or sha):
+                continue        # a rom with no hash cannot be located on disk
+            out.setdefault(cur, []).append(
+                {'name': nm.group(1), 'crc': (crc.group(1).lower() if crc else ''),
+                 'sha1': (sha.group(1).lower() if sha else '')})
+        want = deps - seen
+    return out
+
+
+def set_disks(setnames, path=None):
+    """{setname: [{name, sha1}]}: the CHDs the machines asked for need. A CHD is a hard
+    disk or CD image no chip hash can stand in for — Killer Instinct, area51mx, every Naomi
+    GD-ROM game — and a zip built without it boots to an error. Never-dumped and optional
+    disks are left out: nothing can supply the first, the game runs without the second."""
+    path = path or dat_path()
+    if not path:
+        return {}
+    want, out, cur = set(setnames), {}, None
     for line in path.open(encoding="utf-8", errors="replace"):
         m = re.search(r'<(?:game|machine)\s+name="([^"]+)"', line)
         if m:
             cur = m.group(1)
             continue
-        if cur not in want:
+        if cur not in want or "<disk " not in line:
             continue
-        d = re.search(r'<device_ref\s+name="([^"]+)"', line)
-        if d:
-            deps.add(d.group(1))
+        if 'status="nodump"' in line or 'optional="yes"' in line:
             continue
-        if '<rom ' not in line:
-            continue
-        # Attributes are read one at a time on purpose. A single pattern with optional
-        # crc/sha1 groups matched the name and silently dropped both hashes, which made
-        # every set look like it had zero roms.
         nm = re.search(r'\bname="([^"]+)"', line)
-        if not nm:
-            continue
-        crc = re.search(r'\bcrc="([0-9a-fA-F]+)"', line)
         sha = re.search(r'\bsha1="([0-9a-fA-F]+)"', line)
-        if not (crc or sha):
-            continue        # a rom with no hash cannot be located on disk
-        out.setdefault(cur, []).append(
-            {'name': nm.group(1), 'crc': (crc.group(1).lower() if crc else ''),
-             'sha1': (sha.group(1).lower() if sha else '')})
-    if deps - want:
-        out.update(set_roms(deps - want, path=path))
+        if nm:
+            out.setdefault(cur, []).append(
+                {"name": nm.group(1), "sha1": sha.group(1).lower() if sha else ""})
     return out
 
 
@@ -188,8 +218,11 @@ def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, prog
     status says where the (long, otherwise silent) build is instead of sitting on
     "starting…"."""
     db = db or connect()
+    from .arcadehealth import chd_index, find_chd
     roms = set_roms(setnames, dat or dat_path(profile))
-    if not roms:
+    disks = set_disks(setnames, dat or dat_path(profile))
+    chds = chd_index(db) if disks else {}
+    if not roms and not disks:
         where = f"DAT/{PROFILES.get(profile, (profile,))[0]}/" if profile in PROFILES else str(dat)
         return {"sets": {}, "error": f"no romset dat found for {profile!r} — put its dat "
                                      f"under {where}", "copied": 0, "bytes": 0,
@@ -202,12 +235,12 @@ def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, prog
     # The caller's order wins: `romset` ranks the fill so a card that runs out of room
     # misses the obscure tail, not the famous middle. Set names the dat added on its
     # own (device refs) follow, alphabetically.
-    order = [n for n in setnames if n in roms]
+    order = [n for n in setnames if n in roms or n in disks]
     order += sorted(n for n in roms if n not in set(setnames))
     import shutil
     for i, name in enumerate(order):
         if progress: progress(i, len(order), name)
-        chips = roms[name]
+        chips = roms.get(name, [])
         if stop is not None and stop.is_set():
             stopped = True
             break
@@ -225,6 +258,20 @@ def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, prog
                 found.append((src, chip_name))
             else:
                 missing.append(chip_name)
+        # CHDs sit beside the zip as <set>/<disk>.chd — where MAME and RetroArch's MAME
+        # cores look — and are copied whole, never zipped: they are compressed already
+        # and run to gigabytes.
+        disk_todo = []
+        for disk in disks.get(name, []):
+            src = find_chd(disk, chds)
+            if not src:
+                missing.append(f"{disk['name']}.chd")
+                continue
+            size = Path(src).stat().st_size
+            total_bytes += size
+            t = dest / name / f"{disk['name']}.chd"
+            if fresh or not (t.exists() and t.stat().st_size == size):
+                disk_todo.append((src, t, size))
         folder = dest / name
         sized = [(src, canonical, Path(src).stat().st_size) for src, canonical in found]
         for _, _, size in sized:
@@ -251,11 +298,19 @@ def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, prog
                 if fresh or not (t.exists() and t.stat().st_size == size):
                     todo.append((src, t, size))
             set_need = sum(size for _, _, size in todo)
+        set_need += sum(size for _, _, size in disk_todo)
         needed_bytes += set_need
-        if not dry_run and todo:
+        if not dry_run and (todo or disk_todo):
             if room_for is not None and not room_for(set_need):
                 stopped = out_of_room = True
                 break
+            for src, t, _ in disk_todo:
+                t.parent.mkdir(parents=True, exist_ok=True)
+                partial_chd = t.with_name(t.name + ".partial")
+                shutil.copy2(src, partial_chd)
+                os.replace(partial_chd, t)
+                copied += 1
+        if not dry_run and todo:
             if zipped:
                 dest.mkdir(parents=True, exist_ok=True)
                 partial = target.with_suffix(".zip.partial")
@@ -269,7 +324,10 @@ def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, prog
                 for src, target, _ in todo:
                     shutil.copy2(src, target)
                     copied += 1
-        report[name] = {"roms": len(chips), "found": len(found), "missing": missing[:8],
+        report[name] = {"roms": len(chips) + len(disks.get(name, [])),
+                        "found": len(found) + len(disks.get(name, [])) - sum(
+                            1 for m in missing if m.endswith(".chd")),
+                        "missing": missing[:8],
                         "complete": not missing}
     return {"sets": report, "copied": copied, "bytes": total_bytes,
             "bytes_needed": needed_bytes,

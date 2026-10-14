@@ -42,6 +42,8 @@ def _clean(p):
             "distinct_games": bool(p.get("distinct_games")),
             "arcade_core": p.get("arcade_core") if p.get("arcade_core") in (
                 "mame", "fbneo", "mame2003", "all") else None,
+            "arcade_status": p.get("arcade_status") if p.get("arcade_status") in (
+                "all", "no_broken", "works_only") else None,
             "wipe": bool(p.get("wipe"))}
 
 
@@ -103,7 +105,7 @@ def best_fill(sizes, room, forced=()):
 
 
 def plan(capacity_bytes=None, selected=(), gates=None, distinct_games=False,
-         arcade_core="mame"):
+         arcade_core="mame", arcade_status=None):
     """Smart help for a card of `capacity_bytes`.
 
     Plans against the card's whole size, not its current free space: what is already on
@@ -120,10 +122,14 @@ def plan(capacity_bytes=None, selected=(), gates=None, distinct_games=False,
     chips are written into every set that needs them). With `arcade_core='all'` three cores
     are built, so three chip sets are written: the figure triples."""
     gates = gates or {}
+    # The export's own default: an unsaid health gate still holds broken sets back, so
+    # the plan must not count them either.
+    arcade_status = arcade_status or "no_broken"
     rows = export_systems(wanted_only=gates.get("wanted_only"),
                           keep_only=gates.get("keep_only"),
                           rating_min=gates.get("rating_min"),
-                          distinct_games=distinct_games)
+                          distinct_games=distinct_games,
+                          arcade_core=arcade_core, arcade_status=arcade_status)
     if arcade_core == "all":
         rows = [r | {"bytes": r["bytes"] * 3} if r["system"] == "arcade" else r for r in rows]
     sizes = {r["system"]: r["bytes"] or 0 for r in rows}
@@ -141,7 +147,9 @@ def plan(capacity_bytes=None, selected=(), gates=None, distinct_games=False,
                    else r["bytes"] or 0
                    for r in export_systems(wanted_only=gates.get("wanted_only"),
                                            keep_only=True, rating_min=7,
-                                           distinct_games=distinct_games)}
+                                           distinct_games=distinct_games,
+                                           arcade_core=arcade_core,
+                                           arcade_status=arcade_status)}
         too_big = [{"system": s, "bytes": sizes[s], "curated_bytes": curated.get(s, 0),
                     "curated_fits": 0 < curated.get(s, 0) <= usable} for s in sorted(big)]
 

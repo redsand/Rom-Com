@@ -517,7 +517,9 @@ def test_export_builds_the_arcade_bios_parents_of_its_selection(tmp_path, monkey
             db.execute("INSERT INTO items(id,title,system,external_id) "
                        f"VALUES('{iid}','{setname}','arcade','arcade/{setname}')")
             db.execute(f"UPDATE files SET matched_item_id='{iid}' WHERE path LIKE '%{chip}'")
-    r = organize(tmp_path / "sd")
+    # 'all': kof97 cannot boot without its parent, and the default health gate would hold
+    # it back (see test_arcadehealth) — this is about the parents, so build everything.
+    r = organize(tmp_path / "sd", arcade_status="all")
     card = tmp_path / "sd" / "arcade"
     assert (card / "mslug.zip").exists() and (card / "kof97.zip").exists()
     assert (card / "neogeo.zip").exists()               # the parent, not ticked, still there
@@ -535,7 +537,9 @@ def test_romset_builds_every_assemblable_set_and_the_bios_parents(tmp_path, monk
     _romset_env(monkeypatch, tmp_path, {"fbneo": core, "mame": mame},
                 {"m1.bin": "aaaa1111", "k.bin": "dddd4444"})
     dest = tmp_path / "card"
-    r = romset("fbneo", dest)
+    # 'all': kof97's parent is not in the dump, so the default health gate would hold it
+    # back — this is about the parents, so build everything assemblable.
+    r = romset("fbneo", dest, arcade_status="all")
     assert r["profile"] == "fbneo" and r["assemblable"] == 2
     assert (dest / "neogeo.zip").exists()                    # the bios parent, first
     assert (dest / "mslug.zip").exists() and (dest / "kof97.zip").exists()

@@ -704,8 +704,8 @@ const orgCurrent = () => orgProfiles.find(p => p.id === $("#org-profile").value)
 const orgForm = () => ({name: orgCurrent()?.name, path: $("#org-path").value.trim(), systems: orgPicked(),
                         fill: $("#org-fill").checked, capacity_gb: $("#org-capacity").value || null,
                         distinct_games: $("#org-distinct").checked,
-                        arcade_core: $("#org-core").value, wipe: $("#org-wipe").checked,
-                        gates: orgGates()});
+                        arcade_core: $("#org-core").value, arcade_status: $("#org-status").value,
+                        wipe: $("#org-wipe").checked, gates: orgGates()});
 let orgPendingSystems = null;     // a profile's ticks, applied once the plan has drawn the list
 let orgGatesKnown = false;        // gates come from Settings until the owner or a profile sets them
 
@@ -725,6 +725,7 @@ function orgApplyProfile(p) {
   $("#org-distinct").checked = !!p.distinct_games;
   $("#org-wipe").checked = !!p.wipe;
   $("#org-core").value = p.arcade_core || "mame";
+  $("#org-status").value = p.arcade_status || "no_broken";
   orgSetGates(p.gates || {}); orgGatesKnown = true;
   orgPendingSystems = p.systems || [];
   $("#org-delete").disabled = false;
@@ -735,7 +736,7 @@ async function loadOrgPlan() {
   const picked = orgPendingSystems ?? orgPicked();
   const body = {path: $("#org-path").value.trim(), capacity_gb: $("#org-capacity").value || null,
                 systems: picked, distinct_games: $("#org-distinct").checked,
-                arcade_core: $("#org-core").value};
+                arcade_core: $("#org-core").value, arcade_status: $("#org-status").value};
   if (orgGatesKnown) body.gates = orgGates();
   let d;
   try { d = await post("/api/organize/plan", body); }
@@ -763,7 +764,7 @@ function orgTick(systems, add) {
 function orgRender() {
   const d = orgPlan; if (!d) return;
   const picked = $$("#org-systems input:checked");
-  $("#org-core-wrap").hidden = !picked.some(x => x.value === "arcade");
+  $("#org-core-wrap").hidden = $("#org-status-wrap").hidden = !picked.some(x => x.value === "arcade");
   const bytes = picked.reduce((a, x) => a + Number(x.dataset.bytes || 0), 0);
   const usable = d.usable_bytes;
   const over = usable != null && bytes > usable;
@@ -823,6 +824,7 @@ $("#org-capacity").addEventListener("change", loadOrgPlan);
 $("#org-fill").addEventListener("change", orgRender);
 $("#org-distinct").addEventListener("change", loadOrgPlan);
 $("#org-core").addEventListener("change", loadOrgPlan);   // "all three" is three times the bytes
+$("#org-status").addEventListener("change", loadOrgPlan); // held-back sets leave the arcade figure
 for (const id of ["#org-g-wanted", "#org-g-keep", "#org-g-rating"])
   $(id).addEventListener("change", () => { orgGatesKnown = true; loadOrgPlan(); });
 
@@ -867,6 +869,7 @@ $("#org-start").addEventListener("click", () => {
   startJob("organize", "/api/organize", {path, systems, fill: $("#org-fill").checked,
                                           distinct_games: $("#org-distinct").checked,
                                           arcade_core: $("#org-core").value,
+                                          arcade_status: $("#org-status").value,
                                           wipe: $("#org-wipe").checked, gates: orgGates()});
 });
 
@@ -881,7 +884,8 @@ $("#rom-start").addEventListener("click", () => {
   if (!path) { toast("Enter the destination folder on the card first", true); return; }
   localStorage.setItem("romcom-romset-path", path);
   startJob("romset", "/api/romset", {profile: $("#rom-profile").value, path,
-                                     leave_gb: +$("#rom-leave").value || 0});
+                                     leave_gb: +$("#rom-leave").value || 0,
+                                     arcade_status: $("#rom-status").value});
 });
 
 $("#rom-stop").addEventListener("click", async () => {
@@ -1052,13 +1056,27 @@ function renderOrganizeResult(r) {
     + (rows ? `<div class="tablewrap" style="margin-top:12px"><table>
         <thead><tr><th>System folder</th><th class="r">Files</th></tr></thead><tbody>${rows}</tbody></table></div>` : "")
     + biosHtml
+    + Object.entries(r.arcade_held_back || {}).map(([core, h]) => heldHtml(h, core)).join("")
     + (errs ? `<details class="skiplist" open><summary>${r.errors.length} errors</summary><div class="checklist" style="max-height:none">${errs}</div></details>` : "");
+}
+
+// What the arcade health gate kept off the card, grouped by the fix each set needs.
+function heldHtml(h, core) {
+  if (!h || !h.count) return "";
+  const why = Object.entries(h.by_reason || {}).map(([k, n]) =>
+    `<div class="check bad"><span class="mark">✕</span><span class="d">${n.toLocaleString()} — ${esc(k)}</span></div>`).join("");
+  const eg = Object.entries(h.sample || {}).map(([s, w]) =>
+    `<div class="check"><span class="mark">·</span><span class="d"><code>${esc(s)}</code> ${esc(w)}</span></div>`).join("");
+  return `<details class="skiplist" style="margin-top:12px">
+    <summary>${h.count.toLocaleString()} broken set${h.count > 1 ? "s" : ""} held back${core ? ` (${esc(core)})` : ""}</summary>
+    <div class="checklist" style="max-height:none">${why}</div>
+    <p class="sub">For example:</p><div class="checklist">${eg}</div></details>`;
 }
 
 function renderRomsetResult(r) {
   if (r.error) {
     $("#rom-result").innerHTML = `<div class="check bad" style="margin-top:12px">
-      <span class="mark">✕</span><span class="d">${esc(r.error)}</span></div>`;
+      <span class="mark">✕</span><span class="d">${esc(r.error)}</span></div>` + heldHtml(r.held_back);
     return;
   }
   const missing = Object.entries(r.bios_unavailable || {});
@@ -1076,7 +1094,8 @@ function renderRomsetResult(r) {
         <div class="checklist" style="max-height:none">${missing.map(([name, n]) =>
           `<div class="check bad"><span class="mark">✕</span>
            <span class="d">${esc(name)} — needed by ${n.toLocaleString()} game${n > 1 ? "s" : ""}</span></div>`).join("")}</div></details>`
-      : "");
+      : "")
+    + heldHtml(r.held_back);
 }
 
 function renderImportResult(r) {

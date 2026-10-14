@@ -251,6 +251,13 @@
             <option value="mame2003">MAME 2003-Plus</option>
             <option value="all">all three</option>
           </select></label>
+        <label class="sub" id="org-status-wrap" title="Will the set actually start? Each core's dat says how finished its driver is, and a set missing chips, a CHD or its bios parent will not boot. Broken sets are disk space spent on a black screen">
+          Arcade&nbsp;health:
+          <select id="org-status">
+            <option value="no_broken">skip broken sets</option>
+            <option value="works_only">only sets that work</option>
+            <option value="all">everything</option>
+          </select></label>
         <label class="sub" title="Delete the ticked platforms' folders on the card before copying — a clean card instead of a top-up. Nothing outside those folders is touched">
           <input type="checkbox" id="org-wipe"> clear those platforms first</label>
       </div>
@@ -280,6 +287,11 @@
         <button class="ghost browse" data-target="#rom-path">Browse&hellip;</button>
         <label class="sub" title="Room held back for the cores that come after, so several cores share one card. Run biggest-first with a floor for the rest">
           leave <input type="number" id="rom-leave" min="0" step="1" value="0" style="width:56px"> GB free</label>
+        <select id="rom-status" title="Will the set actually start? Each core's dat says how finished its driver is, and a set missing chips, a CHD or its bios parent will not boot. Broken sets are disk space spent on a black screen">
+          <option value="no_broken">skip broken sets</option>
+          <option value="works_only">only sets that work</option>
+          <option value="all">everything assemblable</option>
+        </select>
         <button id="rom-start" class="primary">Build romset</button>
       </div>
       <p class="sub">Builds every set the core's dat can assemble from the dump, bios parents first

@@ -229,13 +229,26 @@ def _rank_folder(r):
     return str(_score(r) // 10 * 10)
 
 
-def export_systems(wanted_only=False, keep_only=False, rating_min=None, distinct_games=False):
+def export_systems(wanted_only=False, keep_only=False, rating_min=None, distinct_games=False,
+                   arcade_core=None, arcade_status=None):
     """Per-system file count and size an export would copy under the current gates.
 
     Sizes come from the scan's recorded `files.bytes`, not a stat of every file, so this is
     fast enough to back a picker. Arcade's figure is the matched chip files; the built sets
-    can differ a little (shared chips are written into every set that needs them)."""
-    rows, _ = _canonical(_selection(wanted_only, keep_only, rating_min), distinct_games)
+    can differ a little (shared chips are written into every set that needs them). With
+    `arcade_status`, sets the health gate would hold back for every one of the chosen
+    cores are left out — from the last stored judgement, not a fresh one (the export
+    judges afresh), so the picker stays quick."""
+    rows = _selection(wanted_only, keep_only, rating_min)
+    if arcade_status and arcade_status != "all":
+        from . import arcadehealth, mameset
+        cores = (list(mameset.PROFILES) if arcade_core == "all"
+                 else [arcade_core if arcade_core in mameset.PROFILES else "mame"])
+        dead = arcadehealth.blocked(cores, arcade_status)
+        if dead:
+            rows = [r for r in rows if (r["system"] or "").lower() != "arcade"
+                    or (r["external_id"] or "").split("/", 1)[-1] not in dead]
+    rows, _ = _canonical(rows, distinct_games)
     agg = {}
     for r in rows:
         a = agg.setdefault(r["system"] or "unknown",
@@ -253,7 +266,7 @@ def _safe(name):
 
 def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
              dry_run=False, keep_only=False, rating_min=None, stop=None, fill=False,
-             distinct_games=False, wipe=False, arcade_core="mame"):
+             distinct_games=False, wipe=False, arcade_core="mame", arcade_status=None):
     """Copy files matched to a catalog item into <dest>/<system>/<score>/<filename> — the
     score folder (90, 80, ... 0) is the ranking the copy order sorts by, made visible to
     RetroArch, which cannot show a rating.
@@ -307,6 +320,13 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     <dest>/arcade/. The same catalog feeds each core's own dat: the cores speak different
     romset versions, so a zip rebuilt for one can fail on another.
 
+    `arcade_status` is the health gate (`arcadehealth.GATES`): 'no_broken' (the default)
+    keeps sets that will not start off the card — missing chips, CHD or bios, or a driver
+    the core never finished — 'works_only' keeps only the good ones, 'all' builds
+    everything. Each core is judged against its own dat before its sets are chosen, and
+    the gate runs before 'one copy per game' picks a family's survivor, so a working clone
+    takes the place of a broken parent instead of the family vanishing.
+
     `wipe` clears the card first: every <dest>/<system> folder for a ticked platform (and
     arcade, when ticked) is deleted before anything is copied — a clean card instead of a
     top-up. Nothing outside those folders is ever touched, and without an explicit
@@ -347,6 +367,27 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     arcade_dupes_skipped = 0
     arcade_rows = ([r for r in rows if (r["system"] or "").lower() == "arcade"]
                    if arcade_wanted else [])
+    from . import arcadehealth
+    arcade_status = arcade_status if arcade_status in arcadehealth.GATES         else arcadehealth.DEFAULT_GATE
+    gating = bool(arcade_rows) and arcade_status != "all"
+    known, arcade_held_back = {}, {}
+    if gating:
+        asked = list(dict.fromkeys(
+            (r["external_id"] or "").split("/", 1)[-1] for r in arcade_rows))
+        for core in arcade_cores:
+            if progress: progress(0, 0, f"judging {core} arcade sets…")
+            arcadehealth.evaluate(core, db)
+            known[core] = arcadehealth.statuses(core, db)
+            # Reported against everything the recipe asked for: the rows filter below
+            # removes the sets no core runs before the per-core gate ever sees them.
+            held = arcadehealth.gate(core, asked, arcade_status, db, known=known[core])[1]
+            if held:
+                arcade_held_back[core] = held
+        # Rows no chosen core can run go before the title collapse below, or a broken
+        # variant could win a game's one slot over a working one.
+        dead = arcadehealth.blocked(arcade_cores, arcade_status, db)
+        arcade_rows = [r for r in arcade_rows
+                       if (r["external_id"] or "").split("/", 1)[-1] not in dead]
     if distinct_games and arcade_rows:
         arcade_rows, arcade_dupes_skipped = _canonical(arcade_rows, True)
     arcade_sets = list(dict.fromkeys(
@@ -355,28 +396,52 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     # one MAME family must not both reach a MAME card, but an FBNeo family may differ.
     # The mame romof parents below follow mame's own pruned list.
     core_sets = {core: arcade_sets for core in arcade_cores}
+    if gating:
+        for core in arcade_cores:
+            core_sets[core] = arcadehealth.gate(core, arcade_sets, arcade_status,
+                                                db, known=known[core])[0]
     clones_pruned = {}
     if distinct_games and arcade_sets:
         for core in arcade_cores:
-            core_sets[core], drop = _prune_clones(db, core, arcade_sets)
+            core_sets[core], drop = _prune_clones(db, core, core_sets[core])
             if drop:
                 clones_pruned[core] = drop
                 arcade_dupes_skipped += len(drop)
-        arcade_sets = core_sets.get("mame", arcade_sets)
-    arcade_bios_unavailable = {}
-    if arcade_sets and "mame" in arcade_cores:
-        # The romof parents (neogeo, pgm…) come along whether or not the recipe ticked
-        # them: mslug on a card without neogeo.zip beside it refuses to boot. Parents
-        # first, so a build that runs out of room stops before the games needing them.
-        mame_dat = mameset.dat_path("mame")
-        if mame_dat:
-            parents = mameset.romof_refs(arcade_sets, mame_dat)
-            hold = sorted(set(parents) & mameset.assemblable(db, mame_dat))
-            arcade_bios_unavailable = {k: len(v) for k, v in parents.items() if k not in set(hold)}
-            arcade_sets = hold + [s for s in arcade_sets if s not in set(hold)]
-            # neogeo.zip and co. ride the mame build too — core_sets still holds the
-            # pre-parent list, and the build loop reads from there now.
-            core_sets["mame"] = arcade_sets
+    arcade_sets = core_sets.get("mame", arcade_sets)
+    # The romof parents a set cannot boot without (neogeo, pgm…) come along whether or not
+    # the recipe ticked them: mslug on a card without neogeo.zip beside it refuses to boot.
+    # Every core, not just mame — FBNeo's dat lists no bios chips in its games at all.
+    # Parents first, so a build that runs out of room stops before the games needing them.
+    # One the core's own dat cannot build may come from a fallback dat (the 0.78 bios MAME
+    # 2003-Plus leans on); what nothing can build is reported, not guessed at.
+    arcade_bios_unavailable, fallback_bios = {}, {}
+    for core in arcade_cores:
+        dat = mameset.dat_path(core)
+        if not dat or not core_sets[core]:
+            continue
+        machines = arcadehealth.parse(dat)
+        parents = {}
+        for name in core_sets[core]:
+            for p in arcadehealth.needed_parents(machines, name):
+                parents[p] = parents.get(p, 0) + 1
+        if not parents:
+            continue
+        ok = mameset.assemblable(db, dat)
+        hold = sorted(p for p in parents if p in ok)
+        pending = {p: n for p, n in parents.items() if p not in ok}
+        plan = []
+        for alt in (arcadehealth.alt_dats(core, dat) if pending else []):
+            got = sorted(set(pending) & mameset.assemblable(db, alt))
+            if got:
+                plan.append((alt, got))
+                for g in got:
+                    pending.pop(g)
+        fallback_bios[core] = plan
+        arcade_bios_unavailable.update(pending)
+        core_sets[core] = hold + [x for x in core_sets[core] if x not in set(hold)]
+    arcade_sets = core_sets.get("mame", arcade_sets)
+    # Something to build on some core — arcade_sets alone only speaks for mame.
+    arcade_any = any(core_sets.values())
     arcade_reports = {}
     rows = [r for r in rows if (r["system"] or "").lower() != "arcade"]
     if sources:
@@ -469,13 +534,20 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                                          f"DAT/{mameset.PROFILES.get(core, (core,))[0]}/",
                     "copied": 0, "bytes": 0, "bytes_needed": 0, "complete": 0,
                     "incomplete": 0, "stopped": False, "out_of_room": False}
-        return mameset.build(core_sets[core], dest_dir, db=db, dry_run=dry_run, zipped=True,
-                             profile=core, dat=dat,
-                             fresh=fresh_wipe if dry_run else False,
-                             room_for=None if dry_run else room_for,
-                             stop=None if dry_run else stop,
-                             progress=None if progress is None else
-                             lambda i, total, name: progress(i, total, f"{label}: {name}"))
+        kw = dict(db=db, dry_run=dry_run, zipped=True,
+                  fresh=fresh_wipe if dry_run else False,
+                  room_for=None if dry_run else room_for,
+                  stop=None if dry_run else stop,
+                  progress=None if progress is None else
+                  lambda i, total, name: progress(i, total, f"{label}: {name}"))
+        out = None
+        for alt, names in fallback_bios.get(core, []):      # bios from other dats first
+            r = mameset.build(names, dest_dir, dat=alt, **kw)
+            out = r if out is None else _merge_builds(out, r)
+            if r.get("stopped"):
+                return out
+        r = mameset.build(core_sets[core], dest_dir, profile=core, dat=dat, **kw)
+        return r if out is None else _merge_builds(out, r)
 
     if not dry_run:
         # After a wipe nothing at the targets survives to be reused, so the copy needs the
@@ -483,7 +555,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         # need reflects that. Clearing the ticked platforms counts as room the copy may use.
         if progress: progress(0, 0, "measuring what's left to copy…")
         need = (sum(r["bytes"] or 0 for r in rows) if wipe else _bytes_to_copy(rows, dest))
-        if arcade_sets:
+        if arcade_any:
             # A wipe clears the arcade folder before rebuilding it, so the sizing pass
             # must measure the FULL build — fresh=True — not the delta over the old
             # sets it is about to delete. The delta once let a whole 70 GB rebuild
@@ -522,7 +594,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         free = _free_bytes(dest)
         return free is not None and free - nbytes >= reserve
 
-    if arcade_sets:
+    if arcade_any:
         for core in arcade_cores:
             r = build_arcade(core, dry_run=dry_run)
             arcade_reports[core] = r
@@ -628,6 +700,9 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                       else arcade_reports),
            "arcade_bios_unavailable": arcade_bios_unavailable,
            "clones_pruned": clones_pruned or None,
+           "arcade_status": arcade_status,
+           "arcade_held_back": {core: _held_summary(h) for core, h in arcade_held_back.items()}
+                               or None,
            "console_bios": {"dir": str(dest / "system"), "systems": console_bios},
            "dupes_skipped": dupes_skipped, "wiped": wiped,
            "wanted_only": bool(wanted_only), "keep_only": bool(keep_only),
@@ -637,6 +712,31 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                 "would_copy_bytes": planned_bytes,
                 "would_copy_gb": round(planned_bytes / (1024 ** 3), 2)}
     return out
+
+
+def _merge_builds(a, b):
+    """Two `mameset.build` reports as one — a core's fallback-dat bios build and its own."""
+    out = dict(b)
+    out["sets"] = {**(a.get("sets") or {}), **(b.get("sets") or {})}
+    for k in ("copied", "bytes", "bytes_needed", "complete", "incomplete"):
+        out[k] = (a.get(k) or 0) + (b.get(k) or 0)
+    for k in ("stopped", "out_of_room"):
+        out[k] = bool(a.get(k) or b.get(k))
+    return out
+
+
+def _held_summary(held):
+    """What the health gate kept off the card for one core: how many, grouped by the fix
+    each would need, with a few names — the full list would bury the export result."""
+    from .arcadehealth import _reason_kind
+    by = {}
+    for why in held.values():
+        status, _, reason = why.partition(": ")
+        k = _reason_kind(reason) if reason else status
+        by[k] = by.get(k, 0) + 1
+    return {"count": len(held),
+            "by_reason": dict(sorted(by.items(), key=lambda kv: -kv[1])),
+            "sample": dict(sorted(held.items())[:20])}
 
 
 def _bios_need(dest, fills):
@@ -707,7 +807,8 @@ def _discard_partial(target):
         pass
 
 
-def romset(profile, dest, leave_bytes=0, progress=None, db=None, stop=None):
+def romset(profile, dest, leave_bytes=0, progress=None, db=None, stop=None,
+           arcade_status=None):
     """Build one emulator core's romset onto a folder: every set its dat can assemble from
     the dump, as one zip per set, plus the bios parents (neogeo.zip, pgm.zip…) its games
     reference but its dat never defines — the cores look for those as their own zips, and
@@ -740,6 +841,20 @@ def romset(profile, dest, leave_bytes=0, progress=None, db=None, stop=None):
     sets = _fill_order(db, mameset.assemblable(db, dat))
     if not sets:
         return {"error": f"{profile}: nothing assemblable from what is on disk", **empty}
+    # Every chip present is not the same as runs: the health gate (see `organize`) also
+    # holds back sets missing a CHD or bios parent, and drivers the core never finished.
+    from . import arcadehealth
+    arcade_status = arcade_status if arcade_status in arcadehealth.GATES         else arcadehealth.DEFAULT_GATE
+    held = {}
+    if arcade_status != "all":
+        if progress:
+            progress(0, 0, f"{profile}: judging which sets will run…")
+        arcadehealth.evaluate(profile, db)
+        sets, held = arcadehealth.gate(profile, sets, arcade_status, db)
+        if not sets:
+            return {"error": f"{profile}: every assemblable set is held back by the "
+                             f"'{arcade_status}' health gate", **empty,
+                    "held_back": _held_summary(held)}
 
     def room_for(nbytes):
         free = _free_bytes(dest)
@@ -782,7 +897,9 @@ def romset(profile, dest, leave_bytes=0, progress=None, db=None, stop=None):
                       stop=stop,
                       progress=None if progress is None else
                       lambda i, total, name: progress(i, total, name))
-    return {"profile": profile, "dat": dat.name, "assemblable": len(sets),
+    return {"profile": profile, "dat": dat.name, "assemblable": len(sets) + len(held),
             "bios_built": bios_built, "bios_unavailable": bios_unavailable,
+            "arcade_status": arcade_status,
+            "held_back": _held_summary(held) if held else None,
             **{k: v for k, v in r.items() if k != "sets"},
             "stopped": bool(r.get("stopped") or r.get("out_of_room"))}

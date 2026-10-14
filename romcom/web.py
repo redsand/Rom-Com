@@ -483,11 +483,13 @@ def create_app():
                                           fill=bool(params.get("fill")),
                                           distinct_games=bool(params.get("distinct_games")),
                                           wipe=bool(params.get("wipe")),
-                                          arcade_core=params.get("arcade_core") or "mame")
+                                          arcade_core=params.get("arcade_core") or "mame",
+                                          arcade_status=params.get("arcade_status"))
         if kind == "romset":
             return lambda prog: romset(params["profile"], params["path"],
                                        leave_bytes=int(float(params.get("leave_gb") or 0) * 1024 ** 3),
-                                       progress=prog, stop=stops["romset"])
+                                       progress=prog, stop=stops["romset"],
+                                       arcade_status=params.get("arcade_status"))
         if kind == "acquire":
             return lambda prog: acquirer.auto_acquire(progress=prog, watch=bool(params.get("watch")),
                                                       stop=acquirer.STOP)
@@ -735,6 +737,7 @@ def create_app():
                                       "distinct_games": bool(body.get("distinct_games")),
                                       "wipe": bool(body.get("wipe")),
                                       "arcade_core": body.get("arcade_core") or "mame",
+                                      "arcade_status": body.get("arcade_status"),
                                       "gates": _export_gates(body.get("gates"))})
 
     @app.post("/api/romset")
@@ -752,7 +755,8 @@ def create_app():
         except (TypeError, ValueError):
             leave_gb = 0.0
         return start_job("romset", {"profile": body["profile"], "path": path,
-                                    "leave_gb": leave_gb})
+                                    "leave_gb": leave_gb,
+                                    "arcade_status": body.get("arcade_status")})
 
     @app.post("/api/organize/plan")
     def api_organize_plan():
@@ -779,7 +783,8 @@ def create_app():
         return jsonify(out | {"capacity_bytes": cap} | exportplan.plan(
             capacity_bytes=cap, selected=body.get("systems") or [], gates=gates,
             distinct_games=bool(body.get("distinct_games")),
-            arcade_core=body.get("arcade_core") or "mame"))
+            arcade_core=body.get("arcade_core") or "mame",
+            arcade_status=body.get("arcade_status")))
 
     @app.get("/api/export/profiles")
     def api_export_profiles():
