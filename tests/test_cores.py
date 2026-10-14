@@ -175,3 +175,20 @@ def test_a_console_with_all_its_bios_is_not_reported_missing(monkeypatch, tmp_pa
     assert st["missing_count"] == 0 and st["games_blocked"] == 0
     dc = [r for r in st["rows"] if r["system"] == "dreamcast"][0]
     assert dc["have"] == ["dc_boot.bin", "dc_flash.bin"]
+
+
+def test_a_ps2_bios_is_found_by_shape_and_placed_for_pcsx2():
+    """PS2 BIOS dumps have no one filename: any SCPH-*.bin of exactly 4 MiB counts, and it
+    lands under system/pcsx2/bios/ — where RetroArch's PCSX2 reads it and NetherSX2's
+    Import BIOS is pointed. Nothing found is reported missing, not silently skipped."""
+    from romcom import cores
+    from romcom.db import connect
+    db = connect()
+    assert cores.bios_report(db, {"ps2"})["missing"]["ps2"]
+    with db:
+        db.execute("INSERT INTO files(path,bytes) VALUES(?,?)",
+                   (r"H:\Games\bios\SCPH-70012_BIOS_V12_USA_200.BIN", 4194304))
+        db.execute("INSERT INTO files(path,bytes) VALUES(?,?)", (r"H:\Games\scph-notabios.bin", 1000))
+    rep = cores.bios_report(db, {"ps2"})
+    assert list(rep["picked"]["ps2"]) == ["pcsx2/bios/scph-70012_bios_v12_usa_200.bin"]
+    assert "ps2" not in rep["missing"]

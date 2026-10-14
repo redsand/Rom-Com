@@ -815,7 +815,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                     stopped = True
                     break
                 else:
-                    (dest / "system").mkdir(parents=True, exist_ok=True)
+                    target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(Path(srcb), target)
                     rep["copied"].append(name)
             except OSError as e:

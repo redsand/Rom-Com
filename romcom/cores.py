@@ -11,6 +11,7 @@ switch.
   strong   — a clear favourite, alternatives are niche
   depends  — a real tradeoff; read the note before accepting the default
 """
+import re
 from pathlib import Path
 
 CORES = {
@@ -132,6 +133,19 @@ BIOS = {
                   "slots": [["panafz10.bin", "panafz10-norsa.bin", "panafz1.bin",
                              "opera_bios.rom"]],
                   "why": "the Opera core will not boot without one"},
+    # PS2 BIOS dumps carry the console model in a dozen spellings (SCPH-70012_BIOS_V12_USA_200.BIN,
+    # scph39001.bin, ps2-0230a-20080220.bin), so they are found by shape — the name pattern and
+    # the 4 MiB a PS2 BIOS always is — not by one filename. They go to system/pcsx2/bios/:
+    # RetroArch's PCSX2 core reads them there, and NetherSX2's first-run "Import BIOS" picker
+    # is pointed at the same folder. Sony never published one; it comes from the owner's own
+    # console, dropped anywhere in the library.
+    "ps2":       {"label": "PlayStation 2",
+                  "slots": [],
+                  "pattern": r"^(scph|ps2[-_ ]|ps2bios|bios[-_ ]?scph).*\.bin$",
+                  "size": 4194304,
+                  "dir": "pcsx2/bios",
+                  "why": "PCSX2 and NetherSX2 boot nothing without a PS2 BIOS dumped from a "
+                         "real console (any region; a SCPH-*.bin of 4 MB)"},
     "amiga":     {"label": "Amiga",
                   "slots": [["kick13.rom", "kick33180.A500", "kick34005.A500",
                              "kick40068.A1200", "kick40063.A600"]],
@@ -156,6 +170,18 @@ def bios_files(db):
     return out
 
 
+def _by_pattern(db, spec):
+    """{basename: [(path, bytes)]} of library files matching a BIOS spec's name pattern
+    and exact size."""
+    pat = re.compile(spec["pattern"], re.I)
+    out = {}
+    for r in db.execute("SELECT path, bytes FROM files WHERE bytes=?", (spec["size"],)):
+        name = str(r["path"] or "").replace("\\", "/").rsplit("/", 1)[-1]
+        if pat.match(name):
+            out.setdefault(name.lower(), []).append((r["path"], r["bytes"] or 0))
+    return out
+
+
 def bios_report(db, systems=None):
     """Which BIOS slots the library fills, per system — the export's shopping list.
 
@@ -169,6 +195,16 @@ def bios_report(db, systems=None):
     picked, missing = {}, {}
     for system in sorted(wanted):
         spec = BIOS[system]
+        if spec.get("pattern"):
+            # Found by shape; every distinct dump goes along (the emulator lets you pick
+            # a region), keyed by its place under system/ so the copy needs no special case.
+            fills = {f"{spec['dir']}/{name}": hits[0]
+                     for name, hits in sorted(_by_pattern(db, spec).items())[:8]}
+            if fills:
+                picked[system] = fills
+            else:
+                missing[system] = [["SCPH-*.bin (4 MB, from your own PS2)"]]
+            continue
         fills, miss = {}, []
         for slot in spec["slots"]:
             for name in slot:
