@@ -99,6 +99,11 @@ def folder(system):
     return FOLDERS.get(s, s)
 
 
+def single_file(system):
+    """A cartridge system: one game is one file (its list takes .zip as a whole game)."""
+    return ".zip" in EXTS.get(folder(system), ()) and folder(system) not in ("dos", "scummvm")
+
+
 def playable(system, name):
     """Can the system's ES-DE entry launch a file called `name`? None when the system has
     no list here (an unknown system: copied as before)."""

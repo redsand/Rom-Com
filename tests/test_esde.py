@@ -212,3 +212,29 @@ def test_one_item_holding_every_disc_gets_an_m3u(tmp_path, monkeypatch):
     d = tmp_path / "card" / "gc" / "Killer7 (USA) (Rev 1).m3u"
     assert (d / "Killer7 (USA) (Rev 1).m3u").read_text().splitlines() == [
         "Killer7 (USA) (Disc 1) (Rev 1).rvz", "Killer7 (USA) (Disc 2) (Rev 1).rvz"]
+
+
+def test_one_copy_per_game_puts_one_dump_of_a_cartridge_game_on_the_card(tmp_path, monkeypatch):
+    """The verified dump, not its fan translations, trainers or bad dumps beside it."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "o.db"))
+    from romcom.config import invalidate
+    invalidate()
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    db = connect()
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status) VALUES('m','Metroid Fusion (USA)','gba','VERIFIED')")
+        for name, method in (("Metroid Fusion (U) [T+Bra0.70].gba", "filename-exact"),
+                             ("Metroid Fusion (U) [b1].gba", "filename-exact"),
+                             ("Metroid Fusion (U) [t1].gba", "filename-exact"),
+                             ("Metroid Fusion (U) [!].gba", "hash")):
+            f = lib / name
+            f.write_bytes(name.encode())
+            db.execute("INSERT INTO files(path,bytes,sha1,matched_item_id,match_method) "
+                       "VALUES(?,?,?,'m',?)", (str(f), len(name), hashlib.sha1(name.encode()).hexdigest(), method))
+    card = tmp_path / "card"
+    r = organize(card, distinct_games=True)
+    assert sorted(p.name for p in (card / "gba").iterdir()) == ["Metroid Fusion (U) [!].gba"]
+    assert r["dupes_skipped"] == 3
+    organize(tmp_path / "card2")                       # off: every dump, as before
+    assert len(list((tmp_path / "card2" / "gba").iterdir())) == 4

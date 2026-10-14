@@ -511,7 +511,8 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     from . import esde
     layout = layout if layout in ("flat", "ranked") else "flat"
     if progress and rows: progress(0, 0, "planning the card layout (reading archives)…")
-    games = _plan_games(rows, layout, chd=chd)
+    games = _plan_games(rows, layout, chd=chd, one_file=distinct_games)
+    dupes_skipped += sum(g.pop("dupes", 0) for g in games)
     # Console BIOS rides along: a card whose Dreamcast folder is full of games plays
     # nothing without dc_boot.bin in RetroArch's System Directory, and no item-driven
     # query can ever fetch it — the dump's BIOS files sit in `files` unmatched, so this
@@ -899,9 +900,14 @@ def _bios_need(dest, fills):
     return need
 
 
-def _plan_games(rows, layout, chd=False):
+def _plan_games(rows, layout, chd=False, one_file=False):
     """Group the selection's files by game (adjacent in `_ORDER`) and plan each one's way
-    onto the card with `esde.plan`: folder, files to copy, archives to unpack."""
+    onto the card with `esde.plan`: folder, files to copy, archives to unpack.
+
+    `one_file` (one copy per game): a cartridge game is a single file, so of the dumps a
+    library matched to it — the verified one beside its fan translations, trainers and
+    bad dumps — only the best goes on the card (`_dump_rank`). ES-DE listed Metroid
+    Fusion four times otherwise."""
     from . import esde
     groups = []
     for r in rows:
@@ -917,12 +923,17 @@ def _plan_games(rows, layout, chd=False):
                 present.append((r["path"], Path(r["path"]).stat().st_size))
             except OSError:
                 missing += 1
+        dupes = 0
+        if one_file and len(present) > 1 and esde.single_file(r0["system"]):
+            method = {r["path"]: r["match_method"] for r in g}
+            best = min(present, key=lambda f: _dump_rank(f[0], method.get(f[0])))
+            dupes, present = len(present) - 1, [best]
         steps, entries, dropped = (esde.plan(r0["system"], present, chd=chd) if present
                                    else ([], [], 0))
         out.append({"row": r0, "folder": esde.folder(r0["system"]),
                     "sub": _rank_folder(r0) if layout == "ranked" else "",
                     "steps": steps, "entries": entries, "dropped": dropped,
-                    "missing": missing})
+                    "missing": missing, "dupes": dupes})
     _group_discs(out)
     return out
 
@@ -998,6 +1009,31 @@ def _under(step, d):
     if step[0] == "chd":
         return step[:4] + (f"{d}/{step[4]}", step[5])
     return step
+
+
+_DUMP_MARKS = (
+    (re.compile(r"\[!\]"), -50),                       # GoodTools: verified good dump
+    (re.compile(r"\[T[+-]Eng", re.I), 5),               # English translation
+    (re.compile(r"\[T[+-](?!Eng)"), 30),                # a translation into another language
+    (re.compile(r"\[b\d*[^\]]*\]"), 100),               # bad dump
+    (re.compile(r"\[o\d*\]"), 40),                      # overdump
+    (re.compile(r"\[t\d*\]"), 40),                      # trainer
+    (re.compile(r"\[h[^\]]*\]|\(hack\)", re.I), 30),    # hack
+    (re.compile(r"\[p\d*\]"), 30),                      # pirate
+    (re.compile(r"\[a\d*\]"), 5),                       # alternate
+    (re.compile(r"\[f\d*[^\]]*\]"), 3),                 # fixed
+    (re.compile(r"\((?:U|USA|E|Europe|UE|World|En)[,)]"), -10),   # English-language release
+)
+
+
+def _dump_rank(path, match_method):
+    """Lower is better: the dump a card should carry of one cartridge game."""
+    name = Path(path).name
+    score = 0 if str(match_method or "").startswith("hash") else 60
+    for pat, pts in _DUMP_MARKS:
+        if pat.search(name):
+            score += pts
+    return (score, len(name), name)
 
 
 def _unpacked(tdir, archive, names):
