@@ -276,7 +276,8 @@ def cmd_romset(a):
             last[0] = i
             print(f"[{i}/{total}] {name}")
     r = romset(a.profile, a.dest, leave_bytes=int(float(a.leave_gb) * 1024 ** 3),
-               progress=progress, arcade_status=a.status)
+               progress=progress, arcade_status=a.status,
+               exclude_labels=_exclude(a.exclude_labels))
     print(json.dumps({k: v for k, v in r.items() if k != "sets"}, indent=2))
 
 def cmd_cores(a):
@@ -337,13 +338,32 @@ def cmd_keep(a):
     except LookupError as e:
         print(e); return 1
 
+def _exclude(text):
+    """--exclude-labels: None keeps the default leave-out, 'none' an empty one."""
+    if text is None:
+        return None
+    return [] if text.strip().lower() == "none" else [x.strip() for x in text.split(",") if x.strip()]
+
+def cmd_labels(a):
+    from . import labels
+    if a.action == "refresh":
+        print(json.dumps(labels.refresh(), indent=2))
+    elif a.action == "counts":
+        print(json.dumps(labels.counts(held_only=not a.all), indent=2))
+    else:
+        if not (a.item and a.label):
+            print("labels add|remove|clear needs --item and --label"); return 1
+        labels.set_override(a.item, a.label, None if a.action == "clear" else a.action)
+        print(json.dumps(labels.for_items([a.item]), indent=2))
+
 def cmd_organize(a):
     from .organizer import organize
     print(json.dumps(organize(a.dest, systems=a.system or None,
                              wanted_only=a.wanted_only, keep_only=a.keep_only, sources=a.source or None,
                              rating_min=int(settings().get("export_rating_min", 0) or 0),
                              fill=a.fill, dry_run=a.dry_run,
-                             arcade_status=a.arcade_status), indent=2))
+                             arcade_status=a.arcade_status,
+                             exclude_labels=_exclude(a.exclude_labels)), indent=2))
 
 
 def cmd_artwork(a):
@@ -446,7 +466,14 @@ def main():
                     help="gigabytes to leave free on the volume for what comes after")
     rs.add_argument("--status", choices=["no_broken", "works_only", "all"], default=None,
                     help="arcade health gate: skip broken sets (default), only working ones, or everything")
+    rs.add_argument("--exclude-labels", default=None, help="labels to leave out, comma-separated (default fruit-machine,gambling,not-a-game; 'none' keeps everything)")
     rs.set_defaults(fn=cmd_romset)
+    lb=s.add_parser("labels", help="what each game is (genre, fruit-machine, hack…): refresh, counts, or your own add/remove")
+    lb.add_argument("action", choices=["refresh", "counts", "add", "remove", "clear"])
+    lb.add_argument("--item", help="item id, for add/remove/clear")
+    lb.add_argument("--label", help="label, for add/remove/clear")
+    lb.add_argument("--all", action="store_true", help="counts over the whole catalog, not just games in hand")
+    lb.set_defaults(fn=cmd_labels)
     aw=s.add_parser("artwork", help="box art / snaps for the games in hand, and ES-DE media on a card")
     aw.add_argument("action", choices=["fetch", "export", "coverage"])
     aw.add_argument("dest", nargs="?", help="card root, for export")
@@ -491,6 +518,7 @@ def main():
     og.add_argument("--fill",action="store_true",help="copy until the card's free-space reserve instead of refusing when the selection will not fit")
     og.add_argument("--dry-run",action="store_true",help="report what would be copied, copy nothing")
     og.add_argument("--arcade-status",choices=["no_broken","works_only","all"],default=None,help="arcade health gate: skip broken sets (default), only working ones, or everything")
+    og.add_argument("--exclude-labels",default=None,help="labels to leave out, comma-separated (default fruit-machine,gambling,not-a-game; 'none' keeps everything)")
     og.set_defaults(fn=cmd_organize)
     rec=s.add_parser("recommend", help="the n best games to play next, in hand now")
     rec.add_argument("--system", help="one system, or omit for the whole shelf")

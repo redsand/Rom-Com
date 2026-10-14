@@ -82,6 +82,11 @@
         <option value="has">Has artwork</option>
         <option value="missing">No artwork</option>
       </select>
+      <select id="f-label" title="What the game is: a genre (arcade, from catver.ini) or a tag — fruit-machine, hack, translation, prototype…">
+        <option value="">Any label</option>
+      </select>
+      <label class="sub" title="Hide fruit machines, gambling and not-a-game (computers, BIOS boards…) — what an export leaves out by default">
+        <input type="checkbox" id="f-nojunk"> games only</label>
       <input id="f-board" type="search" placeholder="board (cps2…)" spellcheck="false" style="width:120px"
         title="Arcade board family — the driver file, e.g. cps2, neogeo, naomi">
       <select id="f-sort" title="Sort order">
@@ -281,6 +286,8 @@
             <option value="works_only">only sets that work</option>
             <option value="all">everything</option>
           </select></label>
+        <span class="sub labels-out-wrap" title="What a game is (catver.ini for arcade, the dump's name for the rest). Ticked labels stay off the card — fruit machines, gambling and computers by default">
+          Leave&nbsp;out: <span id="org-labels" class="labels-out"></span></span>
         <label class="sub" title="Copy the box art and snaps already fetched (Artwork card below) into ES-DE's media folders on the card — point ES-DE's Game media directory at <card>\ES-DE\downloaded_media">
           <input type="checkbox" id="org-art"> artwork for ES-DE</label>
         <label class="sub" title="Delete the ticked platforms' folders on the card before copying — a clean card instead of a top-up. Nothing outside those folders is touched">
@@ -354,6 +361,8 @@
           <option value="works_only">only sets that work</option>
           <option value="all">everything assemblable</option>
         </select>
+        <span class="sub labels-out-wrap" title="Ticked labels stay out of the romset — fruit machines, gambling and computers by default. Bios sets the kept games need always come along">
+          Leave&nbsp;out: <span id="rom-labels" class="labels-out"></span></span>
         <button id="rom-start" class="primary">Build romset</button>
       </div>
       <p class="sub">Builds every set the core's dat can assemble from the dump, bios parents first

@@ -164,6 +164,12 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
         out["arcade_health"]=evaluate_all(db)
     except Exception:
         pass
+    # Newly catalogued items need their labels before an export leaves fruit machines out.
+    try:
+        from .labels import refresh as refresh_labels
+        refresh_labels(db)
+    except Exception:
+        pass
     return out
 
 # Extensions that pin down a system on their own; ambiguous ones (.bin/.iso/.cue/.zip) rely on folder names.

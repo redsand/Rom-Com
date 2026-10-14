@@ -131,15 +131,32 @@ def _gate_args(wanted_only, keep_only, rating_min):
     return (1 if wanted_only else 0, curating, 1 if keep_only else 0, rating_min, rating_min)
 
 
-def _selection(wanted_only=False, keep_only=False, rating_min=None):
+def _selection(wanted_only=False, keep_only=False, rating_min=None, exclude_labels=None,
+               left_out=None):
     """Every file an export would consider, best game first (see `_SCORE`). One query
     backs the export and the platform picker, so the picker's counts are exactly what
-    an export copies."""
-    return connect().execute(
+    an export copies. Games carrying an `exclude_labels` tag (`labels.DEFAULT_EXCLUDE`
+    when None: fruit machines, gambling, not-a-game) are left out; `left_out`, a dict,
+    collects how many items each system lost that way."""
+    from . import labels
+    db = connect()
+    rows = db.execute(
         "SELECT f.path, f.bytes, f.sha1, f.md5, f.match_method, i.id item_id, "
         "i.system, i.title, i.external_id, i.rating, i.community_score"
         + _GATED + _ORDER,
         _gate_args(wanted_only, keep_only, rating_min)).fetchall()
+    drop = labels.excluded_items(exclude_labels, db)
+    if not drop:
+        return rows
+    kept, gone = [], {}
+    for r in rows:
+        if r["item_id"] in drop:
+            gone.setdefault(r["system"] or "unknown", set()).add(r["item_id"])
+        else:
+            kept.append(r)
+    if left_out is not None:
+        left_out.update({s: len(v) for s, v in gone.items()})
+    return kept
 
 
 def _content_key(r):
@@ -230,7 +247,7 @@ def _rank_folder(r):
 
 
 def export_systems(wanted_only=False, keep_only=False, rating_min=None, distinct_games=False,
-                   arcade_core=None, arcade_status=None):
+                   arcade_core=None, arcade_status=None, exclude_labels=None):
     """Per-system file count and size an export would copy under the current gates.
 
     Sizes come from the scan's recorded `files.bytes`, not a stat of every file, so this is
@@ -239,7 +256,7 @@ def export_systems(wanted_only=False, keep_only=False, rating_min=None, distinct
     `arcade_status`, sets the health gate would hold back for every one of the chosen
     cores are left out — from the last stored judgement, not a fresh one (the export
     judges afresh), so the picker stays quick."""
-    rows = _selection(wanted_only, keep_only, rating_min)
+    rows = _selection(wanted_only, keep_only, rating_min, exclude_labels)
     if arcade_status and arcade_status != "all":
         from . import arcadehealth, mameset
         cores = (list(mameset.PROFILES) if arcade_core == "all"
@@ -267,7 +284,7 @@ def _safe(name):
 def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
              dry_run=False, keep_only=False, rating_min=None, stop=None, fill=False,
              distinct_games=False, wipe=False, arcade_core="mame", arcade_status=None,
-             artwork=False):
+             artwork=False, exclude_labels=None):
     """Copy files matched to a catalog item into <dest>/<system>/<score>/<filename> — the
     score folder (90, 80, ... 0) is the ranking the copy order sorts by, made visible to
     RetroArch, which cannot show a rating.
@@ -344,7 +361,10 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     """
     db = connect()
     if progress: progress(0, 0, "selecting items…")
-    rows = _selection(wanted_only, keep_only, rating_min)
+    from . import labels
+    exclude_labels = labels.normalize_exclude(exclude_labels)
+    labels_left_out = {}
+    rows = _selection(wanted_only, keep_only, rating_min, exclude_labels, labels_left_out)
     wanted_systems = {s.lower() for s in systems} if systems else None
     # Arcade is built, not copied. One physical file belongs to many sets, and
     # `files.matched_item_id` records a single owner, so copying matched files leaves every
@@ -717,6 +737,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
            "arcade_bios_unavailable": arcade_bios_unavailable,
            "clones_pruned": clones_pruned or None,
            "arcade_status": arcade_status,
+           "exclude_labels": exclude_labels, "labels_left_out": labels_left_out or None,
            "arcade_held_back": {core: _held_summary(h) for core, h in arcade_held_back.items()}
                                or None,
            "console_bios": {"dir": str(dest / "system"), "systems": console_bios},
@@ -824,7 +845,7 @@ def _discard_partial(target):
 
 
 def romset(profile, dest, leave_bytes=0, progress=None, db=None, stop=None,
-           arcade_status=None):
+           arcade_status=None, exclude_labels=None):
     """Build one emulator core's romset onto a folder: every set its dat can assemble from
     the dump, as one zip per set, plus the bios parents (neogeo.zip, pgm.zip…) its games
     reference but its dat never defines — the cores look for those as their own zips, and
@@ -857,6 +878,21 @@ def romset(profile, dest, leave_bytes=0, progress=None, db=None, stop=None,
     sets = _fill_order(db, mameset.assemblable(db, dat))
     if not sets:
         return {"error": f"{profile}: nothing assemblable from what is on disk", **empty}
+    # What a set IS comes before whether it runs: a perfect fruit machine is still not a
+    # game for the card (`labels`; bios parents come back below whatever their label).
+    from . import labels
+    exclude_labels = labels.normalize_exclude(exclude_labels)
+    off = labels.excluded_sets(sets, exclude_labels, db)
+    if off:
+        from . import arcadehealth
+        machines = arcadehealth.parse(dat)
+        needed = {p for s in sets if s not in off
+                  for p in arcadehealth.needed_parents(machines, s)}
+        off -= needed          # neogeo is 'System / BIOS' to catver, and mslug needs it
+    sets = [s for s in sets if s not in off]
+    if not sets:
+        return {"error": f"{profile}: every assemblable set carries a label left out "
+                         f"({', '.join(exclude_labels)})", **empty}
     # Every chip present is not the same as runs: the health gate (see `organize`) also
     # holds back sets missing a CHD or bios parent, and drivers the core never finished.
     from . import arcadehealth

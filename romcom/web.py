@@ -268,6 +268,16 @@ def create_app():
             q += " AND art IS NOT NULL"
         if args.get("board"):
             q += " AND health_family LIKE ?"; p.append(f"%{args['board']}.%")
+        # What a game is (labels.py): `label` keeps only games carrying it, `nolabel` drops
+        # games carrying any of a comma list — the export's own leave-out, as a view.
+        if args.get("label"):
+            q += " AND id IN (SELECT item_id FROM item_labels WHERE label=?)"
+            p.append(args["label"])
+        nolabel = [x for x in (args.get("nolabel") or "").split(",") if x]
+        if nolabel:
+            q += (" AND id NOT IN (SELECT item_id FROM item_labels WHERE label IN (%s))"
+                  % ",".join("?" * len(nolabel)))
+            p += nolabel
         return q, p
 
     # Whitelisted ORDER BYs. Unknown values fall back to the default; SQL here is
@@ -320,6 +330,10 @@ def create_app():
         items = [dict(r) | {"can_play": can_play(r),
                             "health": r["verdict"] or r["health_judged"]}
                  for r in db.execute(q, p)]
+        from . import labels
+        tags = labels.for_items([i["id"] for i in items], db)
+        for i in items:
+            i["labels"] = tags.get(i["id"], [])
         return jsonify({"total": total, "items": items})
 
     @app.post("/api/items/<ident>")
@@ -525,12 +539,14 @@ def create_app():
                                           wipe=bool(params.get("wipe")),
                                           arcade_core=params.get("arcade_core") or "mame",
                                           arcade_status=params.get("arcade_status"),
-                                          artwork=bool(params.get("artwork")))
+                                          artwork=bool(params.get("artwork")),
+                                          exclude_labels=params.get("exclude_labels"))
         if kind == "romset":
             return lambda prog: romset(params["profile"], params["path"],
                                        leave_bytes=int(float(params.get("leave_gb") or 0) * 1024 ** 3),
                                        progress=prog, stop=stops["romset"],
-                                       arcade_status=params.get("arcade_status"))
+                                       arcade_status=params.get("arcade_status"),
+                                       exclude_labels=params.get("exclude_labels"))
         if kind == "acquire":
             return lambda prog: acquirer.auto_acquire(progress=prog, watch=bool(params.get("watch")),
                                                       stop=acquirer.STOP)
@@ -786,6 +802,7 @@ def create_app():
                                       "arcade_core": body.get("arcade_core") or "mame",
                                       "arcade_status": body.get("arcade_status"),
                                       "artwork": bool(body.get("artwork")),
+                                      "exclude_labels": body.get("exclude_labels"),
                                       "gates": _export_gates(body.get("gates"))})
 
     @app.get("/api/artwork")
@@ -803,6 +820,34 @@ def create_app():
         return start_job("artwork", {"systems": [s for s in (body.get("systems") or []) if s],
                                      "kinds": kinds or list(artwork.DEFAULT_KINDS),
                                      "refresh": bool(body.get("refresh"))})
+
+    @app.get("/api/labels")
+    def api_labels():
+        """Every label in use with how many games in hand carry it, plus the tags an
+        export can leave out (with what each means) and the default leave-out."""
+        from . import labels
+        return jsonify({"counts": labels.counts(), "tags": labels.TAGS,
+                        "default_exclude": list(labels.DEFAULT_EXCLUDE)})
+
+    @app.post("/api/labels/refresh")
+    def api_labels_refresh():
+        """Re-derive every label from catver.ini and the dump names (seconds)."""
+        from . import labels
+        return jsonify({"labels": labels.refresh()})
+
+    @app.post("/api/labels/override")
+    def api_labels_override():
+        """The owner's word on one label of one game: action add | remove | null (clear)."""
+        from . import labels
+        body = request.get_json(force=True, silent=True) or {}
+        if not body.get("item_id"):
+            return jsonify({"error": "item_id required"}), 400
+        try:
+            labels.set_override(body["item_id"], body.get("label"), body.get("action"))
+        except ValueError as ex:
+            return jsonify({"error": str(ex)}), 400
+        return jsonify({"item_id": body["item_id"],
+                        "labels": labels.for_items([body["item_id"]]).get(body["item_id"], [])})
 
     _ARCADE_CORES = ("mame", "fbneo", "mame2003")
 
@@ -869,7 +914,8 @@ def create_app():
             leave_gb = 0.0
         return start_job("romset", {"profile": body["profile"], "path": path,
                                     "leave_gb": leave_gb,
-                                    "arcade_status": body.get("arcade_status")})
+                                    "arcade_status": body.get("arcade_status"),
+                                    "exclude_labels": body.get("exclude_labels")})
 
     @app.post("/api/organize/plan")
     def api_organize_plan():
@@ -897,7 +943,8 @@ def create_app():
             capacity_bytes=cap, selected=body.get("systems") or [], gates=gates,
             distinct_games=bool(body.get("distinct_games")),
             arcade_core=body.get("arcade_core") or "mame",
-            arcade_status=body.get("arcade_status")))
+            arcade_status=body.get("arcade_status"),
+            exclude_labels=body.get("exclude_labels")))
 
     @app.get("/api/export/profiles")
     def api_export_profiles():

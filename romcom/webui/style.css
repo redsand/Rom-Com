@@ -323,3 +323,10 @@ details .label { color: var(--muted); padding: 6px 12px 0; font-size: 11px; text
 /* Arcade health beside the status: the badge and verdict menu on one line, the reason under it */
 td.health { white-space: nowrap; }
 td.health .sub { white-space: normal; max-width: 240px; }
+
+/* Labels: what a game is (genre + tags), and the export cards' leave-out picker */
+.labels { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 2px; }
+.label-chip { cursor: pointer; }
+.label-chip:hover { text-decoration: line-through; }
+.labels-out { display: inline-flex; flex-wrap: wrap; gap: 2px 10px; vertical-align: middle; }
+.labels-out label { white-space: nowrap; }

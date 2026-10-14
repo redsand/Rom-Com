@@ -226,6 +226,53 @@ async function refreshSystemCounts() {
   } catch (e) { /* counts are a nicety; the library itself still loads */ }
 }
 
+// ---- Labels: what a game is (labels.py). The export and romset cards share one
+// leave-out picker; the library shows the labels and filters by them.
+let labelInfo = null;
+const LABEL_WARN = new Set(["fruit-machine", "gambling", "not-a-game", "mature", "pirate"]);
+const junkLabels = () => labelInfo?.default_exclude || ["fruit-machine", "gambling", "not-a-game"];
+async function loadLabels() {
+  try { labelInfo = await api("/api/labels"); } catch { return; }
+  const c = labelInfo.counts, keep = $("#f-label").value;
+  const genres = Object.keys(c).filter(k => k.startsWith("genre:")).sort();
+  const tags = Object.keys(c).filter(k => !k.startsWith("genre:")).sort((a, b) => c[b] - c[a]);
+  $("#f-label").innerHTML = `<option value="">Any label</option>`
+    + `<optgroup label="Tags">${tags.map(k => `<option value="${esc(k)}">${esc(k)} (${c[k].toLocaleString()})</option>`).join("")}</optgroup>`
+    + `<optgroup label="Arcade genre">${genres.map(k => `<option value="${esc(k)}">${esc(k.slice(6))} (${c[k].toLocaleString()})</option>`).join("")}</optgroup>`;
+  $("#f-label").value = keep;
+  for (const sel of ["#org-labels", "#rom-labels"]) {
+    const was = $(sel).dataset.drawn ? leaveOut(sel) : null;
+    $(sel).innerHTML = Object.entries(labelInfo.tags).map(([k, what]) =>
+      `<label title="${esc(what)}"><input type="checkbox" value="${esc(k)}"> ${esc(k)}${c[k] ? ` <span class="sub">${c[k].toLocaleString()}</span>` : ""}</label>`).join(" ");
+    $(sel).dataset.drawn = "1";
+    setLeaveOut(sel, was);
+  }
+}
+function leaveOut(sel) {
+  if (!$(sel).dataset.drawn) return null;          // not drawn yet: the server's default
+  return [...$(sel).querySelectorAll("input:checked")].map(x => x.value);
+}
+function setLeaveOut(sel, list) {
+  const want = new Set(list ?? junkLabels());
+  $(sel).querySelectorAll("input").forEach(x => { x.checked = want.has(x.value); });
+}
+function labelChips(r) {
+  const labs = r.labels || [];
+  if (!labs.length) return "";
+  return `<div class="labels">${labs.map(l => l.startsWith("genre:")
+      ? `<span class="sub" title="genre (catver.ini)">${esc(l.slice(6))}</span>`
+      : `<span class="badge ${LABEL_WARN.has(l) ? "serious" : ""} label-chip" data-item="${esc(r.id)}" data-label="${esc(l)}" title="${esc(labelInfo?.tags?.[l] || l)} — click to remove it from this game">${esc(l)}</span>`).join(" ")}</div>`;
+}
+document.addEventListener("click", async e => {
+  const chip = e.target.closest(".label-chip");
+  if (!chip) return;
+  if (!confirm(`Remove the label "${chip.dataset.label}" from this game? (Your word sticks across refreshes.)`)) return;
+  try {
+    await post("/api/labels/override", {item_id: chip.dataset.item, label: chip.dataset.label, action: "remove"});
+    chip.remove();
+  } catch (err) { toast(err.message, true); }
+});
+
 function libQuery() {
   const p = new URLSearchParams({limit: lib.limit, offset: lib.offset, view: $("#f-view").value});
   if ($("#f-q").value.trim()) p.set("q", $("#f-q").value.trim());
@@ -234,6 +281,8 @@ function libQuery() {
   if ($("#f-health").value) p.set("health", $("#f-health").value);
   if ($("#f-board").value.trim()) p.set("board", $("#f-board").value.trim());
   if ($("#f-art").value) p.set("art", $("#f-art").value);
+  if ($("#f-label").value) p.set("label", $("#f-label").value);
+  if ($("#f-nojunk").checked) p.set("nolabel", junkLabels().join(","));
   p.set("core", $("#f-core").value);
   p.set("sort", lib.sort);
   p.set("dir", lib.dir);
@@ -285,7 +334,7 @@ function itemRow(r) {
     Array.from({length: 10}, (_, i) => i + 1).map(n =>
       `<option ${n === r.rating ? "selected" : ""}>${n}</option>`).join("") + `</select>`;
   return `<tr data-id="${esc(r.id)}">
-    <td><div>${esc(r.title)}${r.art ? ` <span class="badge good" title="artwork cached: ${esc(r.art)}">art</span>` : ""}</div>${series}<div class="sub">${esc(r.id)}</div></td>
+    <td><div>${esc(r.title)}${r.art ? ` <span class="badge good" title="artwork cached: ${esc(r.art)}">art</span>` : ""}</div>${series}${labelChips(r)}<div class="sub">${esc(r.id)}</div></td>
     <td>${esc(r.system || "—")}</td>
     <td class="r">${r.year || "—"}</td>
     <td>${badge(r.status)} ${statusSel}</td>
@@ -343,7 +392,9 @@ $("#bulk-apply").addEventListener("click", async () => {
   if (!confirm(`${$("#bulk-action").selectedOptions[0].text} for ALL ${lib.total.toLocaleString()} items matching the current filters?`)) return;
   try {
     const filters = {q: $("#f-q").value.trim(), system: $("#f-system").value, status: $("#f-status").value, view: $("#f-view").value,
-                     health: $("#f-health").value, core: $("#f-core").value, board: $("#f-board").value.trim()};
+                     health: $("#f-health").value, core: $("#f-core").value, board: $("#f-board").value.trim(),
+                     label: $("#f-label").value,
+                     nolabel: $("#f-nojunk").checked ? junkLabels().join(",") : ""};
     const r = await post("/api/items/bulk", {field, value, filters});
     toast(`${r.updated.toLocaleString()} items: ${label}`);
     loadLibrary();
@@ -369,7 +420,7 @@ $("#lib-own").addEventListener("click", async () => {
 let debounce;
 $("#f-q").addEventListener("input", () => { clearTimeout(debounce); debounce = setTimeout(() => loadLibrary(), 300); });
 $("#f-view").addEventListener("change", () => { refreshSystemCounts(); loadLibrary(); });
-["#f-system", "#f-status", "#f-health", "#f-core", "#f-art"].forEach(s => $(s).addEventListener("change", () => loadLibrary()));
+["#f-system", "#f-status", "#f-health", "#f-core", "#f-art", "#f-label", "#f-nojunk"].forEach(s => $(s).addEventListener("change", () => loadLibrary()));
 $("#f-board").addEventListener("input", () => { clearTimeout(debounce); debounce = setTimeout(() => loadLibrary(), 300); });
 $("#f-sort").addEventListener("change", () => {
   lib.sort = $("#f-sort").value; lib.dir = NATURAL_DIR[lib.sort] || "asc";
@@ -741,7 +792,7 @@ const orgForm = () => ({name: orgCurrent()?.name, path: $("#org-path").value.tri
                         fill: $("#org-fill").checked, capacity_gb: $("#org-capacity").value || null,
                         distinct_games: $("#org-distinct").checked,
                         arcade_core: $("#org-core").value, arcade_status: $("#org-status").value,
-                        artwork: $("#org-art").checked,
+                        artwork: $("#org-art").checked, exclude_labels: leaveOut("#org-labels"),
                         wipe: $("#org-wipe").checked, gates: orgGates()});
 let orgPendingSystems = null;     // a profile's ticks, applied once the plan has drawn the list
 let orgGatesKnown = false;        // gates come from Settings until the owner or a profile sets them
@@ -764,6 +815,7 @@ function orgApplyProfile(p) {
   $("#org-core").value = p.arcade_core || "mame";
   $("#org-status").value = p.arcade_status || "no_broken";
   $("#org-art").checked = !!p.artwork;
+  setLeaveOut("#org-labels", p.exclude_labels);
   orgSetGates(p.gates || {}); orgGatesKnown = true;
   orgPendingSystems = p.systems || [];
   $("#org-delete").disabled = false;
@@ -774,7 +826,8 @@ async function loadOrgPlan() {
   const picked = orgPendingSystems ?? orgPicked();
   const body = {path: $("#org-path").value.trim(), capacity_gb: $("#org-capacity").value || null,
                 systems: picked, distinct_games: $("#org-distinct").checked,
-                arcade_core: $("#org-core").value, arcade_status: $("#org-status").value};
+                arcade_core: $("#org-core").value, arcade_status: $("#org-status").value,
+                exclude_labels: leaveOut("#org-labels")};
   if (orgGatesKnown) body.gates = orgGates();
   let d;
   try { d = await post("/api/organize/plan", body); }
@@ -862,7 +915,8 @@ $("#org-capacity").addEventListener("change", loadOrgPlan);
 $("#org-fill").addEventListener("change", orgRender);
 $("#org-distinct").addEventListener("change", loadOrgPlan);
 $("#org-core").addEventListener("change", loadOrgPlan);   // "all three" is three times the bytes
-$("#org-status").addEventListener("change", loadOrgPlan); // held-back sets leave the arcade figure
+$("#org-status").addEventListener("change", loadOrgPlan);
+$("#org-labels").addEventListener("change", loadOrgPlan);  // left-out games leave the figures // held-back sets leave the arcade figure
 for (const id of ["#org-g-wanted", "#org-g-keep", "#org-g-rating"])
   $(id).addEventListener("change", () => { orgGatesKnown = true; loadOrgPlan(); });
 
@@ -909,6 +963,7 @@ $("#org-start").addEventListener("click", () => {
                                           arcade_core: $("#org-core").value,
                                           arcade_status: $("#org-status").value,
                                           artwork: $("#org-art").checked,
+                                          exclude_labels: leaveOut("#org-labels"),
                                           wipe: $("#org-wipe").checked, gates: orgGates()});
 });
 
@@ -924,7 +979,8 @@ $("#rom-start").addEventListener("click", () => {
   localStorage.setItem("romcom-romset-path", path);
   startJob("romset", "/api/romset", {profile: $("#rom-profile").value, path,
                                      leave_gb: +$("#rom-leave").value || 0,
-                                     arcade_status: $("#rom-status").value});
+                                     arcade_status: $("#rom-status").value,
+                                     exclude_labels: leaveOut("#rom-labels")});
 });
 
 $("#rom-stop").addEventListener("click", async () => {
@@ -1907,6 +1963,7 @@ function startApp() {
   if (started) return;
   started = true;
   initFacets();
+  loadLabels();     // label filter + the export cards' leave-out pickers
   showTab(location.hash.slice(1) || "dashboard");
   initChatWidget();
   initChat();       // the bubble is on every page, so the chat is not a tab loader

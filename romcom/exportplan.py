@@ -11,6 +11,7 @@ bucketed to 64 MiB it is a few hundred thousand steps.
 """
 import json
 import uuid
+from . import labels
 from .db import connect
 from .organizer import export_systems
 
@@ -45,6 +46,9 @@ def _clean(p):
             "arcade_status": p.get("arcade_status") if p.get("arcade_status") in (
                 "all", "no_broken", "works_only") else None,
             "artwork": bool(p.get("artwork")),
+            # None (never chosen) keeps the default; a list, even empty, is the choice.
+            "exclude_labels": (None if p.get("exclude_labels") is None
+                               else labels.normalize_exclude(p.get("exclude_labels"))),
             "wipe": bool(p.get("wipe"))}
 
 
@@ -106,7 +110,7 @@ def best_fill(sizes, room, forced=()):
 
 
 def plan(capacity_bytes=None, selected=(), gates=None, distinct_games=False,
-         arcade_core="mame", arcade_status=None):
+         arcade_core="mame", arcade_status=None, exclude_labels=None):
     """Smart help for a card of `capacity_bytes`.
 
     Plans against the card's whole size, not its current free space: what is already on
@@ -130,7 +134,8 @@ def plan(capacity_bytes=None, selected=(), gates=None, distinct_games=False,
                           keep_only=gates.get("keep_only"),
                           rating_min=gates.get("rating_min"),
                           distinct_games=distinct_games,
-                          arcade_core=arcade_core, arcade_status=arcade_status)
+                          arcade_core=arcade_core, arcade_status=arcade_status,
+                          exclude_labels=exclude_labels)
     if arcade_core == "all":
         rows = [r | {"bytes": r["bytes"] * 3} if r["system"] == "arcade" else r for r in rows]
     sizes = {r["system"]: r["bytes"] or 0 for r in rows}
@@ -150,7 +155,8 @@ def plan(capacity_bytes=None, selected=(), gates=None, distinct_games=False,
                                            keep_only=True, rating_min=7,
                                            distinct_games=distinct_games,
                                            arcade_core=arcade_core,
-                                           arcade_status=arcade_status)}
+                                           arcade_status=arcade_status,
+                                           exclude_labels=exclude_labels)}
         too_big = [{"system": s, "bytes": sizes[s], "curated_bytes": curated.get(s, 0),
                     "curated_fits": 0 < curated.get(s, 0) <= usable} for s in sorted(big)]
 

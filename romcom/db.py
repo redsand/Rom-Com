@@ -169,6 +169,19 @@ CREATE TABLE IF NOT EXISTS arcade_verdicts (
  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
  PRIMARY KEY(core, setname)
 );
+-- What a game is (labels.refresh): genre plus tags like fruit-machine, hack, not-a-game,
+-- derived from catver.ini for arcade and from the dump's name for everything. Rewritten
+-- whole on refresh, with the owner's label_overrides already applied.
+CREATE TABLE IF NOT EXISTS item_labels (
+ item_id TEXT NOT NULL, label TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'tag',
+ source TEXT, PRIMARY KEY(item_id, label)
+);
+CREATE INDEX IF NOT EXISTS idx_item_labels_label ON item_labels(label);
+-- The owner's word on a label: 'add' or 'remove'; beats whatever refresh derives.
+CREATE TABLE IF NOT EXISTS label_overrides (
+ item_id TEXT NOT NULL, label TEXT NOT NULL, action TEXT NOT NULL,
+ updated_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(item_id, label)
+);
 -- Artwork found for a game (artwork.fetch): a cached image path, or NULL path for a
 -- checked miss (re-tried after a week, not on every run).
 CREATE TABLE IF NOT EXISTS artwork (
