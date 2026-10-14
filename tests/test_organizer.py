@@ -619,7 +619,7 @@ def test_distinct_games_reaches_the_arcade_build(tmp_path, monkeypatch):
     dat = tmp_path / "mame.dat"
     dat.write_text('<?xml version="1.0"?><datafile>\n'
                    '<game name="mslug">\n<rom name="m1.bin" size="16" crc="aaaa1111"/>\n</game>\n'
-                   '<game name="mslugu">\n<rom name="m1.bin" size="16" crc="aaaa1111"/>\n</game>\n'
+                   '<game name="mslugu" cloneof="mslug" romof="mslug">\n<rom name="m1.bin" size="16" crc="aaaa1111"/>\n</game>\n'
                    '</datafile>', encoding="utf-8")
     db = _romset_env(monkeypatch, tmp_path, {"mame": dat},
                      {"m1.bin": "aaaa1111", "m1 (2).bin": "aaaa1111"})
@@ -787,3 +787,46 @@ def test_clone_pruning_survives_chains_and_scores_the_family(tmp_path, monkeypat
     assert (arcade / "sf2ce.zip").exists()
     assert not (arcade / "sf2.zip").exists() and not (arcade / "sf2ced.zip").exists()
     assert r["clones_pruned"] == {"mame": {"sf2": "sf2ce", "sf2ced": "sf2ce"}}
+
+
+def test_a_set_whose_chips_belong_to_siblings_still_reaches_the_card(tmp_path, monkeypatch):
+    """A chip shared by many sets records one owner, so mspacman — every chip owned by a
+    sibling — had no file row and never reached a card, complete or not. A playable set
+    with no file of its own is selected by its item."""
+    dat = tmp_path / "mame.dat"
+    dat.write_text('<?xml version="1.0"?><datafile>\n'
+                   '<game name="pacman">\n<rom name="p.bin" size="16" crc="aaaa1111"/>\n</game>\n'
+                   '<game name="mspacman">\n<rom name="p.bin" size="16" crc="aaaa1111"/>\n</game>\n'
+                   '</datafile>', encoding="utf-8")
+    db = _romset_env(monkeypatch, tmp_path, {"mame": dat}, {"p.bin": "aaaa1111"})
+    with db:
+        db.execute("INSERT INTO items(id,title,system,external_id,status) "
+                   "VALUES('p','Pac-Man','arcade','arcade/pacman','VERIFIED')")
+        db.execute("INSERT INTO items(id,title,system,external_id,status,playable) "
+                   "VALUES('ms','Ms. Pac-Man','arcade','arcade/mspacman','VERIFIED',1)")
+        db.execute("UPDATE files SET matched_item_id='p'")
+    organize(tmp_path / "sd", arcade_status="all")
+    assert (tmp_path / "sd" / "arcade" / "mspacman.zip").exists()
+
+
+def test_a_bootleg_never_takes_its_familys_slot_from_the_real_game(tmp_path, monkeypatch):
+    from romcom import labels
+    dat = tmp_path / "mame.dat"
+    dat.write_text('<?xml version="1.0"?><datafile>\n'
+                   '<game name="mslug5">\n<rom name="a.bin" size="16" crc="aaaa1111"/>\n</game>\n'
+                   '<game name="ms5plus" cloneof="mslug5" romof="mslug5">\n'
+                   '<rom name="b.bin" size="16" crc="bbbb2222"/>\n</game>\n'
+                   '</datafile>', encoding="utf-8")
+    db = _romset_env(monkeypatch, tmp_path, {"mame": dat}, {"a.bin": "aaaa1111", "b.bin": "bbbb2222"})
+    monkeypatch.setattr(labels, "catver_path", lambda: None)
+    with db:
+        for iid, s, title, chip, score in (
+                ("a", "mslug5", "Metal Slug 5", "a.bin", 60),
+                ("b", "ms5plus", "Metal Slug 5 Plus (bootleg)", "b.bin", 90)):
+            db.execute("INSERT INTO items(id,title,system,external_id,community_score) "
+                       "VALUES(?,?,'arcade',?,?)", (iid, title, f"arcade/{s}", score))
+            db.execute("UPDATE files SET matched_item_id=? WHERE path LIKE ?", (iid, f"%{chip}"))
+    labels.refresh(db)
+    organize(tmp_path / "sd", distinct_games=True, arcade_status="all")
+    built = sorted(p.stem for p in (tmp_path / "sd" / "arcade").glob("*.zip"))
+    assert built == ["mslug5"]

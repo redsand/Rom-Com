@@ -83,7 +83,9 @@ def _prune_clones(db, core, sets):
     titles: two sets of one MAME rom family must not both reach the card, however much
     their titles differ (doa2 beside doa2m, bloodstm beside bloodstm104). Every requested
     set is chased up its cloneof chain to its family root; each family with several
-    members keeps its best-scored one, ties preferring the parent, then the first name."""
+    members keeps a proper release over a bootleg or hack (ms5plus took Metal Slug 5's
+    slot on score alone), then the best-scored, ties preferring the parent, then the
+    first name."""
     from . import mameset
     path = mameset.dat_path(core)
     if not path:
@@ -99,6 +101,8 @@ def _prune_clones(db, core, sets):
             r = family[r]
         root[s] = r
     scores = _set_scores(db, sets)
+    from . import labels
+    rough = labels.excluded_sets(sets, ["bootleg", "hack"], db)
     fam = {}
     for s in sets:
         fam.setdefault(root[s], []).append(s)
@@ -106,7 +110,8 @@ def _prune_clones(db, core, sets):
     for members in fam.values():
         if len(members) < 2:
             continue
-        best = min(members, key=lambda m: (-scores.get(m, 0), 0 if m == root[m] else 1, m))
+        best = min(members, key=lambda m: (m in rough, -scores.get(m, 0),
+                                           0 if m == root[m] else 1, m))
         for m in members:
             if m != best:
                 drop[m] = best
@@ -140,11 +145,26 @@ def _selection(wanted_only=False, keep_only=False, rating_min=None, exclude_labe
     collects how many items each system lost that way."""
     from . import labels
     db = connect()
+    args = _gate_args(wanted_only, keep_only, rating_min)
     rows = db.execute(
         "SELECT f.path, f.bytes, f.sha1, f.md5, f.match_method, i.id item_id, "
         "i.system, i.title, i.external_id, i.rating, i.community_score"
-        + _GATED + _ORDER,
-        _gate_args(wanted_only, keep_only, rating_min)).fetchall()
+        + _GATED + _ORDER, args).fetchall()
+    # An arcade set is built from the dat by hash, not copied from its matched files — and
+    # a chip shared by many sets records one owner, so a set whose every chip is owned by
+    # a sibling had no row here and never reached a card, complete or not: mspacman,
+    # puckman, atetris, mslug5. Playable sets with no file of their own join as one
+    # file-less row each, under the same gates, in the same score order.
+    orphans = db.execute(
+        "SELECT NULL path, 0 bytes, NULL sha1, NULL md5, 'set' match_method, i.id item_id, "
+        "i.system, i.title, i.external_id, i.rating, i.community_score FROM items i"
+        " WHERE i.system='arcade' AND i.playable=1 AND COALESCE(i.is_device,0)=0"
+        " AND NOT EXISTS (SELECT 1 FROM files f WHERE f.matched_item_id=i.id)"
+        " AND " + _GATED.split(" WHERE ", 1)[1], args).fetchall()
+    if orphans:
+        rows = sorted([*rows, *orphans], key=lambda r: (-_score(r), r["system"] or "",
+                                                        r["title"] or "", r["item_id"],
+                                                        r["path"] or ""))
     drop = labels.excluded_items(exclude_labels, db)
     if not drop:
         return rows
@@ -414,7 +434,10 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         arcade_rows = [r for r in arcade_rows
                        if (r["external_id"] or "").split("/", 1)[-1] not in dead]
     if distinct_games and arcade_rows:
-        arcade_rows, arcade_dupes_skipped = _canonical(arcade_rows, True)
+        # Same bytes only: arcade's one-copy-per-game is the dat's clone book
+        # (`_prune_clones` below). By title, Sega's tetris and Atari's atetris were one
+        # game and only one reached the card.
+        arcade_rows, arcade_dupes_skipped = _canonical(arcade_rows, False)
     arcade_sets = list(dict.fromkeys(
         (r["external_id"] or "").split("/", 1)[-1] for r in arcade_rows))
     # Each core has its own romset book, so the clone pruning is per core: two sets of
