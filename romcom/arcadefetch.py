@@ -363,6 +363,36 @@ def _chd_header_sha1(s, url):
 
 # ---------------------------------------------------------------- fetching
 
+class ZipCache:
+    """Downloaded zips kept for the next set that needs the same one (a parent's merged
+    zip serves its clones) — bounded by bytes, oldest out first. It was a plain dict for
+    the whole run: Repair -> Queue armed 918 sets, each zip several MB and Neo Geo ones
+    past 100, and the service grew without limit until the machine ran out of memory."""
+    def __init__(self, max_bytes=96 << 20):
+        from collections import OrderedDict
+        self.max_bytes, self.size, self._d = max_bytes, 0, OrderedDict()
+
+    def get(self, url):
+        data = self._d.get(url)
+        if data is not None:
+            self._d.move_to_end(url)
+        return data
+
+    def __setitem__(self, url, data):
+        if url in self._d:
+            self.size -= len(self._d.pop(url))
+        if len(data) > self.max_bytes:
+            return                      # one huge zip is used now and not kept
+        self._d[url] = data
+        self.size += len(data)
+        while self.size > self.max_bytes:
+            _, old = self._d.popitem(last=False)
+            self.size -= len(old)
+
+    def __len__(self):
+        return len(self._d)
+
+
 def dest_root():
     from .config import settings
     base = (settings().get("download_dir") or "").strip()
@@ -481,7 +511,7 @@ def fetch_set(setname, ctx, s=None, progress=None):
     return rep
 
 
-def context(db=None, dest=None, core="mame"):
+def context(db=None, dest=None, core="mame", share=None):
     """What a run of fetches shares: `core`'s dat (whose chip list is the one judged),
     what the library holds, and where chips land — a core of its own gets its own
     folder under arcade-patches, so a 2003-era chip never sits beside the current one
@@ -493,12 +523,17 @@ def context(db=None, dest=None, core="mame"):
     dat = mameset.dat_path(core)
     if not dat:
         raise ValueError(f"no dat installed for {core}")
-    sha, crc = _have(db)
     root = Path(dest) if dest else dest_root()
     if core != "mame" and not dest:
         root = root / core
+    if share:
+        # Another core's run over the same library: one copy of what the library holds,
+        # one zip cache — not three of each held at once.
+        return {"machines": parse(dat), "sha": share["sha"], "crc": share["crc"],
+                "core": core, "chds": share["chds"], "dest": root, "zips": share["zips"]}
+    sha, crc = _have(db)
     return {"machines": parse(dat), "sha": sha, "crc": crc, "core": core,
-            "chds": chd_index(db), "dest": root, "zips": {}}
+            "chds": chd_index(db), "dest": root, "zips": ZipCache()}
 
 
 def finish(ctx, db=None, progress=None):
@@ -508,7 +543,7 @@ def finish(ctx, db=None, progress=None):
     from .db import connect
     if not ctx["dest"].exists():
         return {}
-    r = scan(str(ctx["dest"]), name_match=True, adopt=True)
+    r = scan(str(ctx["dest"]), name_match=False, adopt=True)
     db = db or connect()
     return {"scan": {k: r.get(k) for k in ("files", "matched", "adopted") if k in r},
             "health": arcadehealth.evaluate_all(db=db)}

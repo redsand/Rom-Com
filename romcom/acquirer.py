@@ -387,14 +387,15 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
             ctx = arcade["ctx"].get(core)
             if ctx is None:
                 try:
-                    ctx = arcade["ctx"][core] = arcadefetch.context(core=core)
+                    first = next((c_ for c_ in arcade["ctx"].values() if c_), None)
+                    ctx = arcade["ctx"][core] = arcadefetch.context(core=core, share=first)
                 except Exception:
                     ctx = arcade["ctx"][core] = False      # no dat for this core: skip it
             if not ctx or (core != "mame" and setname not in ctx["machines"]):
                 continue
             r = arcadefetch.fetch_set(setname, ctx)
             if r["chips"] or r["disks"]:
-                scan(str(ctx["dest"]), name_match=True, adopt=True)
+                scan(str(ctx["dest"]), name_match=False, adopt=True)
             if out is None:
                 out = r
             else:

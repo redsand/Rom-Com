@@ -189,3 +189,16 @@ def test_a_core_tries_its_own_romset_before_mames(monkeypatch):
     fb = [l for l, _ in af._zip_sources(None, ["1942"], {}, None, "fbneo")]
     assert fb[0] == "retroarch-fbneo-romset-complete/1942.zip"
     assert [l for l, _ in af._zip_sources(None, ["1942"], {}, None)] == [f"{af.CURRENT_ITEM}/1942.zip"]
+
+
+def test_the_zip_cache_is_bounded_by_bytes():
+    """Kept zips are capped: Repair -> Queue's 918 sets once grew the service until the
+    machine ran out of memory."""
+    c = af.ZipCache(max_bytes=10)
+    c["a"] = b"12345"
+    c["b"] = b"12345"
+    assert c.get("a") == b"12345"        # touched: b is now the oldest
+    c["c"] = b"123"
+    assert c.get("b") is None and c.get("a") and c.get("c") and c.size <= 10
+    c["huge"] = b"x" * 11
+    assert c.get("huge") is None and c.size <= 10
