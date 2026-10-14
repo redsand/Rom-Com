@@ -120,7 +120,12 @@ BUILDBOT = "https://buildbot.libretro.com/nightly/windows/x86_64/latest/{core}.d
 BIOS = {
     "dreamcast": {"label": "Dreamcast",
                   "slots": [["dc_boot.bin"], ["dc_flash.bin"]],
-                  "why": "Flycast cannot boot a single game without both files"},
+                  # Flycast has carried an HLE BIOS for years: with no dc_boot.bin it boots
+                  # games on its own (libretro's docs list both files as optional). The real
+                  # BIOS still helps the odd game and shows the boot animation.
+                  "optional": True,
+                  "why": "optional: Flycast boots games with its built-in HLE BIOS; the real "
+                         "dc_boot.bin + dc_flash.bin help a few games and add the boot screen"},
     "saturn":    {"label": "Saturn",
                   "slots": [["sega_101.bin", "sega_102.bin"]],
                   "why": "Beetle Saturn boots nothing without the console BIOS "
@@ -242,9 +247,10 @@ def bios_status(db=None):
             continue
         rows.append({"system": system, "label": BIOS[system]["label"],
                      "why": BIOS[system]["why"], "games": games,
+                     "optional": bool(BIOS[system].get("optional")),
                      "have": sorted(report["picked"].get(system, {})),
                      "missing": list(report["missing"].get(system, []))})
-    missing = [r for r in rows if r["missing"]]
+    missing = [r for r in rows if r["missing"] and not r["optional"]]
     rows.sort(key=lambda r: (not r["missing"], -r["games"]))
     return {"rows": rows, "missing": missing, "missing_count": len(missing),
             "games_blocked": sum(r["games"] for r in missing)}

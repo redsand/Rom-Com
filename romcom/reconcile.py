@@ -58,3 +58,71 @@ def reacquire_mismatches(system=None, db=None):
     with db:
         cur = db.execute(q, args)
     return cur.rowcount
+
+
+def wrong_downloads(apply=False, db=None):
+    """Website downloads that were never the game asked for: another title sharing a few
+    words, or the same title for another platform (a 538 MB Wii ISO filed as a DS game).
+    Judged by the same two checks that now guard every download — indexer.plausible on
+    the result's name and size, verify.check_download on what is on disk. Hash-verified
+    files are proof and never judged.
+
+    `apply` lets go of each wrong file (the item goes back to MISSING, so the acquirer —
+    guarded now — fetches the right one; its ledger already refuses the bad url) and
+    records why. Nothing is deleted: the report lists the files and their size, for the
+    owner to remove."""
+    from pathlib import Path
+    from .indexer import plausible, CART_MAX_BYTES
+    from .verify import check_download
+    db = db or connect()
+    by_name = None
+    bad = {}
+    for j in db.execute("""SELECT j.entity_id, j.result_title, j.bytes, i.title, i.system, i.status
+                           FROM jobs j JOIN items i ON i.id=j.entity_id
+                           WHERE j.entity_type='item' AND j.status='DOWNLOADED' AND j.nzo_id IS NULL
+                             AND i.status IN ('DOWNLOADED','FOUND')"""):
+        files = [r["path"] for r in db.execute(
+            "SELECT path FROM files WHERE matched_item_id=? AND COALESCE(match_method,'') NOT LIKE 'hash%'",
+            (j["entity_id"],))]
+        if not files:
+            # Marked downloaded, yet no file claims the item: the scanner gave the file to a
+            # same-named game on another console. Find it by the name it was saved under.
+            if by_name is None:
+                by_name = {}
+                for r in db.execute("SELECT path FROM files"):
+                    by_name.setdefault(Path(r["path"]).name.lower(), []).append(r["path"])
+            files = by_name.get((j["result_title"] or "").lower(), [])
+        why = None
+        cap = CART_MAX_BYTES.get((j["system"] or "").lower())
+        if cap and (j["bytes"] or 0) > cap:
+            why = f"{(j['bytes'] or 0) >> 20} MB is bigger than any {j['system']} cartridge"
+        elif not plausible(j["title"], j["system"], j["result_title"], j["bytes"] or 0):
+            why = f"'{j['result_title']}' is another game"
+        for f in files:
+            if why is None and Path(f).exists():
+                ok, reason = check_download(f, j["system"])
+                why = None if ok else reason
+        if why and files:
+            bad[j["entity_id"]] = {"title": j["title"], "system": j["system"], "why": why,
+                                   "files": files}
+    total = 0
+    for iid, b in bad.items():
+        # A file can be wrong here and right elsewhere (a PS1 disc fetched for a Dreamcast
+        # game, since matched to the PS1 one): only a file nothing else claims is the
+        # owner's to delete.
+        b["orphans"] = [f for f in b["files"] if Path(f).exists() and not db.execute(
+            "SELECT 1 FROM files WHERE path=? AND matched_item_id IS NOT NULL "
+            "AND matched_item_id<>?", (f, iid)).fetchone()]
+        b["bytes"] = sum(Path(f).stat().st_size for f in b["orphans"])
+        total += b["bytes"]
+    if apply and bad:
+        with db:
+            for iid, b in bad.items():
+                db.executemany("UPDATE files SET matched_item_id=NULL, match_method=NULL "
+                               "WHERE path=? AND matched_item_id=?", [(f, iid) for f in b["files"]])
+                db.execute("UPDATE items SET status='MISSING', updated_at=CURRENT_TIMESTAMP "
+                           "WHERE id=? AND status IN ('DOWNLOADED','FOUND')", (iid,))
+                db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
+                           (iid, "wrong-download", f"{b['why']}: {'; '.join(b['files'])[:400]}"))
+    return {"count": len(bad), "bytes": total, "applied": bool(apply),
+            "items": sorted(bad.values(), key=lambda b: -b["bytes"])}

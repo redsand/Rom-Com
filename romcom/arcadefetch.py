@@ -52,6 +52,20 @@ PLANETEMU = "https://www.planetemu.net"
 PLANETEMU_SECTION = "mame-roms-merged"
 BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/129.0 Safari/537.36")
+# The other cores' own romsets, tried before any MAME source: FBNeo and MAME 2003-Plus
+# keep chips MAME has since re-dumped or renamed (2003-Plus is MAME 0.78, from 2003), so a
+# current MAME zip often lacks exactly the CRC their dat asks for. ("folder", item, dir):
+# one real zip per set; ("member", item, container): one zip per set inside a big zip,
+# served member by member.
+CORE_SOURCES = {
+    "fbneo": [("member", "retroarch-fbneo-romset-complete", c) for c in (
+        "roms/FBNeo - Arcade Games (Parent Roms).zip",
+        "roms/FBNeo - Arcade Games (Clone Roms).zip",
+        "roms/SNK - Neo Geo (FBNeo Parents).zip",
+        "roms/SNK - Neo Geo (FBNeo Clones).zip")],
+    "mame2003": [("folder", "MAME_2003-Plus_Reference", "roms"),
+                 ("folder", "mame-2003-plus-reference-set", "roms")],
+}
 LISTING_DAYS = 7
 _lock = threading.Lock()
 _mem = {}
@@ -256,10 +270,29 @@ def planetemu_download(page):
     raise OSError(f"Planet Emulation's download quota stayed closed for {page['filename']}")
 
 
-def _zip_sources(s, owners, machines, wanted=None):
-    """(label, url) of every zip worth opening for these owners, in source order. A url
-    "planetemu:<set>" is fetched through Planet Emulation's download form."""
+def _core_sources(s, owners, core):
+    """(label, url) of `core`'s own romset zips for these owners."""
     out = []
+    for kind, item, where in CORE_SOURCES.get(core, []):
+        if kind == "folder":
+            files = item_files(s, item)
+            for o in owners:
+                if f"{where}/{o}.zip" in files:
+                    out.append((f"{item}/{o}.zip", _url(item, where, f"{o}.zip")))
+        else:
+            members = set(zip_members(s, item, where))
+            for o in owners:
+                if f"{o}.zip" in members:
+                    out.append((f"{item}/{o}.zip", _url(item, where, f"{o}.zip")))
+    return out
+
+
+def _zip_sources(s, owners, machines, wanted=None, core="mame"):
+    """(label, url) of every zip worth opening for these owners, in source order. A url
+    "planetemu:<set>" is fetched through Planet Emulation's download form. A core other
+    than MAME tries its own romset first; MAME's sources follow, since most chips are the
+    same chip under the same CRC whichever emulator reads them."""
+    out = _core_sources(s, owners, core)
     for o in owners:
         files = item_files(s, f"arcade_{o}")
         for name in sorted(files, key=lambda n: (n != f"{o}.zip", n)):
@@ -348,9 +381,11 @@ def fetch_set(setname, ctx, s=None, progress=None):
     one set brought is not fetched again for the next). Returns a report."""
     s = s or _session()
     machines, have_sha, have_crc, chds = ctx["machines"], ctx["sha"], ctx["crc"], ctx["chds"]
-    rep = {"set": setname, "chips": [], "disks": [], "sources": [], "missing": [], "errors": []}
+    core = ctx.get("core", "mame")
+    rep = {"set": setname, "core": core, "chips": [], "disks": [], "sources": [],
+           "missing": [], "errors": []}
     if setname not in machines:
-        rep["errors"].append("not in the MAME dat")
+        rep["errors"].append(f"not in the {core} dat")
         return rep
     want = needs(setname, machines, have_sha, have_crc, chds)
     if not want["chips"] and not want["disks"]:
@@ -359,7 +394,7 @@ def fetch_set(setname, ctx, s=None, progress=None):
     root = ctx["dest"]
     chips = dict(want["chips"])
     if chips:
-        for label, url in _zip_sources(s, owners, machines, chips):
+        for label, url in _zip_sources(s, owners, machines, chips, core):
             if not chips:
                 break
             data = ctx["zips"].get(url)
@@ -446,14 +481,24 @@ def fetch_set(setname, ctx, s=None, progress=None):
     return rep
 
 
-def context(db=None, dest=None):
+def context(db=None, dest=None, core="mame"):
+    """What a run of fetches shares: `core`'s dat (whose chip list is the one judged),
+    what the library holds, and where chips land — a core of its own gets its own
+    folder under arcade-patches, so a 2003-era chip never sits beside the current one
+    of the same name."""
     from . import mameset
     from .arcadehealth import parse, _have, chd_index
     from .db import connect
     db = db or connect()
+    dat = mameset.dat_path(core)
+    if not dat:
+        raise ValueError(f"no dat installed for {core}")
     sha, crc = _have(db)
-    return {"machines": parse(mameset.dat_path("mame")), "sha": sha, "crc": crc,
-            "chds": chd_index(db), "dest": Path(dest) if dest else dest_root(), "zips": {}}
+    root = Path(dest) if dest else dest_root()
+    if core != "mame" and not dest:
+        root = root / core
+    return {"machines": parse(dat), "sha": sha, "crc": crc, "core": core,
+            "chds": chd_index(db), "dest": root, "zips": {}}
 
 
 def finish(ctx, db=None, progress=None):
@@ -469,9 +514,9 @@ def finish(ctx, db=None, progress=None):
             "health": arcadehealth.evaluate_all(db=db)}
 
 
-def fetch_sets(setnames, db=None, progress=None, scan_after=True):
+def fetch_sets(setnames, db=None, progress=None, scan_after=True, core="mame"):
     """Fetch for several sets with one shared context, then scan and re-judge once."""
-    ctx = context(db)
+    ctx = context(db, core=core)
     s = _session()
     reports = []
     for i, name in enumerate(setnames):

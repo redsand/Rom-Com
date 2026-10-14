@@ -99,6 +99,25 @@ def check_download(path, system, sample=40):
             except (OSError, zipfile.BadZipFile):
                 pass                     # unreadable archive: judge it by its own name
 
+    # The same title on another platform is the commonest wrong fetch: 538 MB Wii and PS2
+    # ISOs named exactly like a DS game, a 19 GB Wii U archive. A cartridge system never
+    # arrives as a disc image or past its biggest cart, and a disc console's own stamp
+    # (sniff) names the console a disc is for.
+    from . import sniff
+    from .indexer import CART_MAX_BYTES
+    sysl = (system or "").lower()
+    cap = CART_MAX_BYTES.get(sysl)
+    if cap:
+        size = (sum(f.stat().st_size for f in p.rglob("*") if f.is_file()) if p.is_dir()
+                else p.stat().st_size)
+        if size > cap:
+            return False, f"{size // (1 << 20)} MB is bigger than any {system} cartridge"
+        discs = sorted({Path(n).suffix.lower() for n in names} & sniff.DISC_IMAGES)
+        if discs:
+            return False, f"a disc image ({', '.join(discs)}) is not a {system} cartridge"
+    elif sysl in sniff.CHECKED and p.is_file():
+        if sniff.consistent(sniff.evidence(p), sysl) is False:
+            return False, f"the disc inside is not a {system} disc"
     kinds = [classify(n, system) for n in names]
     if "game" in kinds:
         return True, None

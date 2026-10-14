@@ -28,6 +28,10 @@ SEVENZIP = r"C:\Program Files\7-Zip\7z.exe"
 # extension check in the scanner already does this job, and they have no disc stamp.
 CHECKED = ("ps3", "ps2", "ps1", "psp", "wii", "gamecube")
 
+# Disc-image file types: never a cartridge game, whatever the file is called.
+DISC_IMAGES = {".iso", ".cue", ".chd", ".gdi", ".cdi", ".rvz", ".wbfs", ".wia", ".gcz",
+               ".cso", ".mdf", ".nrg"}
+
 HEAD = 0x8030  # through the ISO 9660 primary volume descriptor's system id
 
 _PC = (".exe", ".dll", ".cab", ".msi", ".inf")

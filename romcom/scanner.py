@@ -3,6 +3,8 @@ import hashlib, re, zipfile, zlib
 from .db import connect, NOT_CONTENT_EXTS
 from .status import promote, own
 from . import sniff
+from .indexer import CART_MAX_BYTES
+
 
 CHUNK=1024*1024
 
@@ -141,8 +143,11 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
             if cand:
                 ext_sys = EXT_SYSTEM.get(p.suffix.lower())
                 row = db.execute("SELECT system FROM items WHERE id=?", (cand,)).fetchone()
+                cap = CART_MAX_BYTES.get((row["system"] or "").lower()) if row else None
                 if ext_sys and row and (row["system"] or "").lower() != ext_sys:
                     cand = None
+                elif cap and (st.st_size > cap or p.suffix.lower() in sniff.DISC_IMAGES):
+                    cand = None     # a disc image or a 5 GB file is never that cartridge game
                 elif row and (row["system"] or "").lower() in sniff.CHECKED:
                     # Disc consoles stamp their discs: a PC installer or a PS1 bin/cue
                     # that shares a PS3 game's name is vetoed by what's inside, and the

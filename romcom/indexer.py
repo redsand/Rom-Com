@@ -155,6 +155,54 @@ def rank(results,queries,kind="item",min_bytes=None,max_bytes=None):
         ranked.append(dict(r,score=score))
     return sorted(ranked,key=lambda x:(x["score"],x.get("size",0)),reverse=True)
 
+# The biggest a cartridge dump of each system gets, with room to spare (zipped or not). A
+# website result past it is not that game: a 28 MB "Black Dragon" for the NES was a PC
+# adventure. Disc systems have no useful ceiling and are left out.
+CART_MAX_BYTES = {
+    "nes": 4 << 20, "fds": 4 << 20, "snes": 12 << 20, "gb": 4 << 20, "gbc": 8 << 20,
+    "gba": 64 << 20, "n64": 96 << 20, "genesis": 12 << 20, "megadrive": 12 << 20,
+    "mastersystem": 2 << 20, "gamegear": 2 << 20, "sg1000": 1 << 20, "32x": 8 << 20,
+    "atari2600": 1 << 20, "atari5200": 1 << 20, "atari7800": 1 << 20, "lynx": 2 << 20,
+    "pcengine": 4 << 20, "ngp": 8 << 20, "neogeopocket": 8 << 20,
+    "neogeopocketcolor": 8 << 20, "wonderswan": 16 << 20, "wonderswancolor": 16 << 20,
+    "virtualboy": 4 << 20, "colecovision": 1 << 20, "intellivision": 1 << 20,
+    "nds": 512 << 20,
+}
+_FILLER = frozenset("the a an of and in on to for de la le les no wa version edition game".split())
+
+
+def _plain(s):
+    """Lowercase words with apostrophes and dots closed up: "Gilligan's" -> gilligans,
+    "G.I. Joe" -> gi joe — sites spell titles without them."""
+    return re.findall(r"[a-z0-9]+", re.sub(r"['’.]", "", (s or "").lower()))
+
+
+def plausible(title, system, cand_title, size=0):
+    """Can this website result be the item at all? The ranker counts shared words, and
+    'Age of Darkness (World) (Demo 3)' shares three with 'World Of Warcraft 3.85' — so
+    the name's own words (before its brackets) must mostly be in the result (a third may
+    differ: romanization, a site's cut-off title), or the two must read as one spelling;
+    and the file must fit the system's cartridge size."""
+    cap = CART_MAX_BYTES.get((system or "").lower())
+    if cap and size and size > cap:
+        return False
+    main = re.split(r"[(\[]", title or "", maxsplit=1)[0]
+    words = [w for w in _plain(main) if w not in _FILLER]
+    if not words:
+        return True
+    cand = _plain(re.sub(r"\.[a-z0-9]{2,4}$", "", (cand_title or "").lower()))
+    while len(cand) > 1 and cand[0].isdigit() and len(cand[0]) >= 3 and cand[0] not in words:
+        cand = cand[1:]                       # a site's catalogue number ("0547 ...")
+    have = set(cand)
+    if len([w for w in words if w not in have]) <= len(words) // 3:
+        return True
+    a, b = "".join(words), "".join(w for w in cand if w not in _FILLER)
+    if a in b:
+        return True                           # 'Mega Man' found as 'megaman'
+    from difflib import SequenceMatcher
+    return SequenceMatcher(None, a, b).ratio() >= 0.8
+
+
 def search_entity(db,entity_type,entity_id,limit=50):
     if entity_type=="item":
         e=db.execute("SELECT * FROM items WHERE id=?",(entity_id,)).fetchone()

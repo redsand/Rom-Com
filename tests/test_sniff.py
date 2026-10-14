@@ -104,3 +104,31 @@ def test_a_vetoed_disc_two_lands_on_disc_two_and_dreamcast_images_on_dreamcast(t
     got = {r["path"].replace("\\", "/").rsplit("/", 1)[-1]: r["matched_item_id"]
            for r in db.execute("SELECT path, matched_item_id FROM files")}
     assert got == {"Xenogears (Japan) (Disc 2).zip": "x2", "MDK2.zip": "d"}
+
+
+def test_a_website_result_must_be_the_same_game_and_fit_the_cartridge():
+    """Real wrong fetches from the archive source: a PC game for an NES demo, a 28 MB PC
+    adventure for an NES cart. Spelling and numbering differences still pass."""
+    from romcom.indexer import plausible
+    assert not plausible("Age of Darkness (World) (Demo 3)", "nes", "World Of Warcraft 3.85.rar", 7_800_000)
+    assert not plausible("Black Dragon (Korea)", "nes", "The Black Dragon Case.zip", 28_000_000)
+    assert plausible("Mega Man 2 (USA)", "nes", "Megaman 2.zip", 100_000)
+    assert plausible("Street Fighter II - The World Warrior (USA)", "snes",
+                     "Street Fighter 2 The World Warrior.zip", 2_000_000)
+    assert plausible("Crazy Taxi 2 (Japan) (En,Ja)", "dreamcast", "Crazy Taxi 2 (USA).zip", 142_000_000)
+
+
+def test_a_download_for_the_wrong_platform_is_refused(tmp_path):
+    from romcom.verify import check_download
+    iso = _zip(tmp_path / "Bratz - 4 Real.zip", ["bratz 4 real.iso"])
+    ok, why = check_download(iso, "nds")
+    assert not ok and "disc image" in why
+    big = tmp_path / "Black Dragon Case.zip"
+    with zipfile.ZipFile(big, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("game.nes", b"\0" * (5 << 20))
+    ok, why = check_download(big, "nes")
+    assert not ok and "cartridge" in why
+    pc = _zip(tmp_path / "Call of Duty Black Ops.zip", ["main/iw_00.iwd", "BlackOps.exe"])
+    assert check_download(pc, "ps3")[0] is False
+    good = _zip(tmp_path / "Mega Man 2.zip", ["Mega Man 2 (USA).nes"])
+    assert check_download(good, "nes")[0] is True

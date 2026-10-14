@@ -133,8 +133,20 @@ def cmd_cache(a):
         print(json.dumps(searchcache.stats(),indent=2))
 
 def cmd_reconcile(a):
-    from .reconcile import reconcile, reacquire_mismatches
-    if a.reacquire:
+    from .reconcile import reconcile, reacquire_mismatches, wrong_downloads
+    if a.wrong_downloads:
+        r = wrong_downloads(apply=a.apply)
+        for b in r["items"]:
+            print(f"{b['system']:10} {b['title'][:50]:50} {b['bytes'] // (1 << 20):>7} MB  {b['why'][:90]}")
+        print(f"{r['count']} wrong download(s), {r['bytes'] / (1 << 30):.1f} GB"
+              + (" no other game uses — let go and re-armed" if r["applied"]
+                 else " no other game uses — run again with --apply to let go of them"))
+        if r["applied"]:
+            print("files nothing claims (safe to delete):")
+            for b in r["items"]:
+                for f in b["orphans"]:
+                    print("  " + f)
+    elif a.reacquire:
         print(f"Re-armed {reacquire_mismatches(a.system)} mismatch item(s) as MISSING for re-acquisition")
     else:
         print(json.dumps(reconcile(),indent=2))
@@ -422,7 +434,7 @@ def cmd_arcade_fetch(a):
         print("name the sets to fetch, or --broken for every owned broken set on --core"); return 1
     if a.limit:
         sets = sets[:a.limit]
-    r = arcadefetch.fetch_sets(sets, progress=print)
+    r = arcadefetch.fetch_sets(sets, progress=print, core=a.core or "mame")
     for x in r["sets"]:
         if x["chips"] or x["disks"] or x["missing"] or x["errors"]:
             print(f"{x['set']}: +{len(x['chips'])} chip(s) +{len(x['disks'])} CHD(s)"
@@ -609,7 +621,10 @@ def main():
     cs=s.add_parser("catalog-status"); cs.add_argument("--strict",action="store_true"); cs.set_defaults(fn=cmd_catalog_status)
     cc=s.add_parser("cache"); cc.add_argument("action",choices=["stats","clear"],nargs="?",default="stats"); cc.add_argument("--source"); cc.set_defaults(fn=cmd_cache)
     vm=s.add_parser("vimm"); vm.add_argument("action",choices=["capture"],nargs="?",default="capture"); vm.set_defaults(fn=cmd_vimm)
-    rc=s.add_parser("reconcile"); rc.add_argument("--reacquire",action="store_true"); rc.add_argument("--system"); rc.set_defaults(fn=cmd_reconcile)
+    rc=s.add_parser("reconcile"); rc.add_argument("--reacquire",action="store_true"); rc.add_argument("--system")
+    rc.add_argument("--wrong-downloads",action="store_true",help="website downloads that are another game or another platform")
+    rc.add_argument("--apply",action="store_true",help="with --wrong-downloads: let go of them and re-arm the items")
+    rc.set_defaults(fn=cmd_reconcile)
     a=p.parse_args(); a.fn(a)
 
 if __name__=="__main__": main()

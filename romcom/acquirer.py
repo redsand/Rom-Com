@@ -374,23 +374,47 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
     # says exactly what is missing and archive.org's MAME items hold it. One fetch at a
     # time (a shared context: the dat parsed once, chips one set brought counted for the
     # next), and the health check re-judges once at the end of the sweep.
-    arcade = {"ctx": None, "got": 0}
+    arcade = {"ctx": {}, "got": 0}
     arcade_lock = threading.Lock()
 
-    def _arcade(c, wdb):
+    def _arcade_one(setname):
+        """Fetch what the set lacks for every core whose dat has it — MAME first, then
+        FBNeo and 2003-Plus, which want their own dumps of the same games. MAME's verdict
+        decides the item; the other cores' chips come along (a card may use either)."""
         from . import arcadefetch
+        out = None
+        for core in ("mame", "fbneo", "mame2003"):
+            ctx = arcade["ctx"].get(core)
+            if ctx is None:
+                try:
+                    ctx = arcade["ctx"][core] = arcadefetch.context(core=core)
+                except Exception:
+                    ctx = arcade["ctx"][core] = False      # no dat for this core: skip it
+            if not ctx or (core != "mame" and setname not in ctx["machines"]):
+                continue
+            r = arcadefetch.fetch_set(setname, ctx)
+            if r["chips"] or r["disks"]:
+                scan(str(ctx["dest"]), name_match=True, adopt=True)
+            if out is None:
+                out = r
+            else:
+                tag = f"[{core}] "
+                out["chips"] += [tag + x for x in r["chips"]]
+                out["disks"] += [tag + x for x in r["disks"]]
+                out["sources"] += r["sources"]
+        return out or {"chips": [], "disks": [], "sources": [], "missing": [],
+                       "errors": ["no arcade dat installed"]}
+
+    def _arcade(c, wdb):
         row = wdb.execute("SELECT external_id FROM items WHERE id=?", (c["id"],)).fetchone()
         setname = ((row["external_id"] if row else "") or "").split("/")[-1]
         with arcade_lock:
-            if arcade["ctx"] is None:
-                arcade["ctx"] = arcadefetch.context()
             _emit(f"arcade fetch: {setname}")
             with _in_flight_lock:
                 IN_FLIGHT[c["id"]]["note"] = "arcade fetch"
-            rep_ = arcadefetch.fetch_set(setname, arcade["ctx"])
+            rep_ = _arcade_one(setname)
             got = len(rep_["chips"]) + len(rep_["disks"])
             if got:
-                scan(str(arcade["ctx"]["dest"]), name_match=True, adopt=True)
                 arcade["got"] += got
         detail = (f"{len(rep_['chips'])} chip(s), {len(rep_['disks'])} CHD(s) from "
                   f"{', '.join(rep_['sources'][:3]) or '-'}"
@@ -488,6 +512,9 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                         cand = _pick([cand])
                         if not cand:
                             continue
+                        if not indexer.plausible(c["title"], c["system"], cand.get("title"),
+                                                 cand.get("size") or 0):
+                            continue        # another game that shares a few words
                         if seen_dup and multi:
                             # After an already-downloaded dump, only another candidate
                             # with exactly our clean title can be a second dump of the

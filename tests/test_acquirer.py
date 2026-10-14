@@ -645,7 +645,7 @@ def test_an_escaped_error_releases_the_inflight_claim(monkeypatch, tmp_path):
     monkeypatch.setenv("ROMCOM_DOWNLOAD_DIR", str(ddir))
     monkeypatch.setenv("ROMCOM_ACQUIRE_DIRECT_PARALLEL", "1")   # one direct worker: i1 then i2
     invalidate()
-    seed(db, [{"id": "i1", "title": "Shared"}, {"id": "i2", "title": "Shared Too"}])
+    seed(db, [{"id": "i1", "title": "Shared"}, {"id": "i2", "title": "Shared (Europe)"}])
     search, _ = fake_search([])
     monkeypatch.setattr("romcom.indexer.search_entity", search)
     same = "https://r/shared/"

@@ -172,3 +172,20 @@ def test_planet_emulation_is_asked_only_when_its_page_lists_a_wanted_chip(tmp_pa
     rep = af.fetch_set("kbm", _ctx(tmp_path, machines), FakeIA({}))
     assert rep["chips"] == ["swp30/sin-table.bin"] and rep["sources"] == ["planetemu/swp30.zip"]
     assert asked == ["swp30.zip"]                 # kbm.zip lists no wanted chip: not fetched
+
+
+def test_a_core_tries_its_own_romset_before_mames(monkeypatch):
+    """2003-Plus and FBNeo want their own dumps: their romset's zip for the set comes
+    first, MAME's after (a shared CRC is still a hit, and every chip is checked)."""
+    files = {"MAME_2003-Plus_Reference": {"roms/1942.zip": {}},
+             "mame-2003-plus-reference-set": {},
+             af.CURRENT_ITEM: {"1942.zip": {}}}
+    monkeypatch.setattr(af, "item_files", lambda s, item: files.get(item, {}))
+    monkeypatch.setattr(af, "zip_members", lambda s, item, c: ["1942.zip"])
+    monkeypatch.setattr(af, "MERGED", [])
+    monkeypatch.setattr(af, "NON_MERGED", [])
+    labels = [l for l, _ in af._zip_sources(None, ["1942"], {}, None, "mame2003")]
+    assert labels == ["MAME_2003-Plus_Reference/1942.zip", f"{af.CURRENT_ITEM}/1942.zip"]
+    fb = [l for l, _ in af._zip_sources(None, ["1942"], {}, None, "fbneo")]
+    assert fb[0] == "retroarch-fbneo-romset-complete/1942.zip"
+    assert [l for l, _ in af._zip_sources(None, ["1942"], {}, None)] == [f"{af.CURRENT_ITEM}/1942.zip"]
