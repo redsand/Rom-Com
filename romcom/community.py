@@ -60,7 +60,7 @@ RA_FETCH_CAP = 600
 RA_STALE_DAYS = 30
 
 # Our system slugs -> the names these sites call the same hardware. Exact matches are
-# preferred; substring is the fallback for names like "Sega Genesis/Mega Drive".
+# preferred; a whole-word match is the fallback for names like "Sega Genesis/Mega Drive".
 _ALIASES = {
     "nes": ["nes", "nintendo entertainment system", "famicom"],
     "snes": ["snes", "super nintendo entertainment system", "super nintendo", "super famicom"],
@@ -82,6 +82,7 @@ _ALIASES = {
     "atari2600": ["atari 2600", "2600"], "atari7800": ["atari 7800"],
     "lynx": ["atari lynx", "lynx"],
     "neogeopocket": ["neo geo pocket", "neo geo pocket color"],
+    "neogeopocketcolor": ["neo geo pocket color", "neo geo pocket"],
     "pcengine": ["pc engine", "turbografx", "turbografx-16"],
     "pcenginecd": ["pc engine cd", "turbografx cd"],
     "msx": ["msx"], "msx2": ["msx"],
@@ -203,11 +204,15 @@ def _match_platform(names, slug):
     for name, n in norm.items():
         if n in wanted:
             return name
+    # Whole words only, longest alias first: a bare substring found 'nes' inside
+    # 'Genesis/Mega Drive', and every NES game was scored with Genesis player counts.
     best = None
-    for name, n in norm.items():
-        for a in sorted(wanted, key=len, reverse=True):
-            if a and a in n:
-                best = best or name
+    for a in sorted(wanted, key=len, reverse=True):
+        pat = re.compile(r"(?<![a-z0-9])" + re.escape(a) + r"(?![a-z0-9])")
+        hits = [name for name, n in norm.items() if a and pat.search(n)]
+        if hits:
+            best = min(hits, key=lambda name: len(norm[name]))
+            break
     return best
 
 
@@ -233,6 +238,9 @@ _DECO_MARKERS = frozenset(
     " kiosk newer older real deluxe".split())
 
 
+_LEADING_MARKERS = frozenset("ver version rev revision set bootleg".split())
+
+
 def _strip_deco_groups(title):
     """Drop parenthetical groups that are pure variant metadata; keep every group a
     real word appears in (the same identity-bearing rule clean_query applies)."""
@@ -240,6 +248,11 @@ def _strip_deco_groups(title):
         words = _GROUP_WORD.findall(m.group(1).lower())
         if words and all(w in _DECO_REGION or w in _DECO_MARKERS
                          or w.isdigit() or len(w) == 1 for w in words):
+            return " "
+        # MAME opens a pure build stamp with its marker — '(Ver 2.93A 1994/02/16)',
+        # '(set 2, unprotected)', '(bootleg of FD1094 317-0169b set)' — whatever
+        # board codes follow. A licensor or title word never leads one.
+        if words and words[0] in _LEADING_MARKERS:
             return " "
         return m.group(0)
     return _GROUP.sub(repl, title or "")
@@ -463,6 +476,96 @@ def _targets(db, systems=None, owned=True):
     return db.execute(q, p).fetchall()
 
 
+def _ra_distribution(players_by_title):
+    """The console's popularity pool, one entry per RA game: clones and regional dumps
+    of one game share its record, and counting it once per dump stacked the pool. Games
+    nobody has played are left out — they say nothing about how loved anything is."""
+    return sorted(v for v in players_by_title.values() if v and v > 0)
+
+
+def _ra_score(counts, players):
+    """Percentile of `players` within the console's pool. Zero players is no signal at
+    all, so it scores 0 — ranked with the unrated games, not above them. Ranking every
+    zero at the top of its tie gave 3.5k never-played games ~72, and a console where
+    nothing had players (PS3) a perfect 100."""
+    if not players or players <= 0 or not counts:
+        return 0
+    return round(100.0 * bisect.bisect_right(counts, players) / len(counts))
+
+
+def rescore_ra(db=None, systems=None):
+    """Re-derive every stored RetroAchievements score from its player count — the pool
+    grows sweep by sweep, so a score fixed at fetch time drifts from its console's
+    current percentile. No fetching; returns how many rows changed."""
+    db = db or connect()
+    q = ("SELECT cs.item_id, cs.score, cs.votes, cs.matched_title, i.system FROM community_scores cs"
+         " JOIN items i ON i.id=cs.item_id WHERE cs.source='retroachievements'")
+    rows = db.execute(q).fetchall()
+    by_sys = {}
+    for r in rows:
+        if systems is None or r["system"] in systems:
+            by_sys.setdefault(r["system"], []).append(r)
+    changed = []
+    for sysname, rs in by_sys.items():
+        counts = _ra_distribution({r["matched_title"]: r["votes"] for r in rs})
+        for r in rs:
+            s = _ra_score(counts, r["votes"])
+            if s != r["score"]:
+                changed.append((s, r["item_id"]))
+    if changed:
+        with db:
+            db.executemany("UPDATE community_scores SET score=? WHERE item_id=? "
+                           "AND source='retroachievements'", changed)
+            _refresh_best(db, [iid for _, iid in changed])
+    return len(changed)
+
+
+def _refresh_best(db, item_ids):
+    """items.community_score/source from the raw rows, for these items."""
+    for i in range(0, len(item_ids), 800):
+        chunk = item_ids[i:i + 800]
+        db.execute(f"""UPDATE items SET
+            community_score=(SELECT MAX(score) FROM community_scores cs WHERE cs.item_id=items.id),
+            community_source=(SELECT source FROM community_scores cs WHERE cs.item_id=items.id
+                ORDER BY score DESC, votes DESC LIMIT 1)
+            WHERE id IN ({','.join('?' * len(chunk))})""", chunk)
+
+
+def inherit_clone_scores(db=None):
+    """An arcade clone is its parent's game — '(set 2)', '(Japan, System 16A)', a
+    bootleg — so an unscored clone takes the parent's crowd score, recorded as source
+    'parent' and re-derived whole each time (a parent's score moves; so does this).
+    The clone book is the MAME dat's own cloneof. Returns how many clones were scored."""
+    from . import arcadehealth, mameset
+    db = db or connect()
+    dat = mameset.dat_path("mame")
+    if not dat:
+        return 0
+    parent_of = {n: m["cloneof"] for n, m in arcadehealth.parse(dat).items() if m["cloneof"]}
+    _set = "substr(external_id, instr(external_id,'/')+1)"
+    arcade = {r["s"]: r for r in db.execute(
+        f"""SELECT id, {_set} s FROM items WHERE system='arcade' AND COALESCE(is_device,0)=0""")}
+    own = {r["item_id"]: (r["score"], r["votes"]) for r in db.execute(
+        """SELECT item_id, MAX(score) score, MAX(votes) votes FROM community_scores
+           WHERE source != 'parent' GROUP BY item_id""")}
+    rows = []
+    for s, r in arcade.items():
+        p = parent_of.get(s)
+        if r["id"] in own or not p or p not in arcade:
+            continue
+        got = own.get(arcade[p]["id"])
+        if got:
+            rows.append((r["id"], got[0], got[1], p))
+    with db:
+        before = [x[0] for x in db.execute(
+            "SELECT item_id FROM community_scores WHERE source='parent'")]
+        db.execute("DELETE FROM community_scores WHERE source='parent'")
+        db.executemany("INSERT INTO community_scores(item_id,source,score,votes,matched_title)"
+                       " VALUES(?,'parent',?,?,?)", rows)
+        _refresh_best(db, list(set(before) | {x[0] for x in rows}))
+    return len(rows)
+
+
 def _write_scores(db, rows):
     """rows: {item_id, source, score, votes, matched_title}. Raw records first, then
     the denormalized best-of, in one transaction so the watcher never sees half a sync.
@@ -523,6 +626,7 @@ def sync(systems=None, db=None, progress=None):
     for owned, by_system in phases:
         all_rows = []
         misses = []   # items RAWG's bulk pull couldn't name — search budget goes here
+        rescore_systems = set()
         for slug, items in sorted(by_system.items()):
             done += 1
             if progress:
@@ -582,19 +686,20 @@ def sync(systems=None, db=None, progress=None):
                         # best — a score the 30-day staleness window then froze in place.
                         # Player counts are the raw signal, so re-deriving percentiles
                         # from them converges as later sweeps fill the batch in.
-                        stored = [r["votes"] for r in db.execute(
-                            "SELECT cs.item_id, cs.votes FROM community_scores cs"
+                        stored = {r["matched_title"]: r["votes"] for r in db.execute(
+                            "SELECT cs.item_id, cs.votes, cs.matched_title FROM community_scores cs"
                             " JOIN items i ON i.id=cs.item_id"
                             " WHERE cs.source='retroachievements' AND i.system=?", (slug,))
-                            if r["item_id"] not in fetched]
-                        counts = sorted(stored + [rec["players"] for rec in fetched.values()])
+                            if r["item_id"] not in fetched}
+                        counts = _ra_distribution(stored | {rec["title"]: rec["players"]
+                                                            for rec in fetched.values()})
                         for iid, rec in fetched.items():
-                            pos = bisect.bisect_right(counts, rec["players"])
                             all_rows.append({"item_id": iid, "source": "retroachievements",
-                                             "score": round(100.0 * pos / max(1, len(counts))),
+                                             "score": _ra_score(counts, rec["players"]),
                                              "votes": rec["players"],
                                              "matched_title": rec["title"]})
                         per["ra"] += len(fetched)
+                        rescore_systems.add(slug)
                 except Exception as ex:
                     report["errors"].append(f"ra/{slug}: {ex}")
             # Scores land as each system completes, so the Crowd column fills in while
@@ -603,6 +708,10 @@ def sync(systems=None, db=None, progress=None):
             # cost a slice of the day's budget and must not be thrown away with it.
             try:
                 report["scored"] += _write_scores(db, all_rows)
+                if slug in rescore_systems:
+                    # Older rows were percentiled against a smaller pool: re-derive the
+                    # whole console from the stored player counts.
+                    rescore_ra(db, [slug])
             except Exception as ex:
                 report["errors"].append(f"write/{slug}: {ex}")
             all_rows = []
@@ -631,6 +740,11 @@ def sync(systems=None, db=None, progress=None):
         report["scored_rows"] = report["scored"]
     # The backlog the next sync still faces — so consecutive runs show it shrinking
     # instead of only what the last one scored.
+    if systems is None or "arcade" in systems:
+        try:
+            report["clones_inherited"] = inherit_clone_scores(db)
+        except Exception as ex:
+            report["errors"].append(f"clones: {ex}")
     report["gap"] = ranking_gap(db, systems)
     return report
 

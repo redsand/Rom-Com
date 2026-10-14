@@ -589,3 +589,80 @@ def test_an_interrupted_second_pass_still_leaves_the_first_written(monkeypatch, 
     community.sync(db=db)
     row = db.execute("SELECT community_score FROM items WHERE id='own'").fetchone()
     assert row["community_score"] == 80
+
+def test_nes_is_not_found_inside_genesis():
+    """A bare substring found 'nes' in 'Genesis/Mega Drive' first: every NES game was
+    scored with Genesis player counts, and the real NES list was never fetched."""
+    names = ["Genesis/Mega Drive", "SNES/Super Famicom", "NES/Famicom", "Game Boy",
+             "Game Boy Advance"]
+    assert community._match_platform(names, "nes") == "NES/Famicom"
+    assert community._match_platform(names, "snes") == "SNES/Super Famicom"
+    assert community._match_platform(names, "genesis") == "Genesis/Mega Drive"
+    assert community._match_platform(names, "gb") == "Game Boy"
+
+
+def test_never_played_games_score_zero_and_clones_count_once(monkeypatch, tmp_path):
+    """Zero players is no signal. Ranking each zero at the top of its tie scored 3.5k
+    never-played games ~72 and a console of nothing-but-zeros 100; they rank with the
+    unrated now. A re-score re-derives every row from its stored player count, so a
+    percentile fixed at fetch time cannot drift, and two dumps of one RA game are one
+    entry in the console's pool."""
+    db = setup(monkeypatch, tmp_path)
+    rows = [("a", "Big", 1000), ("a2", "Big", 1000), ("b", "Small", 10),
+            ("z", "Nobody", 0), ("y", "Nobody Else", 0)]
+    with db:
+        for iid, title, players in rows:
+            db.execute("INSERT INTO items(id,title,system,status) VALUES(?,?,'gba','VERIFIED')",
+                       (iid, title))
+            db.execute("INSERT INTO community_scores(item_id,source,score,votes,matched_title) "
+                       "VALUES(?,'retroachievements',72,?,?)", (iid, players, title))
+    community.rescore_ra(db)
+    got = {r["id"]: r["community_score"] for r in db.execute("SELECT id, community_score FROM items")}
+    assert got == {"a": 100, "a2": 100, "b": 50, "z": 0, "y": 0}
+    assert community.rescore_ra(db) == 0                 # idempotent
+
+
+def test_mame_build_stamps_are_variant_groups():
+    """'(Ver 2.93A 1994/02/16)' and '(set 2, unprotected)' carry board words the
+    all-words rule keeps; a group led by a version marker is a build stamp whatever
+    follows. A licensor-led group still keeps the title apart."""
+    records = [{"title": "Street Fighter II", "players": 900}, {"title": "Pang", "players": 50}]
+    m = community._match_items(
+        [item("a", "Street Fighter II (Ver 2.93A 1994/02/16)"),
+         item("b", "Pang (set 2, unprotected)"),
+         item("c", "Street Fighter II (Accolade license)")], records)
+    assert m["a"]["title"] == "Street Fighter II" and m["b"]["title"] == "Pang"
+    assert "c" not in m
+
+
+def test_unscored_clones_take_their_parents_score(monkeypatch, tmp_path):
+    from romcom import mameset
+    db = setup(monkeypatch, tmp_path)
+    dat = tmp_path / "mame.dat"
+    dat.write_text("""<datafile>
+<machine name="sf2">
+</machine>
+<machine name="sf2j" cloneof="sf2" romof="sf2">
+</machine>
+<machine name="sf2u" cloneof="sf2" romof="sf2">
+</machine>
+</datafile>""", encoding="utf-8")
+    monkeypatch.setattr(mameset, "dat_path", lambda profile="mame": dat)
+    with db:
+        for iid in ("sf2", "sf2j", "sf2u"):
+            db.execute("INSERT INTO items(id,title,system,status,external_id) "
+                       "VALUES(?,?,'arcade','VERIFIED',?)", (iid, iid, f"arcade/{iid}"))
+        db.execute("INSERT INTO community_scores(item_id,source,score,votes,matched_title) "
+                   "VALUES('sf2','retroachievements',95,5000,'Street Fighter II')")
+        db.execute("INSERT INTO community_scores(item_id,source,score,votes,matched_title) "
+                   "VALUES('sf2u','retroachievements',40,100,'SF2 US')")
+        community._refresh_best(db, ["sf2", "sf2u"])
+    assert community.inherit_clone_scores(db) == 1
+    got = {r["id"]: (r["community_score"], r["community_source"])
+           for r in db.execute("SELECT id, community_score, community_source FROM items")}
+    assert got["sf2j"] == (95, "parent")
+    assert got["sf2u"] == (40, "retroachievements")       # its own score stands
+    with db:
+        db.execute("UPDATE community_scores SET score=80 WHERE item_id='sf2'")
+    community.inherit_clone_scores(db)
+    assert db.execute("SELECT community_score FROM items WHERE id='sf2j'").fetchone()[0] == 80
