@@ -79,6 +79,14 @@ _NAME_TAGS = (
     ("unlicensed", re.compile(r"\(unl\)|\(unlicensed\)")),
     ("pirate", re.compile(r"\(pirate\)")),
     ("not-a-game", re.compile(r"\[bios\]|\((?:test )?program\)|\(enhancement chip\)")),
+    # GBA's public-domain pile names itself outside brackets: e-books ([ebb]), picture
+    # slideshows, coding libraries' samples ('HEL Library V2.0 ... by Peter Schraut'),
+    # music players.
+    ("not-a-game", re.compile(r"\[ebb\]|\bslide ?show\b|\bhel library\b|\bmusic player\b"
+                              r"|\bmp3 player\b|\bpicture viewer\b")),
+    ("homebrew", re.compile(r"\[pd\]|\bv\d+(?:\.\d+)+\b[^()]*\bby [a-z]")),
+    ("demo", re.compile(r"\b(?:tech |intro )?demo\b(?! ?land)(?!lition)")),
+    ("beta", re.compile(r"\bpublic beta\b")),
 )
 # GoodTools codes are case-sensitive: [T+Eng] is a translation, [t1] a trainer, [p1] a
 # pirate dump. These run on the title as written.

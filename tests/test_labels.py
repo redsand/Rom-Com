@@ -138,3 +138,17 @@ def test_the_library_filters_by_label(monkeypatch, tmp_path):
     assert c.post("/api/labels/override", json={"item_id": "i-hot", "label": "fruit-machine",
                                                 "action": "remove"}).status_code == 200
     assert ids("label=fruit-machine") == []
+
+
+def test_gba_public_domain_pile_is_labelled_and_real_games_are_not():
+    """GBA's PD pile names itself outside brackets: e-books, slideshows, library samples,
+    demos. None of them is a game for a card; Kirby's Dream Land and Demon's Crest are."""
+    from romcom.labels import from_name
+    assert "not-a-game" in from_name("Lord of the Rings, The by J.R.R Tolkien [ebb]")
+    assert "not-a-game" in from_name("3x3 Eyes JPEG Slideshow 31")
+    assert "homebrew" in from_name("Battle Picross V1.0 by Sean Reid (PD)")
+    assert "beta" in from_name("HEL Library V2.0 Public Beta 18 - Map by Peter Schraut")
+    assert "demo" in from_name("GBAGI V1.0 - King's Quest IV Demo")
+    for real in ("Kirby's Dream Land (USA)", "Demolition Racer (USA)", "Demon's Crest (USA)",
+                 "Final Fantasy V Advance (USA)", "Doom II (USA)"):
+        assert from_name(real) == {}, real

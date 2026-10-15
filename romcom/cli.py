@@ -564,7 +564,7 @@ def main():
     aw.add_argument("action", choices=["fetch", "export", "coverage"])
     aw.add_argument("dest", nargs="?", help="card root, for export")
     aw.add_argument("--system", action="append")
-    aw.add_argument("--kind", action="append", choices=["boxart", "snap", "title"])
+    aw.add_argument("--kind", action="append", choices=["boxart", "snap", "title", "marquee"])
     aw.add_argument("--media-dir", help="ES-DE media folder (default <dest>/ES-DE/downloaded_media)")
     aw.add_argument("--refresh", action="store_true", help="re-check misses and re-read the indexes")
     aw.set_defaults(fn=cmd_artwork)
