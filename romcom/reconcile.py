@@ -126,3 +126,37 @@ def wrong_downloads(apply=False, db=None):
                            (iid, "wrong-download", f"{b['why']}: {'; '.join(b['files'])[:400]}"))
     return {"count": len(bad), "bytes": total, "applied": bool(apply),
             "items": sorted(bad.values(), key=lambda b: -b["bytes"])}
+
+
+def stub_discs(apply=False, db=None):
+    """Disc games whose only file is an archive too small to hold the disc (see
+    sniff.stub_disc): a download that stopped after its first megabyte, matched by the
+    one track every disc of that console shares, or a cartridge rom filed as a Virtual
+    Console title. `apply` lets go of each file, sends a game left with no file back to
+    MISSING so the acquirer fetches a whole copy, and records why. Nothing is deleted."""
+    from pathlib import Path
+    from . import sniff
+    db = db or connect()
+    q = f"""SELECT f.path, f.bytes, f.match_method, i.id, i.title, i.system, i.status FROM files f
+            JOIN items i ON i.id=f.matched_item_id
+            WHERE lower(i.system) IN ({','.join('?' * len(sniff.DISC_SYSTEMS))})
+              AND f.path NOT LIKE '%|%'
+              AND (lower(f.path) LIKE '%.zip' OR lower(f.path) LIKE '%.7z'
+                   OR lower(f.path) LIKE '%.rar')"""
+    bad = [dict(r) for r in db.execute(q, sniff.DISC_SYSTEMS)
+           if sniff.stub_disc(r["bytes"], r["system"], f"{r['title']} {Path(r['path']).name}")]
+    if apply and bad:
+        with db:
+            for b in bad:
+                db.execute("UPDATE files SET matched_item_id=NULL, match_method=NULL "
+                           "WHERE path=? AND matched_item_id=?", (b["path"], b["id"]))
+                left = db.execute("SELECT 1 FROM files WHERE matched_item_id=?",
+                                  (b["id"],)).fetchone()
+                if not left:
+                    db.execute("UPDATE items SET status='MISSING', updated_at=CURRENT_TIMESTAMP "
+                               "WHERE id=? AND status IN ('DOWNLOADED','FOUND','VERIFIED',"
+                               "'NORMALIZED')", (b["id"],))
+                db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
+                           (b["id"], "stub-disc",
+                            f"{b['bytes']} bytes cannot be a {b['system']} disc: {b['path']}"[:400]))
+    return {"count": len(bad), "applied": bool(apply), "items": bad}

@@ -133,7 +133,14 @@ def cmd_cache(a):
         print(json.dumps(searchcache.stats(),indent=2))
 
 def cmd_reconcile(a):
-    from .reconcile import reconcile, reacquire_mismatches, wrong_downloads
+    from .reconcile import reconcile, reacquire_mismatches, wrong_downloads, stub_discs
+    if a.stub_discs:
+        r = stub_discs(apply=a.apply)
+        for b in r["items"]:
+            print(f"{b['system']:10} {b['bytes'] / 1e6:6.2f} MB  {b['title'][:50]:50} <- {b['path']}")
+        print(f"{r['count']} disc game(s) whose file is a stub"
+              + (" — let go and re-armed" if r["applied"] else " — run again with --apply to let go of them"))
+        return
     if a.wrong_downloads:
         r = wrong_downloads(apply=a.apply)
         for b in r["items"]:
@@ -663,7 +670,8 @@ def main():
     vm=s.add_parser("vimm"); vm.add_argument("action",choices=["capture"],nargs="?",default="capture"); vm.set_defaults(fn=cmd_vimm)
     rc=s.add_parser("reconcile"); rc.add_argument("--reacquire",action="store_true"); rc.add_argument("--system")
     rc.add_argument("--wrong-downloads",action="store_true",help="website downloads that are another game or another platform")
-    rc.add_argument("--apply",action="store_true",help="with --wrong-downloads: let go of them and re-arm the items")
+    rc.add_argument("--stub-discs",action="store_true",help="disc games whose only file is an archive too small to hold the disc")
+    rc.add_argument("--apply",action="store_true",help="with --wrong-downloads / --stub-discs: let go of them and re-arm the items")
     rc.set_defaults(fn=cmd_reconcile)
     a=p.parse_args(); a.fn(a)
 

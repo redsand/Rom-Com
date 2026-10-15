@@ -144,6 +144,10 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
             zitems=_zip_member_matches(db,p)
             if zitems:
                 item_id=zitems[0]; method="hash-zip"; extra=[x for x in set(zitems) if x!=item_id]
+                row=db.execute("SELECT system,title FROM items WHERE id=?",(item_id,)).fetchone()
+                if row and sniff.stub_disc(st.st_size,row["system"],row["title"]):
+                    # One shared track is not the disc (see sniff.stub_disc).
+                    item_id=None; method=None; extra=[]
         if not item_id and name_match:
             cand = idx.get(_norm(p.name))
             # A name match is a guess, and the extension is evidence against it. "Donkey
@@ -157,6 +161,9 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
                 cap = CART_MAX_BYTES.get((row["system"] or "").lower()) if row else None
                 if ext_sys and row and (row["system"] or "").lower() != ext_sys:
                     cand = None
+                elif row and p.suffix.lower() in (".zip", ".7z", ".rar") and sniff.stub_disc(
+                        st.st_size, row["system"], p.name):
+                    cand = None     # a 1 MB archive is a broken download, not that disc
                 elif cap and (st.st_size > cap or p.suffix.lower() in sniff.DISC_IMAGES):
                     cand = None     # a disc image or a 5 GB file is never that cartridge game
                 elif row and (row["system"] or "").lower() in sniff.CHECKED:

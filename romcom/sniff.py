@@ -240,3 +240,21 @@ def psp_info(path):
         return {}
     title = re.sub(r"\s+", " ", str(sfo.get("TITLE") or "")).strip()
     return {"title": title, "disc_id": str(sfo.get("DISC_ID") or "")} if title else {}
+
+
+# ---------------------------------------------------------------------- stub discs
+# An archive this small cannot hold a disc game for these consoles. What turns up this
+# size is a download that stopped after the first file: a .gdi and the 1 MB audio Track 2
+# every GD-ROM shares byte for byte, which hash-matched whichever catalog disc carried that
+# track ('Love Hina - Smile Again.zip' was filed, verified, as Blue Stinger). PSP minis and
+# PSN titles are real games of a few MB, and are let through by name.
+DISC_SYSTEMS = ("dreamcast", "ps1", "ps2", "ps3", "saturn", "segacd", "pcenginecd", "3do",
+                "gamecube", "wii", "psp")
+STUB_BYTES = 5_000_000
+_SMALL_OK = re.compile(r"\((?:minis|psn)\)|\bminis\b|\[np[a-z]{2}\d{5}\]", re.I)
+
+
+def stub_disc(size, system, title=""):
+    """True when `size` bytes is too small to be a disc game for `system`."""
+    return ((system or "").lower() in DISC_SYSTEMS and 0 <= (size or 0) < STUB_BYTES
+            and not _SMALL_OK.search(title or ""))

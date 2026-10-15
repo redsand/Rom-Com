@@ -58,3 +58,13 @@ def test_all_caps_and_trademarks_are_tidied_and_prefixes_dropped(tmp_path):
     assert local_title(iso, "psp") == "Gripshift"
     assert local_title(Path("X:/PSP - Marvel ultimate Alliance.cso"), "psp") == "Marvel ultimate Alliance"
     assert local_title(Path("X:/Metal_Gear_Peace_Walker.zip"), "psp") == "Metal Gear Peace Walker"
+
+
+def test_a_one_megabyte_archive_is_not_a_disc_game():
+    """A .gdi plus the 1 MB Track 2 every GD-ROM shares hash-matched Blue Stinger; a PSP
+    mini of a few MB is a real game."""
+    assert sniff.stub_disc(970_000, "dreamcast", "Blue Stinger (Japan)")
+    assert sniff.stub_disc(130_000, "wii", "Adventure Island II (USA) (SNES) (Virtual Console)")
+    assert not sniff.stub_disc(4_780_000, "psp", "Pinball Fantasies (USA) (minis) (PSN)")
+    assert not sniff.stub_disc(850_000_000, "dreamcast", "Dreamon Volume 10")
+    assert not sniff.stub_disc(200_000, "gba", "Any cartridge")
