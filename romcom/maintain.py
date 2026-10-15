@@ -32,9 +32,15 @@ STEPS = (
 )
 # Steps that remove files: never while an export or romset build may be reading them.
 DESTRUCTIVE = {"dupes", "prune"}
-# Systems the per-game prune runs on: the ones whose extra copies cost real space.
-PRUNE_SYSTEMS = ("gba", "psp", "dreamcast", "n64", "nds", "nes", "snes", "ps1", "ps2",
-                 "gamecube", "saturn", "genesis", "gb", "gbc")
+def prune_systems():
+    """Every system but arcade (whose clone book has its own one-version rule): betas and
+    extra dumps of a game the library holds the release of are clutter on any platform,
+    whether or not they cost disk space — a Library page of 'Chicken of the Farm (Beta 1)',
+    '(Beta 2)' beside the game itself."""
+    from .db import connect
+    return [r[0] for r in connect().execute(
+        "SELECT DISTINCT lower(system) FROM items WHERE system IS NOT NULL "
+        "AND lower(system)<>'arcade'")]
 
 
 def _step(name, progress, stop):
@@ -67,7 +73,7 @@ def _step(name, progress, stop):
         return {"deleted": r.get("deleted"), "bytes_freed": r.get("bytes_freed")}
     if name == "prune":
         from . import prune
-        r = prune.cleanup(apply=True, systems=list(PRUNE_SYSTEMS))
+        r = prune.cleanup(apply=True, systems=prune_systems())
         return {"deleted": r.get("deleted"), "files_deleted": r.get("files_deleted"),
                 "bytes_freed": r.get("bytes_freed")}
     raise ValueError(f"no upkeep step {name!r}")
