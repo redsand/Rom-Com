@@ -308,6 +308,27 @@ def prune_adopted_ghosts(db=None):
               AND NOT EXISTS (SELECT 1 FROM files f WHERE f.matched_item_id = items.id)""").rowcount
     return n
 
+_PLATFORM_PREFIX = re.compile(r"^(?:psp|ps1|ps2|psx|nds|gba|gbc|snes|nes|n64|wii|gc|gamecube|"
+                              r"dreamcast|dc|saturn)\s*-\s*", re.I)
+_MARKS = re.compile(r"[™®©]")
+
+
+def local_title(path, system):
+    """The title a file adopted as a local entry goes by. A PSP disc names itself in its
+    PARAM.SFO — 'PSP - GTAvcs.iso' is Grand Theft Auto: Vice City Stories — and that name
+    is what box art and crowd scores are found by. Otherwise the file name, without a
+    leading 'PSP - ' that only says what folder it came from."""
+    p = Path(path)
+    stem = _PLATFORM_PREFIX.sub("", p.stem).replace("_", " ").strip() or p.stem
+    if (system or "").lower() == "psp":
+        from . import sniff
+        title = _MARKS.sub("", sniff.psp_info(p).get("title") or "")
+        title = re.sub(r"\s+", " ", title).strip(" .")
+        if re.search(r"[A-Za-z]", title):
+            return title.title() if title.isupper() else title
+    return stem
+
+
 def adopt_unmatched(root=None,progress=None):
     """Create catalog entries (source 'local') for scanned files that matched nothing, so
     downloaded content is never dropped from the library or the SD-card export."""
@@ -355,7 +376,7 @@ def adopt_unmatched(root=None,progress=None):
         else:
             item_id=f"local-{system}-{digest[:12]}"
             db.execute("""INSERT INTO items(id,title,system,wanted,authorized,status,catalog_source,external_id)
-              VALUES(?,?,?,1,1,'FOUND','local',?)""",(item_id,p.stem,system,digest))
+              VALUES(?,?,?,1,1,'FOUND','local',?)""",(item_id,local_title(p,system),system,digest))
         own(db,item_id)  # covers items adopted by an earlier scan (EXCLUDED ones stay excluded)
         db.execute("INSERT OR IGNORE INTO aliases(item_id,alias) VALUES(?,?)",(item_id,p.stem))
         for alg,d in (("crc",r["crc32"]),("md5",r["md5"]),("sha1",r["sha1"])):

@@ -175,3 +175,68 @@ def consistent(ev, system):
     if exts & set(_CD) and not exts & {".iso", ".chd"}:
         return system in ("ps1", "ps2")  # a CD image: never a DVD/Blu-ray console's disc
     return None
+
+
+# ---------------------------------------------------------------------- disc titles
+def _iso_find(f, extent, size, name):
+    """The (extent, size) of `name` in an ISO 9660 directory, or None."""
+    f.seek(extent * 2048)
+    data = f.read(size)
+    i = 0
+    want = name.upper()
+    while i < len(data):
+        n = data[i]
+        if n == 0:                                  # padding to the next sector
+            i = (i // 2048 + 1) * 2048
+            continue
+        rec = data[i:i + n]
+        ident = rec[33:33 + rec[32]].decode("latin-1").split(";")[0].upper()
+        if ident == want:
+            return int.from_bytes(rec[2:6], "little"), int.from_bytes(rec[10:14], "little")
+        i += n
+    return None
+
+
+def _sfo(data):
+    """{key: value} from a PlayStation PARAM.SFO."""
+    if data[:4] != b"\x00PSF":
+        return {}
+    keys, vals, count = (int.from_bytes(data[o:o + 4], "little") for o in (8, 12, 16))
+    out = {}
+    for e in range(count):
+        b = 20 + e * 16
+        k_off = int.from_bytes(data[b:b + 2], "little")
+        fmt = int.from_bytes(data[b + 2:b + 4], "little")
+        length = int.from_bytes(data[b + 4:b + 8], "little")
+        d_off = int.from_bytes(data[b + 12:b + 16], "little")
+        key = data[keys + k_off:data.index(b"\x00", keys + k_off)].decode("latin-1")
+        raw = data[vals + d_off:vals + d_off + length]
+        out[key] = (int.from_bytes(raw[:4], "little") if fmt == 0x0404
+                    else raw.split(b"\x00")[0].decode("utf-8", "replace").strip())
+    return out
+
+
+def psp_info(path):
+    """{"title", "disc_id"} read from a PSP .iso's PSP_GAME/PARAM.SFO — the name on the
+    box, where a file is often called 'PSP - GTAvcs'. {} for anything else."""
+    p = Path(path)
+    if p.suffix.lower() != ".iso":
+        return {}
+    try:
+        with open(p, "rb") as f:
+            f.seek(16 * 2048)
+            pvd = f.read(2048)
+            if pvd[1:6] != b"CD001":
+                return {}
+            root = pvd[156:156 + 34]
+            hit = _iso_find(f, int.from_bytes(root[2:6], "little"),
+                            int.from_bytes(root[10:14], "little"), "PSP_GAME")
+            hit = hit and _iso_find(f, *hit, "PARAM.SFO")
+            if not hit:
+                return {}
+            f.seek(hit[0] * 2048)
+            sfo = _sfo(f.read(min(hit[1], 64 * 1024)))
+    except (OSError, ValueError, IndexError):
+        return {}
+    title = re.sub(r"\s+", " ", str(sfo.get("TITLE") or "")).strip()
+    return {"title": title, "disc_id": str(sfo.get("DISC_ID") or "")} if title else {}
