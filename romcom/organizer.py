@@ -687,9 +687,18 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             if progress: progress(0, 0, f"clearing {child.name}…")
             shutil.rmtree(child, ignore_errors=True)
 
+    # A card filled to its reserve used to have no room left for the covers, and an
+    # export that stopped there skipped artwork altogether: 2,793 games on a 256 GB card
+    # and not one poster. Each game's cached art is set aside as the game goes on, so the
+    # art step always finds its room.
+    art_size, art_owed = {}, [0, 0]          # [owed for games on the card, this game]
+    if artwork and not dry_run:
+        from . import artwork as art
+        art_size = art.cached_sizes()
+
     def room_for(nbytes):
         free = _free_bytes(dest)
-        return free is not None and free - nbytes >= reserve
+        return free is not None and free - nbytes - art_owed[0] - art_owed[1] >= reserve
 
     if arcade_any:
         for core in arcade_cores:
@@ -715,6 +724,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             break
         r = g["row"]
         system = r["system"] or "unknown"
+        art_owed[1] = art_size.get(r["item_id"], 0)
         if progress: progress(i, len(games), r["title"] or "")
         missing += g["missing"]
         if g["dropped"]:
@@ -818,6 +828,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         if stopped and not done:
             break
         if done or dry_run:
+            art_owed[0] += art_owed[1]
             by_system[system] = by_system.get(system, 0) + 1
             prefix = f"{g['sub']}/" if g["sub"] else ""
             card_games.setdefault(g["folder"], []).extend(
@@ -903,7 +914,10 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         except OSError as e:
             errors.append({"file": "gamelist.xml", "error": str(e)})
     artwork_report = None
-    if artwork and not dry_run and not stopped:
+    art_owed[0] = art_owed[1] = 0            # what was set aside is now spent
+    if artwork and not dry_run and card_games and not (stop is not None and stop.is_set()):
+        # A card that filled up still gets its covers (the room was kept for them);
+        # only the owner's Stop skips them.
         from . import artwork as art
         if progress: progress(0, 0, "artwork for ES-DE…")
         artwork_report = art.export_media(

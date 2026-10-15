@@ -947,3 +947,32 @@ def test_romset_rerun_keeps_the_device_zips_it_builds(tmp_path, monkeypatch):
     r = romset("mame", dest, arcade_status="all", artwork=False)
     assert r["pruned_files"] == 0 and r["copied"] == 0
     assert (dest / "namco51.zip").exists()
+
+
+def test_a_filled_card_keeps_room_for_its_covers(tmp_path, monkeypatch):
+    """2,793 games on a 256 GB card and not one poster: the fill ran to the reserve and the
+    art step had no room. Each game's art is set aside as it goes on, and a card that
+    filled up still gets its covers."""
+    _one_rom(tmp_path, monkeypatch, name="A.nes")
+    _one_rom(tmp_path, monkeypatch, name="B.nes")
+    from romcom import artwork, organizer
+    art = {"nes-A.nes": 6, "nes-B.nes": 6}
+    monkeypatch.setattr(artwork, "cached_sizes", lambda *a, **k: art)
+    wrote = []
+    monkeypatch.setattr(artwork, "export_media",
+                        lambda dest, room_for=None, **k: wrote.append(room_for(6)) or {
+                            "written": 1, "stopped": False})
+    state = {"free": 2 * 1024 ** 3 - 5}
+    monkeypatch.setattr(organizer, "_reserve_bytes", lambda d: 2 * 1024 ** 3 - 25)
+    monkeypatch.setattr(organizer, "_free_bytes", lambda d: state["free"])
+    real_copy = organizer.shutil.copy2
+
+    def copy(src, dst):
+        state["free"] -= 9
+        return real_copy(src, dst)
+    monkeypatch.setattr(organizer.shutil, "copy2", copy)
+    # 20 bytes above the reserve: two 9-byte roms would fit, but not with 6 bytes of art
+    # each — one game goes on, and its cover still fits after it.
+    r = organize(tmp_path / "sd", fill=True, artwork=True)
+    assert r["copied"] == 1 and r["stopped"]
+    assert wrote == [True]

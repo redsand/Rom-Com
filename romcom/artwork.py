@@ -329,6 +329,21 @@ def coverage(db=None, systems=None):
     return {"systems": sorted(agg.values(), key=lambda a: -a["games"])}
 
 
+def cached_sizes(kinds=DEFAULT_KINDS, db=None):
+    """{item_id: bytes} of the cached images `export_media` would copy for each game — what
+    a card export sets aside so the covers fit after the games."""
+    db = db or connect()
+    out = {}
+    for r in db.execute("SELECT item_id, kind, path FROM artwork WHERE path IS NOT NULL"):
+        if r["kind"] not in kinds:
+            continue
+        try:
+            out[r["item_id"]] = out.get(r["item_id"], 0) + Path(r["path"]).stat().st_size
+        except OSError:
+            pass
+    return out
+
+
 def export_media(dest, kinds=DEFAULT_KINDS, media_dir=None, systems=None, room_for=None,
                  progress=None, db=None, dry_run=False, entries=None):
     """Copy cached artwork for the games on a card into ES-DE's media layout. Only games
