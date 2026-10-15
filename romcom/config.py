@@ -80,6 +80,7 @@ ENV_VARS = {
     "chd_cache_dir": "ROMCOM_CHD_CACHE",
     "incoming_dir": "ROMCOM_INCOMING_DIR",
     "incoming_remove": "ROMCOM_INCOMING_REMOVE",
+    "acquire_skip_labels": "ROMCOM_ACQUIRE_SKIP_LABELS",
     "maintain_auto_hours": "ROMCOM_MAINTAIN_AUTO_HOURS",
 }
 # Deliberately NOT here: the web master login (ROMCOM_WEB_USER/ROMCOM_WEB_PASS), the
@@ -171,6 +172,10 @@ def _env_settings():
         # Once imported, an archive leaves the incoming folder and a loose file moves into
         # the library (incoming.tidy): no game kept twice. false keeps the originals.
         "incoming_remove": os.getenv("ROMCOM_INCOMING_REMOVE", "true"),
+        # Labels the downloader never fetches (comma-separated; 'none' fetches everything):
+        # betas, prototypes and demos beside a release are what every card leaves out.
+        "acquire_skip_labels": os.getenv("ROMCOM_ACQUIRE_SKIP_LABELS",
+                                         "beta,prototype,demo,hack,pirate,trainer"),
         # The whole upkeep list (maintain.py) runs this often (hours); 0 = only by hand.
         # The incoming folder is looked at every few minutes regardless.
         "maintain_auto_hours": os.getenv("ROMCOM_MAINTAIN_AUTO_HOURS", "24"),

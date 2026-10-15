@@ -83,3 +83,17 @@ def test_a_released_stub_is_not_paired_back(tmp_path):
         db.execute("INSERT INTO events(item_id,event,detail) VALUES('lh','stub-disc',?)",
                    (f"970000 bytes cannot be a dreamcast disc: {f}",))
     assert unclaimed_downloads(db=db)["count"] == 0
+
+
+def test_the_downloader_never_fetches_betas(monkeypatch):
+    from romcom import acquirer
+    db = connect()
+    with db:
+        for iid, t in (("r", "Star Wars Arcade (USA)"), ("b", "Star Wars Arcade (USA) (Beta 5)")):
+            db.execute("INSERT INTO items(id,title,system,status,wanted,authorized) "
+                       "VALUES(?,?,'32x','MISSING',1,1)", (iid, t))
+        db.execute("INSERT INTO item_labels(item_id,label,kind,source) VALUES('b','beta','tag','name')")
+    monkeypatch.setattr(acquirer, "settings", lambda: {})
+    assert acquirer.skipped_by_label(db) == {"b"}
+    monkeypatch.setattr(acquirer, "settings", lambda: {"acquire_skip_labels": "none"})
+    assert acquirer.skipped_by_label(db) == set()

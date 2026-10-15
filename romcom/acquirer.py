@@ -100,6 +100,27 @@ def _cooled(db):
     return out
 
 
+SKIP_LABELS_DEFAULT = "beta,prototype,demo,hack,pirate,trainer"
+
+
+def skip_labels():
+    """Labels the downloader never fetches (setting acquire_skip_labels): what every card
+    leaves out anyway. Eleven Star Wars Arcade betas were queued beside the release."""
+    raw = settings().get("acquire_skip_labels")
+    raw = SKIP_LABELS_DEFAULT if raw is None else raw
+    return [x.strip() for x in str(raw).split(",") if x.strip() and x.strip() != "none"]
+
+
+def skipped_by_label(db):
+    """Item ids the downloader leaves alone for their labels."""
+    labs = skip_labels()
+    if not labs:
+        return set()
+    return {r[0] for r in db.execute(
+        f"SELECT DISTINCT item_id FROM item_labels WHERE label IN ({','.join('?' * len(labs))})",
+        labs)}
+
+
 def _armed(db):
     """The armed pile the pipeline can act on, split into (ready, cooling).
 
@@ -110,7 +131,8 @@ def _armed(db):
     forward progress and the pile drains before anything is searched twice.
     """
     cooled = _cooled(db)
-    armed = [r for r in next_individuals() if r["status"] in QUEUEABLE]
+    skip = skipped_by_label(db)
+    armed = [r for r in next_individuals() if r["status"] in QUEUEABLE and r["id"] not in skip]
     tried = {r["item_id"]: r["t"] for r in db.execute(
         f"SELECT item_id, MAX(created_at) t FROM events WHERE event IN {tuple(COOLDOWN_EVENTS)} "
         "AND item_id IS NOT NULL GROUP BY item_id")}
