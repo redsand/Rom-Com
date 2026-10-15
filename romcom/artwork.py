@@ -56,6 +56,7 @@ EXTRA_DBS = {
     "atari5200": "Atari - 5200", "msx": "Microsoft - MSX", "scummvm": "ScummVM",
     "neogeopocket": "SNK - Neo Geo Pocket", "neogeopocketcolor": "SNK - Neo Geo Pocket Color",
     "fmtowns": "FM Towns", "wonderswancolor": "Bandai - WonderSwan Color",
+    "pcenginecd": "NEC - PC Engine CD - TurboGrafx-CD",
 }
 
 
