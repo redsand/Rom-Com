@@ -1267,8 +1267,9 @@ $("#art-stop").addEventListener("click", async () => {
 
 /* ---------- Library upkeep (maintain.py): what RomCom tidies by itself ---------- */
 const UPKEEP_SAYS = {
-  incoming: r => r.archives || r.files || (r.scan && (r.scan.matched || r.scan.adopted))
+  incoming: r => r.archives || r.files || (r.scan && (r.scan.matched || r.scan.adopted)) || r.tidied?.deleted?.length || r.tidied?.moved?.length
     ? `${r.files || 0} game file(s) unpacked from ${r.archives || 0} archive(s); ${(r.scan?.matched || 0).toLocaleString()} matched, ${(r.scan?.adopted || 0).toLocaleString()} added`
+      + (r.tidied?.deleted?.length || r.tidied?.moved?.length ? `; ${r.tidied.deleted.length} imported archive(s) removed (${fmtBytes(r.tidied.bytes || 0)}), ${r.tidied.moved.length} loose game(s) moved into the library` : "")
     : (r.note || "nothing new"),
   claim: r => r.claimed ? `${r.claimed} download(s) attached to their game` : "nothing to attach",
   stubs: r => r.let_go ? `${r.let_go} broken disc archive(s) let go, to be fetched again` : "none",
@@ -1444,7 +1445,7 @@ const SET_KEYS = ["nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "s
                   "search_cache_ttl", "llm_enabled", "llm_base", "llm_model", "llm_timeout",
                   "export_wanted_only", "export_curated_only", "export_rating_min",
                   "rawg_enabled", "rawg_delay", "rawg_jitter", "rawg_timeout", "rawg_budget",
-                  "ra_enabled", "ra_delay", "ra_timeout", "community_auto_hours", "chd_cache_dir", "incoming_dir", "maintain_auto_hours"];
+                  "ra_enabled", "ra_delay", "ra_timeout", "community_auto_hours", "chd_cache_dir", "incoming_dir", "incoming_remove", "maintain_auto_hours"];
 
 const SRC_LABEL = { ui: "saved in UI", env: "from .env", default: "default" };
 

@@ -131,9 +131,14 @@ def unpack(folder=None, progress=None, stop=None):
             out["skipped"][p.name] = f"unreadable: {e}"[:200]
             continue                      # not remembered: tried again next time
         games = game_members(names)
+        # Games left in the archive on purpose (an Xbox folder): the archive is kept for
+        # the owner to decide about, never deleted with them inside.
+        held = [n for n in names if _SKIP_FOLDERS.search(n)
+                and Path(n).suffix.lower() in _TRACKS]
         if not games:
-            out["skipped"][p.name] = "no games inside (artwork, videos or manuals)"
-            state[_key(p)] = {"games": 0}
+            out["skipped"][p.name] = ("only games RomCom leaves out (Xbox) — kept" if held
+                                      else "no games inside (artwork, videos or manuals) — kept")
+            state[_key(p)] = {"games": 0, "held": len(held)}
             _save(folder, state)
             continue
         target = Path(base) / "incoming" / re.sub(r'[<>:"/\\|?*]', "_", p.stem)
@@ -145,16 +150,92 @@ def unpack(folder=None, progress=None, stop=None):
         except Exception as e:
             out["skipped"][p.name] = f"could not unpack: {e}"[:200]
             continue
-        state[_key(p)] = {"games": len(games), "to": str(target)}
+        state[_key(p)] = {"games": len(games), "to": str(target), "held": len(held)}
         _save(folder, state)
         out["unpacked"].append(str(target))
         out["files"] += len(games)
     return out
 
 
+def remove_enabled():
+    return str(settings().get("incoming_remove", "true")).strip().lower() not in (
+        "0", "false", "no", "off")
+
+
+def _forget(db, path):
+    """Drop the files rows of a path gone from disk (the file and its archive members)."""
+    db.execute("DELETE FROM files WHERE path=? OR path LIKE ?", (str(path), f"{path}|%"))
+
+
+def _repath(db, old, new):
+    """A moved file keeps its rows, matches and hashes: only the path changes."""
+    db.execute("UPDATE files SET path=? WHERE path=?", (str(new), str(old)))
+    db.execute("UPDATE files SET path=? || substr(path, ?) WHERE path LIKE ?",
+               (str(new), len(str(old)) + 1, f"{old}|%"))
+
+
+def tidy(folder, base, scanned_ok, db=None):
+    """With incoming_remove on (the default): no game kept twice. An archive whose games
+    were unpacked and scanned is deleted; a loose file the scan matched or adopted moves
+    into <download dir>/incoming/loose/ (a rename on the same drive). Kept for the owner:
+    archives holding games RomCom leaves out (Xbox) or nothing importable, and loose files
+    nothing claimed. Returns {"deleted": [...], "moved": [...], "bytes": n}."""
+    import shutil
+    from .db import connect
+    out = {"deleted": [], "moved": [], "bytes": 0}
+    if not remove_enabled() or not folder or not folder.exists():
+        return out
+    db = db or connect()
+    state = _load(folder)
+    for p in sorted(folder.iterdir()):
+        if not p.is_file() or p.suffix.lower() not in ARCHIVES:
+            continue
+        st = state.get(_key(p)) or {}
+        if not st.get("to") or st.get("held") or st["to"] not in scanned_ok:
+            continue
+        size = p.stat().st_size
+        try:
+            p.unlink()
+        except OSError:
+            continue
+        with db:
+            _forget(db, p)
+        out["deleted"].append(p.name)
+        out["bytes"] += size
+    loose = Path(base) / "incoming" / "loose"
+    if str(folder) not in scanned_ok:
+        return out
+    claimed = {r[0] for r in db.execute(
+        "SELECT path FROM files WHERE path LIKE ? AND matched_item_id IS NOT NULL",
+        (f"{folder}%",))}
+    for p in sorted(folder.iterdir()):
+        if p.name == STATE or p.name.startswith(".") or (
+                p.is_file() and p.suffix.lower() in ARCHIVES):
+            continue
+        mine = ({str(p)} if p.is_file() else
+                {str(f) for f in p.rglob("*") if f.is_file()})
+        if not mine or not all(any(c == m or c.startswith(m + "|") for c in claimed)
+                               for m in mine):
+            continue                          # something in it nothing claimed: kept
+        target = loose / p.name
+        if target.exists():
+            continue
+        loose.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.move(str(p), str(target))
+        except OSError:
+            continue
+        with db:
+            for m in mine:
+                _repath(db, m, target / Path(m).relative_to(p) if p.is_dir() else target)
+        out["moved"].append(p.name)
+    return out
+
+
 def run(progress=None, stop=None):
     """Unpack what is new, then scan the unpacked folders and the incoming folder itself
-    (loose files dropped there). Returns the unpack report plus the scans' counts."""
+    (loose files dropped there), then tidy the incoming folder so no game is kept twice
+    (`tidy`). Returns the unpack report plus the scans' counts and what was tidied."""
     from .scanner import scan
     folder = incoming_dir()
     r = unpack(folder, progress=progress, stop=stop)
@@ -168,6 +249,10 @@ def run(progress=None, stop=None):
         _save(folder, state)
     except OSError:
         pass
+    scanned_ok = set()
+    state = _load(folder)
+    earlier = [v["to"] for v in state.values()
+               if isinstance(v, dict) and v.get("to") and v["to"] not in r["unpacked"]]
     for path in [*r["unpacked"], str(folder)]:
         if stop is not None and stop.is_set():
             break
@@ -178,6 +263,12 @@ def run(progress=None, stop=None):
         except Exception as e:
             r["skipped"][path] = f"scan failed: {e}"[:200]
             continue
+        scanned_ok.add(path)
         for k in scans:
             scans[k] += s.get(k) or 0
-    return r | {"scan": scans}
+    # Archives unpacked by an earlier run were scanned then: they may go now too.
+    scanned_ok |= {t for t in earlier if Path(t).exists()}
+    base = (settings().get("download_dir") or "").strip().strip('"')
+    tidied = tidy(folder, base, scanned_ok) if base and not (
+        stop is not None and stop.is_set()) else {"deleted": [], "moved": [], "bytes": 0}
+    return r | {"scan": scans, "tidied": tidied}
