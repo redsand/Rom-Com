@@ -312,6 +312,21 @@
       <div id="org-result"></div>
     </div>
 
+    <div class="card" id="upkeep-card">
+      <h2>Library upkeep <span class="hint">RomCom keeps the library tidy by itself — this is what it does, and a button to do it now</span></h2>
+      <div class="filters">
+        <button id="upkeep-start" class="primary">Tidy up now</button>
+        <span class="sub" id="upkeep-when"></span>
+      </div>
+      <div id="upkeep-steps" class="checklist" style="max-height:none"></div>
+      <div id="upkeep-progress" hidden>
+        <div class="meter big"><i id="upkeep-bar" style="width:0%"></i></div>
+        <div class="sub" id="upkeep-current"></div>
+        <button id="upkeep-stop" class="ghost">Stop</button>
+      </div>
+      <div id="upkeep-result"></div>
+    </div>
+
     <div class="card" id="art-card">
       <h2>Artwork <span class="hint">box art, snaps, title screens and arcade marquees, for the games you have</span></h2>
       <div class="filters">
@@ -439,6 +454,17 @@
         <input id="set-chd_cache_dir" type="search" placeholder="(download folder)\chd-cache" spellcheck="false" style="flex:1">
         <button class="ghost browse" data-target="#set-chd_cache_dir">Browse&hellip;</button>
         <span class="sub">discs converted for one card are kept here for the next</span>
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Incoming folder</span>
+        <input id="set-incoming_dir" type="search" placeholder="(download folder) Incoming" spellcheck="false" style="flex:1">
+        <button class="ghost browse" data-target="#set-incoming_dir">Browse&hellip;</button>
+        <span class="sub">drop games here (zips, rars, loose files) — RomCom unpacks and imports them</span>
+      </div>
+      <div class="filters">
+        <span class="count" style="width:150px">Upkeep every</span>
+        <input id="set-maintain_auto_hours" type="search" placeholder="24" spellcheck="false" style="width:90px">
+        <span class="sub">hours between full library tidy-ups (0 = only by hand); the incoming folder is checked every 5 minutes</span>
       </div>
       <div class="filters">
         <span class="count" style="width:150px">Poll interval</span>

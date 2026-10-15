@@ -510,18 +510,23 @@ def create_app():
     jobs = {k: {"running": False, "done": 0, "total": 0, "current": "", "stats": None,
                 "result": None, "error": None, "last_beat": None}
             for k in ("import", "scan", "organize", "romset", "adopt", "acquire", "community",
-                      "artwork")}
+                      "artwork", "maintain")}
     job_lock = threading.Lock()
     # Jobs the UI can stop. Acquire is stopped through the watcher toggle (acquirer.STOP),
     # which the watchdog also reads, so it is deliberately not here.
     stops = {"organize": threading.Event(), "romset": threading.Event(),
-             "artwork": threading.Event()}
+             "artwork": threading.Event(), "maintain": threading.Event()}
 
     def _job_fn(kind, params):
         if kind == "import":
             return lambda prog: import_dats(params["path"], system=params.get("system") or None,
                                             source=params.get("source") or None,
                                             wanted=bool(params.get("wanted")), progress=prog)
+        if kind == "maintain":
+            from . import maintain
+            return lambda prog: maintain.run(
+                steps=params.get("steps") or None, progress=prog, stop=stops["maintain"],
+                busy=lambda: jobs["organize"]["running"] or jobs["romset"]["running"])
         if kind == "scan":
             return lambda prog: scan(params["path"], name_match=params.get("name_match", True),
                                      adopt=params.get("adopt", True),
@@ -827,6 +832,27 @@ def create_app():
         from . import artwork
         return jsonify(artwork.coverage())
 
+    @app.get("/api/maintain")
+    def api_maintain_status():
+        """The upkeep steps, the last run's report and what the incoming folder holds."""
+        from . import incoming, maintain
+        folder = incoming.incoming_dir()
+        return jsonify({"steps": [{"name": n, "what": w} for n, w in maintain.STEPS],
+                        "last": maintain.last(), "last_full": maintain.last_full() or None,
+                        "auto_hours": settings().get("maintain_auto_hours"),
+                        "incoming_dir": str(folder) if folder else None,
+                        "incoming_pending": [p.name for p in incoming.pending(folder)]
+                        if folder else []})
+
+    @app.post("/api/maintain")
+    def api_maintain():
+        """Run library upkeep now: every step, or the ones named in `steps`."""
+        from . import maintain
+        body = request.get_json(force=True, silent=True) or {}
+        known = {n for n, _ in maintain.STEPS}
+        steps = [x for x in (body.get("steps") or []) if x in known] or None
+        return start_job("maintain", {"steps": steps})
+
     @app.post("/api/artwork")
     def api_artwork_fetch():
         """Fetch artwork for the games in hand from libretro-thumbnails, as a job."""
@@ -1092,6 +1118,25 @@ def create_app():
         return False
 
     CROWD_CHECK_SECS = 600  # how often the scheduler asks whether a crowd sync is due
+    UPKEEP_CHECK_SECS = 300  # how often the incoming folder is looked at
+
+    def _upkeep_tick():
+        """Library upkeep runs itself: the incoming folder whenever an archive or file has
+        landed there, the whole list (maintain.STEPS) once maintain_auto_hours have passed
+        since the last full run. Returns what it launched, or None."""
+        try:
+            from . import incoming, maintain
+            if jobs["maintain"]["running"]:
+                return None
+            hours = float(settings().get("maintain_auto_hours") or 0)
+            if hours > 0 and time.time() - maintain.last_full() >= hours * 3600:
+                return "full" if _launch("maintain", {"auto": True}) else None
+            if incoming.pending() or incoming.loose_changed():
+                return "incoming" if _launch("maintain", {"auto": True,
+                                                          "steps": ["incoming"]}) else None
+        except Exception:
+            pass   # the scheduler must never take the watchdog down with it
+        return None
 
     def _crowd_tick():
         """Crowd scores keep themselves fresh: once community_auto_hours have passed
@@ -1111,13 +1156,16 @@ def create_app():
         recovery, this is what makes 'always healthy' true in practice: no single failure
         can leave downloads silently stopped until someone notices. The same thread runs
         the crowd-score schedule."""
-        last_crowd = 0.0
+        last_crowd = last_upkeep = 0.0
         while True:
             time.sleep(WATCHDOG_INTERVAL)
             _watchdog_tick()
             if time.monotonic() - last_crowd >= CROWD_CHECK_SECS:
                 last_crowd = time.monotonic()
                 _crowd_tick()
+            if time.monotonic() - last_upkeep >= UPKEEP_CHECK_SECS:
+                last_upkeep = time.monotonic()
+                _upkeep_tick()
 
     def start_watchdog():
         threading.Thread(target=_watchdog, daemon=True).start()
@@ -1173,6 +1221,7 @@ def create_app():
     app.jobs = jobs          # test seam: lets a test freeze a heartbeat
     app.watchdog_tick = _watchdog_tick
     app.crowd_tick = _crowd_tick
+    app.upkeep_tick = _upkeep_tick
     app.start_watchdog = start_watchdog
     app.start_checkpointer = start_checkpointer
 

@@ -451,6 +451,17 @@ def cmd_artwork(a):
     print(json.dumps(r, indent=2))
 
 
+def cmd_maintain(a):
+    from . import maintain
+    if a.list:
+        for n, w in maintain.STEPS:
+            print(f"  {n:9} {w}")
+        return
+    r = maintain.run(steps=a.step or None,
+                     progress=lambda i, t, n: print(f"[{i}/{t}] {n}", flush=True))
+    print(json.dumps(r, indent=2, default=str))
+
+
 def cmd_chd_cache(a):
     from .organizer import precache_chds
     excl = _exclude(a.exclude_labels)
@@ -593,6 +604,10 @@ def main():
     aw.add_argument("--media-dir", help="ES-DE media folder (default <dest>/ES-DE/downloaded_media)")
     aw.add_argument("--refresh", action="store_true", help="re-check misses and re-read the indexes")
     aw.set_defaults(fn=cmd_artwork)
+    mt=s.add_parser("maintain", help="library upkeep (the service runs it daily): import the incoming folder, attach and repair downloads, labels, artwork, duplicates")
+    mt.add_argument("--step", action="append", help="run only these steps (see --list)")
+    mt.add_argument("--list", action="store_true", help="list the steps")
+    mt.set_defaults(fn=cmd_maintain)
     cc=s.add_parser("chd-cache", help="convert a system's discs to CHD ahead of a card export (they are kept for every later card)")
     cc.add_argument("system", nargs="+")
     cc.add_argument("--exclude-labels", default=None, help="labels to leave out, comma-separated, as the export will")

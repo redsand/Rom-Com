@@ -689,6 +689,7 @@ const JOBS = {
   acquire:  {wrap: "#acq-progress",  bar: "#acq-bar",  cur: "#acq-current",  btn: "#acq-start",  out: "#acq-result",   render: renderAcquireResult, liveRender: renderAcquireLive, doneMsg: "Download run finished"},
   // Lives on the Settings tab; its render refills the coverage line under the button.
   artwork:  {wrap: "#art-progress",  bar: "#art-bar",  cur: "#art-current",  btn: "#art-start",  out: "#art-result",   render: renderArtworkResult, doneMsg: "Artwork fetched"},
+  maintain: {wrap: "#upkeep-progress", bar: "#upkeep-bar", cur: "#upkeep-current", btn: "#upkeep-start", out: "#upkeep-result", render: renderUpkeepResult, doneMsg: "Library tidied"},
   community:{wrap: "#community-progress", bar: "#community-bar", cur: "#community-current", btn: "#community-sync", out: "#community-result", render: renderCommunityResult, doneMsg: "Crowd scores synced"},
 };
 const jobTimers = {};
@@ -703,6 +704,7 @@ function loadImport() {
   loadDupes();
   loadArcadeHealth();
   api("/api/artwork").then(renderArtworkResult).catch(() => {});
+  loadUpkeep();
   for (const kind of Object.keys(JOBS)) pollJob(kind, false);
 }
 
@@ -1263,6 +1265,40 @@ $("#art-stop").addEventListener("click", async () => {
   try { await post("/api/job/artwork/cancel"); toast("Stopping…"); } catch (e) { toast(e.message, true); }
 });
 
+/* ---------- Library upkeep (maintain.py): what RomCom tidies by itself ---------- */
+const UPKEEP_SAYS = {
+  incoming: r => r.archives || r.files || (r.scan && (r.scan.matched || r.scan.adopted))
+    ? `${r.files || 0} game file(s) unpacked from ${r.archives || 0} archive(s); ${(r.scan?.matched || 0).toLocaleString()} matched, ${(r.scan?.adopted || 0).toLocaleString()} added`
+    : (r.note || "nothing new"),
+  claim: r => r.claimed ? `${r.claimed} download(s) attached to their game` : "nothing to attach",
+  stubs: r => r.let_go ? `${r.let_go} broken disc archive(s) let go, to be fetched again` : "none",
+  wrong: r => r.let_go ? `${r.let_go} wrong download(s) let go (${fmtBytes(r.orphan_bytes || 0)} unused)` : "none",
+  labels: r => `${(r.labels || 0).toLocaleString()} labels`,
+  artwork: r => `${(r.boxart || 0).toLocaleString()} of ${(r.games || 0).toLocaleString()} games have box art`,
+  dupes: r => r.deleted ? `${r.deleted.toLocaleString()} duplicate(s) deleted, ${fmtBytes(r.bytes_freed || 0)} freed` : "no duplicates",
+  prune: r => r.files_deleted ? `${r.files_deleted.toLocaleString()} extra copies deleted, ${fmtBytes(r.bytes_freed || 0)} freed` : "one copy per game already",
+};
+async function loadUpkeep() {
+  let d;
+  try { d = await api("/api/maintain"); } catch { return; }
+  const last = d.last;
+  const when = d.last_full ? new Date(d.last_full * 1000).toLocaleString() : "never";
+  $("#upkeep-when").innerHTML = `runs by itself every ${esc(String(d.auto_hours || 0))}h (last full run: ${esc(when)})`
+    + (d.incoming_dir ? ` · incoming folder <code>${esc(d.incoming_dir)}</code>${d.incoming_pending.length ? ` — <b>${d.incoming_pending.length} archive(s) waiting</b>` : ""}` : "");
+  $("#upkeep-steps").innerHTML = d.steps.map(s => {
+    const r = last?.steps?.[s.name];
+    const said = !r ? "" : r.error ? `<span class="bad">${esc(r.error)}</span>`
+      : r.skipped ? esc(r.skipped) : esc((UPKEEP_SAYS[s.name] || (() => ""))(r));
+    return `<div class="check${r?.error ? " bad" : ""}"><span class="mark">${r?.error ? "✕" : r ? "✓" : "·"}</span>
+      <span class="d"><b>${esc(s.what)}</b>${said ? ` — <span class="sub">${said}</span>` : ""}</span></div>`;
+  }).join("");
+}
+function renderUpkeepResult() { loadUpkeep(); }
+$("#upkeep-start").addEventListener("click", () => startJob("maintain", "/api/maintain", {}));
+$("#upkeep-stop").addEventListener("click", async () => {
+  try { await post("/api/job/maintain/cancel"); toast("Stopping after this step…"); } catch (e) { toast(e.message, true); }
+});
+
 /* ---------- Arcade health: per core, what runs, what is broken, what to fix first ---------- */
 async function loadArcadeHealth() {
   let m;
@@ -1408,7 +1444,7 @@ const SET_KEYS = ["nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "s
                   "search_cache_ttl", "llm_enabled", "llm_base", "llm_model", "llm_timeout",
                   "export_wanted_only", "export_curated_only", "export_rating_min",
                   "rawg_enabled", "rawg_delay", "rawg_jitter", "rawg_timeout", "rawg_budget",
-                  "ra_enabled", "ra_delay", "ra_timeout", "community_auto_hours", "chd_cache_dir"];
+                  "ra_enabled", "ra_delay", "ra_timeout", "community_auto_hours", "chd_cache_dir", "incoming_dir", "maintain_auto_hours"];
 
 const SRC_LABEL = { ui: "saved in UI", env: "from .env", default: "default" };
 

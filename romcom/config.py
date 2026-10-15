@@ -78,6 +78,8 @@ ENV_VARS = {
     "ra_timeout": "ROMCOM_RA_TIMEOUT",
     "community_auto_hours": "ROMCOM_COMMUNITY_AUTO_HOURS",
     "chd_cache_dir": "ROMCOM_CHD_CACHE",
+    "incoming_dir": "ROMCOM_INCOMING_DIR",
+    "maintain_auto_hours": "ROMCOM_MAINTAIN_AUTO_HOURS",
 }
 # Deliberately NOT here: the web master login (ROMCOM_WEB_USER/ROMCOM_WEB_PASS), the
 # MCP key (ROMCOM_MCP_KEY), and the community-source API credentials (RA_USERNAME,
@@ -162,6 +164,12 @@ def _env_settings():
         # Where converted CHDs are kept, so a disc is converted once for every card
         # (empty: <download dir>/chd-cache). It grows to roughly half the disc library.
         "chd_cache_dir": (os.getenv("ROMCOM_CHD_CACHE") or "").strip().strip('"'),
+        # Games dropped here are unpacked and imported by the service (incoming.py);
+        # empty: '<download dir> Incoming', when that folder exists.
+        "incoming_dir": (os.getenv("ROMCOM_INCOMING_DIR") or "").strip().strip('"'),
+        # The whole upkeep list (maintain.py) runs this often (hours); 0 = only by hand.
+        # The incoming folder is looked at every few minutes regardless.
+        "maintain_auto_hours": os.getenv("ROMCOM_MAINTAIN_AUTO_HOURS", "24"),
     }
 
 def _overrides(db_path):
