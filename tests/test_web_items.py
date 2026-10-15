@@ -107,3 +107,12 @@ def test_summary_counts_held_games_with_an_opinion(monkeypatch, tmp_path):
     [row] = s["by_system"]
     assert row["have"] == 2 and row["ranked"] == 1
     assert s["on_disk"] == 2 and s["ranked"] == 1
+
+def test_the_page_never_pairs_new_html_with_a_cached_script(monkeypatch, tmp_path):
+    """New headers over yesterday's cached app.js put the Score column's sort on another
+    column's numbers. The page names its script and stylesheet by file time."""
+    c = make_client(monkeypatch, tmp_path, [])
+    r = c.get("/")
+    html = r.get_data(as_text=True)
+    assert 'src="app.js?v=' in html and 'href="style.css?v=' in html
+    assert r.headers.get("Cache-Control") == "no-cache"

@@ -66,7 +66,22 @@ def create_app():
 
     @app.get("/")
     def index():
-        return send_from_directory(app.static_folder, "index.html")
+        """The page, with its script and stylesheet stamped by their file times. A browser
+        holding yesterday's app.js under today's index.html drew 11 cells under 9 headers,
+        so the Score column showed another column's numbers and sorting looked broken."""
+        from flask import make_response
+        root = Path(app.static_folder)
+        html = (root / "index.html").read_text(encoding="utf-8")
+        for name in ("app.js", "style.css"):
+            try:
+                stamp = int((root / name).stat().st_mtime)
+            except OSError:
+                continue
+            html = html.replace(f'"{name}"', f'"{name}?v={stamp}"')
+        resp = make_response(html)
+        resp.headers["Content-Type"] = "text/html; charset=utf-8"
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
 
     @app.get("/api/summary")
     def api_summary():

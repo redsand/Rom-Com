@@ -337,8 +337,7 @@ function itemRow(r) {
     Array.from({length: 10}, (_, i) => i + 1).map(n =>
       `<option ${n === r.rating ? "selected" : ""}>${n}</option>`).join("") + `</select>`;
   return `<tr data-id="${esc(r.id)}">
-    <td><div>${esc(r.title)}${r.art ? ` <span class="badge good" title="artwork cached: ${esc(r.art)}">art</span>` : ""}</div>${series}${labelChips(r)}<div class="sub">${esc(r.id)}</div></td>
-    <td>${esc(r.system || "—")}</td>
+    <td><div>${esc(r.title)}${r.art ? ` <span class="badge good" title="artwork cached: ${esc(r.art)}">art</span>` : ""}</div>${series}<div class="labels"><span class="badge" title="system">${esc(r.system || "—")}</span></div>${labelChips(r)}<div class="sub">${esc(r.id)}</div></td>
     <td class="r">${r.year || "—"}</td>
     <td>${badge(r.status)} ${statusSel}</td>
     <td class="c">${bestCell}</td>
@@ -372,7 +371,7 @@ async function loadLibrary(append = false) {
       // The filters (not the catalog) are hiding everything — say so and offer the way out.
       const p = libQuery(); p.set("view", "all"); p.set("limit", "1");
       const all = await api("/api/items?" + p);
-      if (all.total) body.innerHTML = `<tr><td colspan="10" class="sub" style="padding:20px">
+      if (all.total) body.innerHTML = `<tr><td colspan="9" class="sub" style="padding:20px">
         No <b>${esc($("#f-view").selectedOptions[0].text)}</b> items match — but ${all.total.toLocaleString()}
         cataloged items do. Imported catalogs start as not-wanted; switch to
         <button class="small ghost" id="lib-showall">All items</button> and use the bulk action to flag what you want.</td></tr>`;
