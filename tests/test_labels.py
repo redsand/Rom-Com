@@ -152,3 +152,14 @@ def test_gba_public_domain_pile_is_labelled_and_real_games_are_not():
     for real in ("Kirby's Dream Land (USA)", "Demolition Racer (USA)", "Demon's Crest (USA)",
                  "Final Fantasy V Advance (USA)", "Doom II (USA)"):
         assert from_name(real) == {}, real
+
+
+def test_emulator_wrapped_gba_builds_and_book_readers():
+    from romcom.labels import from_name
+    for t in ("PCEAdvance V5.9 - Metal Stoker (J)", "SNESAdvance - Stealth (J)",
+              "FC2GBA - 26 Games", "WarioWare Inc. - Selected 4 (J) (MB2GBA)"):
+        assert "wrapped" in from_name(t), t
+    for t in ("Belinda by Anne Rice [eba]", "ReadBoy V1.0 - SDYX",
+              "GoodBook Advance II 1.0 - (Chinese Book 02)"):
+        assert "not-a-game" in from_name(t), t
+    assert from_name("Goombas Revenge (USA)") == {}

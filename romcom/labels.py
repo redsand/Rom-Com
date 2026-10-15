@@ -46,6 +46,7 @@ TAGS = {
     "unlicensed": "unlicensed releases",
     "pirate": "pirate releases",
     "bootleg": "arcade bootlegs",
+    "wrapped": "another system's game inside a GBA emulator (PocketNES, SNESAdvance, PCEAdvance…)",
 }
 
 # catver's top level -> tags. Anything absent is a game genre and gets no tag.
@@ -82,8 +83,13 @@ _NAME_TAGS = (
     # GBA's public-domain pile names itself outside brackets: e-books ([ebb]), picture
     # slideshows, coding libraries' samples ('HEL Library V2.0 ... by Peter Schraut'),
     # music players.
-    ("not-a-game", re.compile(r"\[ebb\]|\bslide ?show\b|\bhel library\b|\bmusic player\b"
-                              r"|\bmp3 player\b|\bpicture viewer\b")),
+    ("not-a-game", re.compile(r"\[eb[ab]\]|\bslide ?show\b|\bhel library\b|\bmusic player\b"
+                              r"|\bmp3 player\b|\bpicture viewer\b|\breadboy\b"
+                              r"|\bgoodbook advance\b|\(chinese book\b")),
+    # The NES, SNES, PC Engine, Master System and Spectrum game is in its own folder,
+    # where it runs natively; the GBA build of it inside an emulator is a second copy.
+    ("wrapped", re.compile(r"^(?:pocketnes|snesadvance|pceadvance|drsms|smsadvance"
+                           r"|zx advance|fc2gba|gbagi|goomba|cologne)\b|\(mb2gba\)")),
     ("homebrew", re.compile(r"\[pd\]|\bv\d+(?:\.\d+)+\b[^()]*\bby [a-z]")),
     ("demo", re.compile(r"\b(?:tech |intro )?demo\b(?! ?land)(?!lition)")),
     ("beta", re.compile(r"\bpublic beta\b")),
