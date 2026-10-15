@@ -976,3 +976,28 @@ def test_a_filled_card_keeps_room_for_its_covers(tmp_path, monkeypatch):
     r = organize(tmp_path / "sd", fill=True, artwork=True)
     assert r["copied"] == 1 and r["stopped"]
     assert wrote == [True]
+
+
+def test_a_full_card_still_counts_the_games_already_on_it(tmp_path, monkeypatch):
+    """A top-up after new imports: the new best-rated game does not fit, and the walk used
+    to end there, so the games already on the card further down got no covers."""
+    _one_rom(tmp_path, monkeypatch, name="Big New.nes", payload=b"N" * 50)
+    _one_rom(tmp_path, monkeypatch, name="Old.nes", payload=b"old")
+    db = connect()
+    with db:
+        db.execute("UPDATE items SET community_score=90 WHERE id='nes-Big New.nes'")
+    sd = tmp_path / "sd"
+    (sd / "nes").mkdir(parents=True)
+    (sd / "nes" / "Old.nes").write_bytes(b"old")           # on the card from last time
+    from romcom import artwork, organizer
+    monkeypatch.setattr(artwork, "cached_sizes", lambda *a, **k: {})
+    seen = {}
+    monkeypatch.setattr(artwork, "export_media",
+                        lambda dest, entries=None, **k: seen.update(entries or {}) or {
+                            "written": 1, "stopped": False})
+    monkeypatch.setattr(organizer, "_reserve_bytes", lambda d: 1000)
+    monkeypatch.setattr(organizer, "_free_bytes", lambda d: 1010)    # 10 bytes: nothing new
+    r = organize(sd, fill=True, artwork=True)
+    assert r["copied"] == 0 and r["stopped"]
+    assert [e for e, _ in seen.get("nes", [])] == ["Old.nes"]
+    assert sum("reached its free-space reserve" in e["error"] for e in r["errors"]) == 1

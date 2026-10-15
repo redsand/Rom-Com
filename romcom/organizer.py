@@ -715,6 +715,15 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
 
     copied = skipped = missing = 0
     planned_bytes = 0
+    # A fill that runs out of room does not end the walk. Games further down the order
+    # may already be on the card from an earlier run (a top-up after new imports): they
+    # are still counted, so their covers and gamelist entries are written, while nothing
+    # new is copied. 2,700 games on a full card once got no covers because the walk
+    # ended at the first new game that did not fit.
+    full = [False]
+
+    def room_ok(nbytes):
+        return not full[0] and room_for(nbytes)
     by_system = {}
     not_playable, unpacked, converted, card_games = {}, 0, 0, {}
     decrypted = 0
@@ -744,12 +753,15 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                     if target.exists() and target.stat().st_size == size:
                         skipped += 1
                         continue
-                    if not room_for(size):
+                    if not room_ok(size):
                         errors.append({"file": "", "error": f"{dest} reached its free-space "
                                                             f"reserve — export stopped before "
                                                             f"{Path(src).name}"})
-                        stopped = True
                         done = False
+                        if fill:
+                            full[0] = True   # nothing new fits: keep walking (see room_ok)
+                        else:
+                            stopped = True
                         break
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, target)
@@ -769,12 +781,15 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                     if esde.ps3_done(target, size):
                         skipped += 1
                         continue
-                    if not room_for(size):
+                    if not room_ok(size):
                         errors.append({"file": "", "error": f"{dest} reached its free-space "
                                                             f"reserve — export stopped before "
                                                             f"{rel}"})
-                        stopped = True
                         done = False
+                        if fill:
+                            full[0] = True   # nothing new fits: keep walking (see room_ok)
+                        else:
+                            stopped = True
                         break
                     if progress: progress(i, len(games), f"decrypting {rel} for the card…")
                     esde.make_ps3(src, names, key, target)
@@ -786,12 +801,15 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                     if target.exists() and target.stat().st_size > 0:
                         skipped += 1
                         continue
-                    if not room_for(size):
+                    if not room_ok(size):
                         errors.append({"file": "", "error": f"{dest} reached its free-space "
                                                             f"reserve — export stopped before "
                                                             f"{main}"})
-                        stopped = True
                         done = False
+                        if fill:
+                            full[0] = True   # nothing new fits: keep walking (see room_ok)
+                        else:
+                            stopped = True
                         break
                     if progress: progress(i, len(games), f"converting {main} to CHD…")
                     esde.make_chd(src, names, main, target, system)
@@ -803,12 +821,15 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                     if _unpacked(tdir, src, names):
                         skipped += 1
                         continue
-                    if not room_for(size):
+                    if not room_ok(size):
                         errors.append({"file": "", "error": f"{dest} reached its free-space "
                                                             f"reserve — export stopped before "
                                                             f"{Path(src).name}"})
-                        stopped = True
                         done = False
+                        if fill:
+                            full[0] = True   # nothing new fits: keep walking (see room_ok)
+                        else:
+                            stopped = True
                         break
                     try:
                         esde.extract(src, names, tdir)
@@ -833,6 +854,17 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             prefix = f"{g['sub']}/" if g["sub"] else ""
             card_games.setdefault(g["folder"], []).extend(
                 (prefix + e, r) for e in g["entries"])
+    if full[0]:
+        stopped = True                      # the card filled: report it as before
+        seen = False
+        kept = []
+        for e in errors:                    # one 'reached its reserve' line, not one per game
+            if "reached its free-space reserve" in e.get("error", ""):
+                if seen:
+                    continue
+                seen = True
+            kept.append(e)
+        errors[:] = kept
     if progress: progress(len(games), len(games), "stopped" if stopped else "done")
 
     # The BIOS files go in after the games — nobody browses for them, and a run that
