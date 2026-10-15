@@ -190,12 +190,25 @@ def plausible(title, system, cand_title, size=0):
     words = [w for w in _plain(main) if w not in _FILLER]
     if not words:
         return True
-    cand = _plain(re.sub(r"\.[a-z0-9]{2,4}$", "", (cand_title or "").lower()))
+    raw = re.sub(r"\.[a-z0-9]{2,4}$", "", (cand_title or "").lower())
+    if " " not in raw and raw.count(".") >= 2:
+        raw = raw.replace(".", " ")           # a scene name: TAXI.2.LE.JEU.FRENCH-SPHYNX
+    cand = _plain(raw)
     while len(cand) > 1 and cand[0].isdigit() and len(cand[0]) >= 3 and cand[0] not in words:
         cand = cand[1:]                       # a site's catalogue number ("0547 ...")
     have = set(cand)
     if len([w for w in words if w not in have]) <= len(words) // 3:
         return True
+    if " - " in main:
+        # The series title without the subtitle, and nothing else: 'Tomb Raider Chronicles
+        # (I)' is 'Tomb Raider Chronicles - La Leggenda di Lara Croft' with its Italian
+        # subtitle dropped. A file naming another subtitle or a sequel ('Castlevania -
+        # Symphony of the Night', 'Investigations 2') has words of its own and is not.
+        head = [w for w in _plain(main.split(" - ", 1)[0]) if w not in _FILLER]
+        cand_main = [w for w in _plain(re.split(r"[(\[]", raw, maxsplit=1)[0])
+                     if w not in _FILLER]
+        if head and set(head) <= set(cand_main) and set(cand_main) <= set(words):
+            return True
     a, b = "".join(words), "".join(w for w in cand if w not in _FILLER)
     if a in b:
         return True                           # 'Mega Man' found as 'megaman'
