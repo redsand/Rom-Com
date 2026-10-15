@@ -1,4 +1,4 @@
-import argparse, json
+import argparse, json, sys
 from .db import connect
 from .seed import seed
 from .planner import bulk_plan, next_individuals
@@ -533,6 +533,13 @@ def cmd_community(a):
     print(json.dumps(report, indent=2))
 
 def main():
+    # A Windows console speaks cp1252: one Japanese game name in a progress line used to
+    # raise mid-scan and end the whole import. Unprintable characters print as '?'.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     p=argparse.ArgumentParser(prog="romcom"); s=p.add_subparsers(dest="cmd",required=True)
     s.add_parser("init").set_defaults(fn=lambda a:(connect(),print("Database initialized/migrated")))
     s.add_parser("seed").set_defaults(fn=lambda a:print(f"Seeded configuration; {seed()} items total"))
