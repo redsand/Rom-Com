@@ -61,7 +61,11 @@ _GATED = """ FROM files f JOIN items i ON i.id=f.matched_item_id
 # one item share a score and the i.id tie-break, so a game's files stay adjacent and space
 # runs out between games, not through one.
 _SCORE = "MAX(COALESCE(i.community_score,0), COALESCE(i.rating,0)*10)"
-_ORDER = f" ORDER BY {_SCORE} DESC, i.system, i.title, i.id, f.path"
+# Among games of one score, one with box art goes first: a card filled to the brim is
+# browsed by its covers, and an equally rated game without one is the one to leave behind.
+_HAS_ART = ("EXISTS (SELECT 1 FROM artwork a WHERE a.item_id=i.id AND a.kind='boxart'"
+            " AND a.path IS NOT NULL)")
+_ORDER = f" ORDER BY {_SCORE} DESC, {_HAS_ART} DESC, i.system, i.title, i.id, f.path"
 
 
 def _set_scores(db, names):
@@ -180,8 +184,8 @@ def _selection(wanted_only=False, keep_only=False, rating_min=None, exclude_labe
     args = _gate_args(wanted_only, keep_only, rating_min)
     rows = db.execute(
         "SELECT f.path, f.bytes, f.sha1, f.md5, f.match_method, i.id item_id, "
-        "i.system, i.title, i.external_id, i.rating, i.community_score"
-        + _GATED + _ORDER, args).fetchall()
+        "i.system, i.title, i.external_id, i.rating, i.community_score, "
+        + _HAS_ART + " has_art" + _GATED + _ORDER, args).fetchall()
     # An arcade set is built from the dat by hash, not copied from its matched files — and
     # a chip shared by many sets records one owner, so a set whose every chip is owned by
     # a sibling had no row here and never reached a card, complete or not: mspacman,
@@ -189,12 +193,14 @@ def _selection(wanted_only=False, keep_only=False, rating_min=None, exclude_labe
     # file-less row each, under the same gates, in the same score order.
     orphans = db.execute(
         "SELECT NULL path, 0 bytes, NULL sha1, NULL md5, 'set' match_method, i.id item_id, "
-        "i.system, i.title, i.external_id, i.rating, i.community_score FROM items i"
+        "i.system, i.title, i.external_id, i.rating, i.community_score, "
+        + _HAS_ART + " has_art FROM items i"
         " WHERE i.system='arcade' AND i.playable=1 AND COALESCE(i.is_device,0)=0"
         " AND NOT EXISTS (SELECT 1 FROM files f WHERE f.matched_item_id=i.id)"
         " AND " + _GATED.split(" WHERE ", 1)[1], args).fetchall()
     if orphans:
-        rows = sorted([*rows, *orphans], key=lambda r: (-_score(r), r["system"] or "",
+        rows = sorted([*rows, *orphans], key=lambda r: (-_score(r), -(r["has_art"] or 0),
+                                                        r["system"] or "",
                                                         r["title"] or "", r["item_id"],
                                                         r["path"] or ""))
     drop = labels.excluded_items(exclude_labels, db)
