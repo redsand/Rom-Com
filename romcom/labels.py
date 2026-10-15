@@ -91,7 +91,8 @@ _NAME_TAGS = (
     ("wrapped", re.compile(r"^(?:pocketnes|snesadvance|pceadvance|drsms|smsadvance"
                            r"|zx advance|fc2gba|gbagi|goomba|cologne)\b|\(mb2gba\)")),
     ("homebrew", re.compile(r"\[pd\]|\bv\d+(?:\.\d+)+\b[^()]*\bby [a-z]")),
-    ("demo", re.compile(r"\b(?:tech |intro )?demo\b(?! ?land)(?!lition)")),
+    ("demo", re.compile(r"\b(?:tech |intro )?demo\b(?! ?land)(?!lition)"
+                        r"|\(taikenban\b|\btaikenban\)|\btrial version\b|\btest operation disc\b")),
     ("beta", re.compile(r"\bpublic beta\b")),
 )
 # GoodTools codes are case-sensitive: [T+Eng] is a translation, [t1] a trainer, [p1] a

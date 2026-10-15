@@ -163,3 +163,9 @@ def test_emulator_wrapped_gba_builds_and_book_readers():
               "GoodBook Advance II 1.0 - (Chinese Book 02)"):
         assert "not-a-game" in from_name(t), t
     assert from_name("Goombas Revenge (USA)") == {}
+
+
+def test_japanese_trial_discs_are_demos():
+    from romcom.labels import from_name
+    assert "demo" in from_name("Aero Dancing F (Japan) (Taikenban)")
+    assert "demo" in from_name("Frame Gride Test Operation Disc")
