@@ -1335,7 +1335,12 @@ def romset(profile, dest, leave_bytes=0, progress=None, db=None, stop=None,
                               exclude_labels, versions)
         sets, n = _defer(dat, mameset.dat_path(other), sets, theirs.get("sets") or [])
         deferred += n
-    pruned = _prune_folder(dest, dat, set(sets)) if prune else {"files": 0, "bytes": 0}
+    pruned = {"files": 0, "bytes": 0}
+    if prune:
+        # Everything the build below writes stays: the sets, the device and bios zips the
+        # dat pulls in beside them (set_roms adds those), and the bios parents of any era.
+        keep = set(sets) | set(mameset.set_roms(sets, dat)) | set(mameset.romof_gaps(dat))
+        pruned = _prune_folder(dest, dat, keep)
 
     def room_for(nbytes):
         free = _free_bytes(dest)
@@ -1530,7 +1535,8 @@ def arcade_card(card, progress=None, db=None, stop=None, arcade_status=None,
         if stop is not None and stop.is_set():
             break
         prog = None if progress is None else (
-            lambda n, total, name, p=profile: progress(n, total, f"{p}: {name}"))
+            lambda n, total, name, p=profile: progress(
+                n, total, name if str(name).startswith(f"{p}:") else f"{p}: {name}"))
         out["cores"][profile] = romset(
             profile, card / esde.ARCADE_FOLDERS[profile], progress=prog, db=db, stop=stop,
             arcade_status=arcade_status, exclude_labels=exclude_labels, versions=versions,

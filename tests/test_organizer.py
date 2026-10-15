@@ -909,7 +909,7 @@ def test_romset_writes_the_esde_gamelist(tmp_path, monkeypatch):
 
 
 def test_arcade_card_puts_fbneo_first_and_mame_only_what_fbneo_lacks(tmp_path, monkeypatch):
-    """The one-click arcade card: fbneo\ and arcade\ on the card root, each game once."""
+    """The one-click arcade card: fbneo/ and arcade/ on the card root, each game once."""
     from romcom.organizer import arcade_card
     dat = tmp_path / "mame.dat"; dat.write_text(FAMILY_DAT, encoding="utf-8")
     fb = tmp_path / "fbneo.dat"
@@ -921,3 +921,29 @@ def test_arcade_card_puts_fbneo_first_and_mame_only_what_fbneo_lacks(tmp_path, m
     assert [p.stem for p in (card / "fbneo").glob("*.zip")] == ["sf2ua"]
     assert [p.stem for p in (card / "arcade").glob("*.zip")] == ["gtclub"]
     assert r["cores"]["mame"]["deferred"] == 1 and not r["stopped"]
+
+
+def test_romset_rerun_keeps_the_device_zips_it_builds(tmp_path, monkeypatch):
+    """A re-run must not delete the device zips (swp30, namco51…) the build writes beside
+    its games — it did, 36 of them every run, and then wrote them all again."""
+    from romcom.organizer import romset
+    dat = tmp_path / "mame.dat"
+    dat.write_text("""<?xml version="1.0"?><datafile>
+<machine name="galaga">
+<rom name="g.bin" size="16" crc="aaaa1111"/>
+<device_ref name="namco51"/>
+</machine>
+<machine name="namco51" isdevice="yes">
+<rom name="n51.bin" size="16" crc="bbbb2222"/>
+</machine>
+</datafile>""", encoding="utf-8")
+    _romset_env(monkeypatch, tmp_path, {"mame": dat}, {"g.bin": "aaaa1111", "n51.bin": "bbbb2222"})
+    from romcom import labels       # catver files a device under 'not a game'
+    monkeypatch.setattr(labels, "excluded_sets",
+                        lambda sets, exclude, db=None: {s for s in sets if s == "namco51"})
+    dest = tmp_path / "card" / "arcade"
+    romset("mame", dest, arcade_status="all", artwork=False)
+    assert (dest / "namco51.zip").exists()
+    r = romset("mame", dest, arcade_status="all", artwork=False)
+    assert r["pruned_files"] == 0 and r["copied"] == 0
+    assert (dest / "namco51.zip").exists()
