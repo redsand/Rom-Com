@@ -66,3 +66,20 @@ def test_a_disc_in_an_archive_is_unpacked_to_launch(tmp_path, monkeypatch):
     got = player.unpacked_disc(str(z), "dreamcast")
     assert got.name == "Game (US).cdi" and got.read_bytes() == b"cdi" * 1000
     assert player.unpacked_disc(str(tmp_path / "Mario.zip"), "nes") is None   # carts: as is
+
+
+def test_a_released_stub_is_not_paired_back(tmp_path):
+    """stub_discs let go of a 1 MB 'disc'; pairing downloads by size put it straight back."""
+    db = connect()
+    _item(db, "lh", "Love Hina - Smile Again (Japan)")
+    f = tmp_path / "Love Hina - Smile Again (Japan).zip"
+    f.write_bytes(b"z" * 970_000)
+    scan(tmp_path, adopt=False)
+    done = datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="seconds")
+    with db:
+        db.execute("INSERT INTO jobs(entity_type,entity_id,result_title,bytes,status,source,"
+                   "queued_at,completed_at) VALUES('item','lh','x',?,'DOWNLOADED','cdromance',?,?)",
+                   (f.stat().st_size, done, done))
+        db.execute("INSERT INTO events(item_id,event,detail) VALUES('lh','stub-disc',?)",
+                   (f"970000 bytes cannot be a dreamcast disc: {f}",))
+    assert unclaimed_downloads(db=db)["count"] == 0

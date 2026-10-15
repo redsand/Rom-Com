@@ -174,7 +174,13 @@ def unclaimed_downloads(apply=False, db=None):
     from pathlib import Path
     from .indexer import plausible
     from .verify import check_download
+    from . import sniff
     db = db or connect()
+    # A file let go on purpose (a stub disc, another game's download) is not unclaimed:
+    # pairing it back by size undid stub_discs and wrong_downloads.
+    released = {m.group(1).strip() for (d,) in db.execute(
+                    "SELECT detail FROM events WHERE event IN ('stub-disc','wrong-download')")
+                for m in [re.search(r"([A-Za-z]:\\[^;]+)$", d or "")] if m}
     orphans = {}
     for r in db.execute("""SELECT f.path, f.bytes, f.mtime FROM files f WHERE f.matched_item_id IS NULL
                            AND f.path NOT LIKE '%|%' AND f.bytes > 0"""):
@@ -197,7 +203,9 @@ def unclaimed_downloads(apply=False, db=None):
         if (j["system"] or "").lower() == "arcade" or len(re.sub(
                 r"[^a-z]", "", re.split(r"[(\[]", j["title"] or "")[0].lower())) < 3:
             continue
-        hits = [path for path, mt in orphans.get(j["bytes"], []) if abs(mt - done) < 3600]
+        hits = [path for path, mt in orphans.get(j["bytes"], [])
+                if abs(mt - done) < 3600 and path not in released
+                and not sniff.stub_disc(j["bytes"], j["system"], f"{j['title']} {Path(path).name}")]
         if len(hits) != 1:
             continue
         # Equal size is not enough on its own: every 64DD disk image is 64 MB. The name
