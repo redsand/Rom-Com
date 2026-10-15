@@ -1210,11 +1210,12 @@ function renderArtworkResult(r) {
     const pct = k => s.games ? Math.round(100 * s[k] / s.games) : 0;
     return `<tr><td>${esc(s.system)}</td><td class="r">${s.games.toLocaleString()}</td>
       <td class="r">${s.source ? pct("boxart") + "%" : "—"}</td><td class="r">${s.source ? pct("snap") + "%" : "—"}</td>
-      <td class="r">${s.source ? pct("title") + "%" : "—"}</td></tr>`;
+      <td class="r">${s.source ? pct("title") + "%" : "—"}</td>
+      <td class="r">${s.system === "arcade" ? pct("marquee") + "%" : "—"}</td></tr>`;
   }).join("");
   $("#art-result").innerHTML = (r.stopped ? `<p class="sub"><b>Stopped</b> — what was fetched stays; fetching again carries on.</p>` : "")
     + (rows ? `<div class="tablewrap" style="margin-top:12px"><table><thead><tr><th>System</th><th class="r">Games</th>
-        <th class="r">Box art</th><th class="r">Snaps</th><th class="r">Titles</th></tr></thead><tbody>${rows}</tbody></table></div>` : "")
+        <th class="r">Box art</th><th class="r">Snaps</th><th class="r">Titles</th><th class="r">Marquees</th></tr></thead><tbody>${rows}</tbody></table></div>` : "")
     + ((r.no_source || []).length ? `<p class="sub">No libretro thumbnail set for: ${esc(r.no_source.join(", "))}.</p>` : "");
 }
 $("#art-start").addEventListener("click", () => {

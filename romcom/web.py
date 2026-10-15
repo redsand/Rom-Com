@@ -824,7 +824,7 @@ def create_app():
         """Fetch artwork for the games in hand from libretro-thumbnails, as a job."""
         from . import artwork
         body = request.get_json(force=True, silent=True) or {}
-        kinds = [k for k in (body.get("kinds") or []) if k in artwork.KINDS]
+        kinds = [k for k in (body.get("kinds") or []) if k in artwork.ALL_KINDS]
         return start_job("artwork", {"systems": [s for s in (body.get("systems") or []) if s],
                                      "kinds": kinds or list(artwork.DEFAULT_KINDS),
                                      "refresh": bool(body.get("refresh"))})

@@ -313,16 +313,18 @@
     </div>
 
     <div class="card" id="art-card">
-      <h2>Artwork <span class="hint">box art, snaps and title screens from libretro-thumbnails, for the games you have</span></h2>
+      <h2>Artwork <span class="hint">box art, snaps, title screens and arcade marquees, for the games you have</span></h2>
       <div class="filters">
         <label class="sub"><input type="checkbox" class="art-kind" value="boxart" checked> box art</label>
         <label class="sub"><input type="checkbox" class="art-kind" value="snap" checked> snaps</label>
         <label class="sub"><input type="checkbox" class="art-kind" value="title"> title screens</label>
+        <label class="sub" title="The cabinet's logo strip — ES-DE themes show it as the game's logo. Arcade only (ArcadeDB)"><input type="checkbox" class="art-kind" value="marquee" checked> marquees</label>
         <label class="sub" title="Re-check games nothing matched before, and re-read the thumbnail indexes"><input type="checkbox" id="art-refresh"> retry misses</label>
         <button id="art-start" class="primary">Fetch artwork</button>
       </div>
-      <p class="sub">Matched by name — the exact libretro spelling, then the same title without its
-        region and revision tags. Images are cached on this PC and shared by every card; the export's
+      <p class="sub">Arcade sets come from ArcadeDB by their set name (flyer, in-game snap, marquee);
+        everything else from libretro-thumbnails, matched by name — the exact libretro spelling, then
+        the same title without its region and revision tags. Images are cached on this PC and shared by every card; the export's
         <b>artwork for ES-DE</b> box copies them beside the games. In ES-DE, set
         <i>Other settings → Game media directory</i> to <code>&lt;card&gt;\ES-DE\downloaded_media</code>.</p>
       <div id="art-progress" hidden>

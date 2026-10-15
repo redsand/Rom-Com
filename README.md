@@ -563,6 +563,23 @@ other front ends can open as it is:
 - `--layout ranked` brings back the old score folders. Tick "clear those platforms first"
   the first time you switch layouts.
 
+### Arcade romsets for a handheld
+
+`romcom romset fbneo J:bneo` then `romcom romset mame J:rcade --defer-to fbneo` (the
+web app's Arcade romsets card) builds a card where each game is there once:
+
+- **Best version of each game** (`--versions 1`, the default; `2` keeps the top two, `0`
+  every clone): one that runs, a proper release over a bootleg, English over Japan-only,
+  then the crowd score. A re-run removes the versions an earlier build left in the folder.
+- **`--defer-to fbneo`**: games FBNeo's build carries stay out of the MAME folder, so MAME
+  holds only what FBNeo cannot run (3D boards, PlayChoice-10…).
+- **Posters**: the build fetches what the cache lacks for its own sets — ArcadeDB
+  (adb.arcadeitalia.net) by set name first: flyer (scaled to a 720 px JPEG), in-game snap
+  and marquee; libretro-thumbnails by title after — and writes them to
+  `<card>/ES-DE/downloaded_media/<folder>/covers|screenshots|marquees/<set>.jpg|png`, with
+  a gamelist carrying clean names, rating, genre, year, maker, players and ArcadeDB's
+  history text. In Daijisho, *Import Preview Media* on the platform takes those folders.
+
 ### PS3: decrypted discs, keys kept locally
 
 A Redump PS3 ISO is the disc as pressed, and most of it is encrypted. aPS3e (what ES-DE
