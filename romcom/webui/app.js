@@ -321,29 +321,16 @@ function healthBadge(h, why) {
   if (!h) return `<span class="sub" title="not in this core's romset">—</span>`;
   return `<span class="badge ${HEALTH_CLASS[h] ?? ""}" title="${esc(why || h)}">${esc(h)}</span>`;
 }
-function healthCell(r) {
-  if ((r.system || "").toLowerCase() !== "arcade") return `<span class="sub">—</span>`;
-  const set = (r.external_id || "").split("/").pop();
-  const why = r.verdict ? `your verdict (computed: ${r.health_judged || "—"}${r.health_reason ? " — " + r.health_reason : ""})`
-                        : r.health_reason;
-  const sel = `<select class="verdict-edit small" data-set="${esc(set)}" title="Your verdict after playing it on this core">` +
-    [["", "auto"], ["works", "works"], ["partial", "sort of"], ["broken", "broken"]].map(([v, l]) =>
-      `<option value="${v}" ${(r.verdict || "") === v ? "selected" : ""}>${l}</option>`).join("") + `</select>`;
-  return `${healthBadge(r.health, why)} ${sel}` +
-    (r.health_reason && r.health !== "works" && !r.verdict ? `<div class="sub">${esc(r.health_reason)}</div>` : "");
-}
-
 function itemRow(r) {
   const series = r.series ? `<div class="sub">${esc(r.series)}${r.series_number ? " #" + r.series_number : ""}</div>` : "";
   const statusSel = `<select class="status-edit" data-id="${esc(r.id)}">` +
     LIFECYCLE.map(s => `<option ${s === r.status ? "selected" : ""}>${esc(s)}</option>`).join("") + `</select>`;
-  // Crowd score from public pools; the tooltip says who vouched for the number.
-  const crowd = r.community_score == null ? `<span class="sub">—</span>` :
-    `<span title="${esc(r.community_source || "community")}">${r.community_score}</span>`;
-  // The card export's score: the higher of the crowd's and the owner's rating x10. 0 is
-  // "nobody has said anything about this game", shown as nothing rather than zero.
-  const best = Math.max(r.community_score || 0, (r.rating || 0) * 10);
-  const bestCell = best ? `<span title="max(crowd ${r.community_score == null ? "—" : r.community_score}, you ${r.rating == null ? "—" : r.rating * 10})">${best}</span>` : `<span class="sub">—</span>`;
+  // One score: the crowd's (public pools), or the owner's rating x10 when higher — what
+  // the card export ranks by. 0 is "nobody has said anything about this game", shown as
+  // nothing. The tooltip says where the number came from.
+  const mine = (r.rating || 0) * 10;
+  const best = Math.max(r.community_score || 0, mine);
+  const bestCell = best ? `<span title="crowd ${r.community_score == null ? "—" : r.community_score}${r.community_source ? ` (${esc(r.community_source)})` : ""} · you ${r.rating == null ? "—" : mine}">${best}${mine && mine >= (r.community_score || 0) ? ` <span class="sub">you</span>` : ""}</span>` : `<span class="sub">—</span>`;
   // The owner's own 1-10 verdict; empty is "never auditioned", not zero.
   const ratingSel = `<select class="rating-edit" data-id="${esc(r.id)}" title="Your 1-10 verdict (blank = unrated)">` +
     `<option value="" ${r.rating == null ? "selected" : ""}>—</option>` +
@@ -354,8 +341,6 @@ function itemRow(r) {
     <td>${esc(r.system || "—")}</td>
     <td class="r">${r.year || "—"}</td>
     <td>${badge(r.status)} ${statusSel}</td>
-    <td class="health">${healthCell(r)}</td>
-    <td class="c">${crowd}</td>
     <td class="c">${bestCell}</td>
     <td class="c">${ratingSel}</td>
     <td class="c"><input type="checkbox" class="flag" data-field="authorized" data-id="${esc(r.id)}" ${r.authorized ? "checked" : ""}></td>
@@ -387,7 +372,7 @@ async function loadLibrary(append = false) {
       // The filters (not the catalog) are hiding everything — say so and offer the way out.
       const p = libQuery(); p.set("view", "all"); p.set("limit", "1");
       const all = await api("/api/items?" + p);
-      if (all.total) body.innerHTML = `<tr><td colspan="11" class="sub" style="padding:20px">
+      if (all.total) body.innerHTML = `<tr><td colspan="10" class="sub" style="padding:20px">
         No <b>${esc($("#f-view").selectedOptions[0].text)}</b> items match — but ${all.total.toLocaleString()}
         cataloged items do. Imported catalogs start as not-wanted; switch to
         <button class="small ghost" id="lib-showall">All items</button> and use the bulk action to flag what you want.</td></tr>`;
