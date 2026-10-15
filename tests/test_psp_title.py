@@ -68,3 +68,17 @@ def test_a_one_megabyte_archive_is_not_a_disc_game():
     assert not sniff.stub_disc(4_780_000, "psp", "Pinball Fantasies (USA) (minis) (PSN)")
     assert not sniff.stub_disc(850_000_000, "dreamcast", "Dreamon Volume 10")
     assert not sniff.stub_disc(200_000, "gba", "Any cartridge")
+
+
+def test_wii_disc_title_and_drive_split_suffixes(tmp_path):
+    from romcom.scanner import _norm
+    head = bytearray(0x260)
+    head[0x200 + 0x18:0x200 + 0x1C] = bytes.fromhex("5D1C9EA3")
+    head[0x200 + 0x20:0x200 + 0x36] = b"Dead Space: Extraction"
+    w = tmp_path / "RZJE69-005.wbfs"
+    w.write_bytes(bytes(head))
+    assert sniff.nintendo_disc_title(w) == "Dead Space: Extraction"
+    assert local_title(w, "wii") == "Dead Space: Extraction"
+    assert _norm("Sonic Unleashed-004.wbfs") == "sonic unleashed"
+    assert local_title(Path("X:/Ghost Recon Advanced Warfighter-002.iso"), "ps2") == \
+        "Ghost Recon Advanced Warfighter"

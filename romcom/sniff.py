@@ -258,3 +258,28 @@ def stub_disc(size, system, title=""):
     """True when `size` bytes is too small to be a disc game for `system`."""
     return ((system or "").lower() in DISC_SYSTEMS and 0 <= (size or 0) < STUB_BYTES
             and not _SMALL_OK.search(title or ""))
+
+
+def nintendo_disc_title(path):
+    """The game name a Wii or GameCube disc carries in its header (0x20, 64 bytes; a
+    .wbfs keeps the disc header at 0x200). 'RZJE69-005.wbfs' is Dead Space Extraction.
+    None for anything else, compressed images (.rvz/.wia/.gcz) included."""
+    p = Path(path)
+    ext = p.suffix.lower()
+    if ext not in (".iso", ".wbfs", ".gcm"):
+        return None
+    try:
+        with open(p, "rb") as f:
+            base = 0x200 if ext == ".wbfs" else 0
+            f.seek(base)
+            head = f.read(0x60)
+    except OSError:
+        return None
+    if len(head) < 0x60:
+        return None
+    wii = head[0x18:0x1C] == bytes.fromhex("5D1C9EA3")
+    gc = head[0x1C:0x20] == bytes.fromhex("C2339F3D")
+    if not (wii or gc):
+        return None
+    title = head[0x20:0x60].split(b"\x00")[0].decode("utf-8", "replace").strip()
+    return title or None

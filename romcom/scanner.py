@@ -17,8 +17,13 @@ def digest_file(path):
             md5.update(b); sha1.update(b); crc=zlib.crc32(b,crc)
     return f"{crc & 0xffffffff:08x}",md5.hexdigest(),sha1.hexdigest()
 
+# Google Drive splits a folder download into '<name>-001.zip', '-002', … and renames
+# big files the same way ('Sonic Unleashed-004.wbfs'): the number is not the title's.
+_DRIVE_PART = re.compile(r"-\d{3}$")
+
+
 def _norm(s):
-    s=Path(s).stem.lower()
+    s=_DRIVE_PART.sub("",Path(s).stem).lower()
     s=re.sub(r"[\(\[].*?[\)\]]"," ",s)
     return re.sub(r"[^a-z0-9]+"," ",s).strip()
 
@@ -331,7 +336,12 @@ def local_title(path, system):
     is what box art and crowd scores are found by. Otherwise the file name, without a
     leading 'PSP - ' that only says what folder it came from."""
     p = Path(path)
-    stem = _PLATFORM_PREFIX.sub("", p.stem).replace("_", " ").strip() or p.stem
+    stem = _PLATFORM_PREFIX.sub("", _DRIVE_PART.sub("", p.stem)).replace("_", " ").strip() or p.stem
+    if (system or "").lower() in ("wii", "gamecube"):
+        from . import sniff
+        title = sniff.nintendo_disc_title(p)
+        if title:
+            return title
     if (system or "").lower() == "psp":
         from . import sniff
         title = _MARKS.sub("", sniff.psp_info(p).get("title") or "")
