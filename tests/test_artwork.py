@@ -118,3 +118,62 @@ def test_export_lays_media_out_the_way_es_de_reads_it(monkeypatch, tmp_path):
     assert not (media / "arcade" / "covers").exists()          # MAME had no box art for it
     assert (r["games"], r["written"], r["without_art"]) == (2, 3, 0)
     assert artwork.export_media(card, db=db)["skipped"] == 3     # a re-run tops up only
+
+
+JPG = b"\xff\xd8\xff" + b"j" * 32
+
+
+class FakeADB:
+    """ArcadeDB's image links: each answers with an image."""
+
+    def __init__(self):
+        self.gets = []
+
+    def get(self, url, timeout=None):
+        self.gets.append(url)
+        return FakeResponse(200, content=JPG if "type=flyer" in url else PNG)
+
+
+def test_arcade_sets_get_art_from_arcadedb_by_set_name(monkeypatch, tmp_path):
+    """libretro names arcade art after a MAME description — sf2 below has no box art
+    there. ArcadeDB answers by the set name itself: the flyer, the snap and the marquee
+    every set it lists, and a card gets each under its own extension."""
+    from romcom import arcadedb
+    db, _ = _env(monkeypatch, tmp_path, TREE)
+    monkeypatch.setattr(arcadedb, "CACHE", tmp_path / "adb")
+    adb = FakeADB()
+    monkeypatch.setattr(arcadedb, "_session", lambda: adb)
+    monkeypatch.setattr(arcadedb, "_shrink_flyer", lambda data: (data, ".jpg"))
+    links = {f"url_image_{t}": f"https://adb/?mame=sf2&type={t}&resize=0"
+             for t in ("flyer", "ingame", "marquee")}
+    monkeypatch.setattr(arcadedb, "lookup",
+                        lambda sets, session=None, stop=None:
+                        {s: (links if s == "sf2" else {}) for s in sets})
+    artwork.fetch(db=db, workers=2)
+    have = {(x["item_id"], x["kind"]): x for x in db.execute("SELECT * FROM artwork")}
+    assert have[("sf2", "boxart")]["path"].endswith("sf2.jpg")
+    assert have[("sf2", "marquee")]["source"] == "arcadedb"
+    assert have[("ms", "snap")]["source"] == "MAME"          # ArcadeDB had nothing: libretro
+    assert have[("ms", "marquee")]["path"] is None
+    card = tmp_path / "card"
+    (card / "arcade").mkdir(parents=True)
+    (card / "arcade" / "sf2.zip").write_bytes(b"zip")
+    artwork.export_media(card, db=db)
+    media = card / "ES-DE" / "downloaded_media" / "arcade"
+    assert (media / "covers" / "sf2.jpg").read_bytes() == JPG
+    assert (media / "marquees" / "sf2.png").exists()
+    # A libretro miss from before ArcadeDB was asked is asked again, once.
+    adb.gets.clear()
+    artwork.fetch(db=db, workers=2)
+    assert adb.gets == []
+
+
+def test_arcadedb_facts_become_gamelist_fields():
+    from romcom import arcadedb
+    f = arcadedb.gamelist_fields({
+        "manufacturer": "Konami", "year": "1996", "players": 1,
+        "history": "Arcade Video game published 30 years ago:\r\n\r\nGTI Club is a racer."
+                   "\r\n\r\n- TECHNICAL -\r\n\r\nCPU: PowerPC"})
+    assert f == {"desc": "GTI Club is a racer.", "developer": "Konami",
+                 "publisher": "Konami", "releasedate": "19960101T000000", "players": "1"}
+    assert arcadedb.gamelist_fields({}) == {}

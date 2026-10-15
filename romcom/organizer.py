@@ -1171,7 +1171,7 @@ def _arcade_rows(db, names):
 def _write_gamelists(dest, card_games, db):
     """Every game the export put on the card, as ES-DE gamelist entries: a clean name, the
     rating the export ranked by, and the arcade genre."""
-    from . import esde, labels
+    from . import arcadedb, esde, labels
     ids = {r["item_id"] for lst in card_games.values() for _, r in lst}
     tags = labels.for_items(ids, db)
     games = {}
@@ -1179,10 +1179,15 @@ def _write_gamelists(dest, card_games, db):
         for entry, r in lst:
             genre = next((l[6:].replace("-", " ").title() for l in tags.get(r["item_id"], [])
                           if l.startswith("genre:")), None)
-            name = (r["title"] if fold in esde.ARCADE_FOLDERS.values()
-                    else esde.display_name(r["title"]))
+            arcade = fold in esde.ARCADE_FOLDERS.values()
+            name = esde.display_name(r["title"])
+            facts = {}
+            if arcade:
+                # ArcadeDB's year, maker, players and story, when its facts are cached.
+                setname = Path(entry).stem
+                facts = arcadedb.gamelist_fields(arcadedb.cached(setname))
             games.setdefault(fold, []).append({"path": entry, "name": name, "genre": genre,
-                                               "rating": esde.rating(_score(r))})
+                                               "rating": esde.rating(_score(r)), **facts})
     return esde.write_gamelists(dest, games)
 
 
@@ -1380,7 +1385,7 @@ def romset(profile, dest, leave_bytes=0, progress=None, db=None, stop=None,
         if progress:
             progress(0, 0, f"{profile}: names, ratings and artwork for ES-DE…")
         try:
-            media = _romset_media(dest, on_card, db)
+            media = _romset_media(dest, on_card, db, progress=progress, stop=stop)
         except Exception as e:                       # the games are on the card regardless
             media = {"error": str(e)[:300]}
     return {"profile": profile, "dat": dat.name, "assemblable": len(sets) + len(held),
@@ -1444,22 +1449,32 @@ def _prune_folder(dest, dat, keep):
     return out
 
 
-def _romset_media(dest, setnames, db):
+def _romset_media(dest, setnames, db, fetch=True, progress=None, stop=None):
     """ES-DE's gamelist and artwork for the sets a romset build put on the card. The romset
-    folder is ES-DE's system folder and the card is the folder above it: J:\fbneo is
-    system `fbneo` on card J:\, entries `mslug.zip`."""
+    folder is ES-DE's system folder and the card is the folder above it: J:/fbneo is
+    system `fbneo` on card J:/, entries `mslug.zip`."""
     from . import artwork as art
     dest = Path(dest).resolve()
     card, fold, sub = dest.parent, dest.name, Path()
     rows = _arcade_rows(db, setnames)
     card_games = {fold: [((sub / f"{s}.zip").as_posix(), rows[s]) for s in setnames
                          if s in rows]}
+    fetched = None
+    if fetch:
+        # Art the cache lacks is fetched for these sets alone (ArcadeDB by set name, then
+        # libretro), so one build leaves a card with its posters — not a second job.
+        try:
+            fetched = art.fetch(items={r["item_id"] for _, r in card_games[fold]},
+                                progress=progress, stop=stop, db=db)
+        except Exception as e:
+            fetched = {"error": str(e)[:300]}
     gamelists = _write_gamelists(card, card_games, db)
     entries = {fold: [(e, r["item_id"]) for e, r in card_games[fold]]}
     report = art.export_media(card, entries=entries,
                               room_for=lambda n: (_free_bytes(card) or 0) - n
                               >= _reserve_bytes(card))
-    return {"gamelist": gamelists.get(fold, 0), **report}
+    return {"gamelist": gamelists.get(fold, 0), **report,
+            "fetch_error": (fetched or {}).get("error")}
 
 
 def precache_chds(systems, progress=None, stop=None, distinct_games=True, exclude_labels=None):

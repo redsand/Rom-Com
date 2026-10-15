@@ -32,8 +32,12 @@ from .db import connect
 
 BASE = "https://thumbnails.libretro.com"
 KINDS = {"boxart": "Named_Boxarts", "snap": "Named_Snaps", "title": "Named_Titles"}
-ESDE = {"boxart": "covers", "snap": "screenshots", "title": "titlescreens"}
-DEFAULT_KINDS = ("boxart", "snap")
+ESDE = {"boxart": "covers", "snap": "screenshots", "title": "titlescreens",
+        "marquee": "marquees"}
+# Marquees (the cabinet's logo strip, which ES-DE themes show as the game's logo) come
+# only from ArcadeDB, so only arcade sets get them.
+ALL_KINDS = ("boxart", "snap", "title", "marquee")
+DEFAULT_KINDS = ("boxart", "snap", "marquee")
 CACHE = ROOT / "artwork"
 INDEX_DAYS = 30
 MISS_DAYS = 7           # a game nothing matched is not re-tried until the index may have grown
@@ -164,7 +168,7 @@ def _wanted(db, systems=None):
     """{item_id: (system, [names to try])} for every game in hand. An arcade set is known
     to libretro by its MAME description (our title), a console game by its No-Intro file
     name — every distinct stem of its files, so a renamed dump still gets a chance."""
-    q = f"""SELECT i.id, lower(i.system) system, i.title, f.path FROM items i
+    q = f"""SELECT i.id, lower(i.system) system, i.title, f.path, i.external_id FROM items i
             LEFT JOIN files f ON f.matched_item_id=i.id AND COALESCE(f.content,1)=1
             WHERE COALESCE(i.is_device,0)=0 AND i.system IS NOT NULL
               AND (i.status IN ({','.join('?' * len(_IN_HAND))})
@@ -173,7 +177,9 @@ def _wanted(db, systems=None):
     for r in db.execute(q, _IN_HAND):
         if systems and r["system"] not in systems:
             continue
-        sys_, names = out.setdefault(r["id"], (r["system"], []))
+        setname = ((r["external_id"] or "").split("/", 1)[-1] or None
+                   if r["system"] == "arcade" else None)
+        sys_, names, _ = out.setdefault(r["id"], (r["system"], [], setname))
         cands = [r["title"]]
         if r["path"] and sys_ != "arcade":
             cands.insert(0, Path(r["path"]).stem)
@@ -184,34 +190,51 @@ def _wanted(db, systems=None):
 
 
 def fetch(systems=None, kinds=DEFAULT_KINDS, progress=None, stop=None, db=None,
-          refresh=False, workers=8):
+          refresh=False, workers=8, items=None):
     """Find and cache artwork for every game in hand. Returns per-system coverage.
 
     Each (item, kind) ends as a row in `artwork`: a cached path, or NULL when nothing
     matched — a miss is not re-tried for a week, so a re-run spends its time on new games.
-    `stop` (threading.Event) ends the run between games; what was fetched stays."""
+    `stop` (threading.Event) ends the run between games; what was fetched stays.
+
+    An arcade set is asked of ArcadeDB by its set name first (`arcadedb`), libretro by
+    title after; a libretro-only miss from before ArcadeDB was a source is tried again.
+    `items` limits the run to those item ids — a romset build fetching for its own sets."""
+    from . import arcadedb
     db = db or connect()
     systems = {s.lower() for s in systems} if systems else None
-    kinds = [k for k in kinds if k in KINDS] or list(DEFAULT_KINDS)
+    kinds = [k for k in kinds if k in ALL_KINDS] or list(DEFAULT_KINDS)
     wanted = _wanted(db, systems)
+    if items is not None:
+        items = set(items)
+        wanted = {k: v for k, v in wanted.items() if k in items}
     known = {(r["item_id"], r["kind"]): r for r in db.execute(
-        "SELECT item_id, kind, path, checked_at FROM artwork")}
+        "SELECT item_id, kind, path, source, checked_at FROM artwork")}
     now = time.time()
 
-    def fresh_miss(row):
+    def fresh_miss(row, arcade):
         if row["path"]:
             return Path(row["path"]).exists()
+        if arcade and row["source"] != "arcadedb":
+            return False                     # never asked ArcadeDB yet
         try:
             t = time.mktime(time.strptime(row["checked_at"][:19], "%Y-%m-%d %H:%M:%S"))
         except (TypeError, ValueError):
             return False
         return now - t < MISS_DAYS * 86400
 
-    todo = [(iid, sys_, names, k) for iid, (sys_, names) in wanted.items() for k in kinds
-            if refresh or not ((iid, k) in known and fresh_miss(known[(iid, k)]))]
+    todo = [(iid, sys_, names, k, setname) for iid, (sys_, names, setname) in wanted.items()
+            for k in kinds if (k in KINDS or setname)
+            if refresh or not ((iid, k) in known and fresh_miss(known[(iid, k)], bool(setname)))]
     session = _session()
+    adb_sets = sorted({t[4] for t in todo if t[4]})
+    adb_meta = {}
+    if adb_sets:
+        if progress:
+            progress(0, len(todo), f"artwork: asking ArcadeDB about {len(adb_sets):,} sets…")
+        adb_meta = arcadedb.lookup(adb_sets, stop=stop)
     indexes, lock, results = {}, threading.Lock(), []
-    no_source = sorted({sys_ for _, sys_, _, _ in todo if not sources(sys_)})
+    no_source = sorted({t[1] for t in todo if not sources(t[1])})
 
     def idx(db_name, kind):
         key = (db_name, kind)
@@ -223,10 +246,28 @@ def fetch(systems=None, kinds=DEFAULT_KINDS, progress=None, stop=None, db=None,
                     indexes[key] = Index([])      # unreachable folder: count as no match
             return indexes[key]
 
+    adb_lock, adb_sessions = threading.Lock(), []
+
+    def adb_session():
+        # Opened on first use: a run whose sets ArcadeDB lists no image for asks nothing.
+        with adb_lock:
+            if not adb_sessions:
+                adb_sessions.append(arcadedb._session())
+            return adb_sessions[0]
+
     def one(job):
-        iid, sys_, names, kind = job
+        iid, sys_, names, kind, setname = job
         if stop is not None and stop.is_set():
             return None
+        if setname:
+            meta = adb_meta.get(setname)
+            p = (arcadedb.image(setname, kind, adb_session(), meta)
+                 if (meta or {}).get(f"url_image_{arcadedb.TYPES.get(kind)}")
+                 else arcadedb.image_path(setname, kind))
+            if p:
+                return (iid, kind, str(p), "arcadedb")
+            if kind not in KINDS:
+                return (iid, kind, None, "arcadedb")
         for db_name in sources(sys_):
             ix = idx(db_name, kind)
             for n in names:
@@ -238,7 +279,7 @@ def fetch(systems=None, kinds=DEFAULT_KINDS, progress=None, stop=None, db=None,
                         p = None
                     if p:
                         return (iid, kind, str(p), db_name)
-        return (iid, kind, None, None)
+        return (iid, kind, None, "arcadedb" if setname else None)
 
     todo = [t for t in todo if sources(t[1])]
     done = 0
@@ -278,9 +319,9 @@ def coverage(db=None, systems=None):
     for r in db.execute("SELECT item_id, kind FROM artwork WHERE path IS NOT NULL"):
         have.setdefault(r["item_id"], set()).add(r["kind"])
     agg = {}
-    for iid, (sys_, _) in wanted.items():
+    for iid, (sys_, _, _) in wanted.items():
         a = agg.setdefault(sys_, {"system": sys_, "games": 0, "boxart": 0, "snap": 0,
-                                  "title": 0, "source": bool(sources(sys_))})
+                                  "title": 0, "marquee": 0, "source": bool(sources(sys_))})
         a["games"] += 1
         for k in have.get(iid, ()):
             a[k] += 1
@@ -299,7 +340,7 @@ def export_media(dest, kinds=DEFAULT_KINDS, media_dir=None, systems=None, room_f
     db = db or connect()
     dest = Path(dest)
     media = Path(media_dir) if media_dir else dest / "ES-DE" / "downloaded_media"
-    kinds = [k for k in kinds if k in KINDS]
+    kinds = [k for k in kinds if k in ALL_KINDS]
     art = {}
     for r in db.execute("SELECT item_id, kind, path FROM artwork WHERE path IS NOT NULL"):
         art.setdefault(r["item_id"], {})[r["kind"]] = r["path"]
@@ -336,11 +377,19 @@ def export_media(dest, kinds=DEFAULT_KINDS, media_dir=None, systems=None, room_f
             src = imgs.get(k)
             if not src or not Path(src).exists():
                 continue
-            target = media / fold / ESDE[k] / entry.parent / f"{entry.stem}.png"
+            ext = Path(src).suffix.lower() or ".png"
+            target = media / fold / ESDE[k] / entry.parent / f"{entry.stem}{ext}"
             size = Path(src).stat().st_size
             if target.exists() and target.stat().st_size == size:
                 skipped += 1
                 continue
+            for other in (".png", ".jpg"):
+                # One image per game and kind: a front end picks whichever it finds first.
+                if other != ext and not dry_run:
+                    try:
+                        target.with_suffix(other).unlink()
+                    except OSError:
+                        pass
             if room_for is not None and not room_for(size):
                 stopped = True
                 break

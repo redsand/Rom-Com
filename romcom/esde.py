@@ -610,7 +610,7 @@ def display_name(title):
 def write_gamelists(dest, games, media_dir=None):
     """Merge each game's name, rating and genre into <dest>/ES-DE/gamelists/<folder>/
     gamelist.xml. `games`: {folder: [{"path": rel, "name", "rating" (0-1 or None),
-    "genre"}]}. ES-DE's own fields (play count, favorite, last played) are kept; only
+    "genre", and optionally "desc", "developer", "publisher", "releasedate", "players"}]}. ES-DE's own fields (play count, favorite, last played) are kept; only
     entries this export wrote are touched. Returns {folder: entries written}."""
     out = {}
     root_dir = Path(dest) / "ES-DE" / "gamelists"
@@ -635,7 +635,9 @@ def write_gamelists(dest, games, media_dir=None):
                 index[rel] = g
             for tag, val in (("name", e.get("name")), ("genre", e.get("genre")),
                              ("rating", None if e.get("rating") is None
-                              else f"{e['rating']:.2f}")):
+                              else f"{e['rating']:.2f}"),
+                             *((t, e.get(t)) for t in ("desc", "developer", "publisher",
+                                                       "releasedate", "players"))):
                 if not val:
                     continue
                 el = g.find(tag)
