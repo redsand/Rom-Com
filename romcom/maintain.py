@@ -28,11 +28,12 @@ STEPS = (
     ("labels", "re-label the library (fruit machines, demos, e-books…)"),
     ("artwork", "fetch covers and screenshots for games that have none"),
     ("discs", "keep disc games once, as CHD: convert a batch and delete the archives they came from"),
+    ("bloat", "delete downloads that can never apply: PC games, Xbox 360 packages, rejected DVDs"),
     ("dupes", "delete exact duplicate copies"),
     ("prune", "keep one copy per game: drop extra dumps of the same game"),
 )
 # Steps that remove files: never while an export or romset build may be reading them.
-DESTRUCTIVE = {"dupes", "prune", "discs"}
+DESTRUCTIVE = {"dupes", "prune", "discs", "bloat"}
 def prune_systems():
     """Every system but arcade (whose clone book has its own one-version rule): betas and
     extra dumps of a game the library holds the release of are clutter on any platform,
@@ -80,6 +81,11 @@ def _step(name, progress, stop):
         return {"chds": r.get("chds"), "converted": r.get("converted"),
                 "freed": r.get("freed"), "kept": len(r.get("skipped") or {}),
                 "error": r.get("error")} if not r.get("error") else {"error": r["error"]}
+    if name == "bloat":
+        from . import bloat
+        r = bloat.sweep(apply=True, progress=progress, stop=stop)
+        return {"deleted": len(r["files"]), "bytes_freed": r["bytes"],
+                "kinds": sorted({k for k, _, _ in r["files"]})}
     if name == "dupes":
         from . import dupes
         r = dupes.cleanup(apply=True)
