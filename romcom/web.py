@@ -543,6 +543,14 @@ def create_app():
                                           exclude_labels=params.get("exclude_labels"),
                                           layout=params.get("layout") or "flat",
                                           chd=params.get("chd", True) is not False)
+        if kind == "romset" and params["profile"] == "card":
+            from .organizer import arcade_card
+            return lambda prog: arcade_card(params["path"], progress=prog, stop=stops["romset"],
+                                            arcade_status=params.get("arcade_status"),
+                                            exclude_labels=params.get("exclude_labels"),
+                                            versions=int(params.get("versions", 1) or 0),
+                                            prune=params.get("prune", True) is not False,
+                                            artwork=params.get("artwork", True) is not False)
         if kind == "romset":
             return lambda prog: romset(params["profile"], params["path"],
                                        leave_bytes=int(float(params.get("leave_gb") or 0) * 1024 ** 3),
@@ -914,8 +922,8 @@ def create_app():
         path = _checked_path(body, must_exist=False)
         if not path:
             return jsonify({"error": "destination path is required"}), 400
-        if body.get("profile") not in ("mame", "fbneo", "mame2003"):
-            return jsonify({"error": "profile must be mame, fbneo or mame2003"}), 400
+        if body.get("profile") not in ("card", "mame", "fbneo", "mame2003"):
+            return jsonify({"error": "profile must be card, mame, fbneo or mame2003"}), 400
         try:
             leave_gb = max(0.0, float(body.get("leave_gb") or 0))
         except (TypeError, ValueError):

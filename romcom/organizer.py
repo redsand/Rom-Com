@@ -1509,3 +1509,32 @@ def precache_chds(systems, progress=None, stop=None, distinct_games=True, exclud
     if progress:
         progress(len(work), len(work), "done")
     return out
+
+
+ARCADE_CARD = ("fbneo", "mame")
+
+
+def arcade_card(card, progress=None, db=None, stop=None, arcade_status=None,
+                exclude_labels=None, versions=1, prune=True, artwork=True):
+    """The whole arcade card in one go: FBNeo's romset into <card>\fbneo, then MAME's
+    into <card>\arcade holding only the games FBNeo does not carry — each game once,
+    the best version of it, with its posters and gamelist. FBNeo goes first because it
+    runs best on a handheld and is the smaller of the two; MAME fills the room left with
+    what only it can run. Returns {"cores": {profile: romset report}}."""
+    from . import esde
+    card = Path(card)
+    if card.name.lower() in set(esde.ARCADE_FOLDERS.values()) and card.parent != card:
+        card = card.parent          # J:\arcade typed for the card: the card is J:\
+    out = {"card": str(card), "cores": {}}
+    for i, profile in enumerate(ARCADE_CARD):
+        if stop is not None and stop.is_set():
+            break
+        prog = None if progress is None else (
+            lambda n, total, name, p=profile: progress(n, total, f"{p}: {name}"))
+        out["cores"][profile] = romset(
+            profile, card / esde.ARCADE_FOLDERS[profile], progress=prog, db=db, stop=stop,
+            arcade_status=arcade_status, exclude_labels=exclude_labels, versions=versions,
+            prune=prune, artwork=artwork, defer_to=list(ARCADE_CARD[:i]) or None)
+    out["stopped"] = bool(stop is not None and stop.is_set()) or any(
+        r.get("stopped") for r in out["cores"].values())
+    return out

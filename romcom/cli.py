@@ -281,12 +281,21 @@ def cmd_playable(a):
 
 
 def cmd_romset(a):
-    from .organizer import romset
+    from .organizer import arcade_card, romset
     last = [0]
     def progress(i, total, name):
         if i == 0 or i >= last[0] + 200 or i >= total:
             last[0] = i
             print(f"[{i}/{total}] {name}")
+    if a.profile == "card":
+        r = arcade_card(a.dest, progress=progress, arcade_status=a.status,
+                        exclude_labels=_exclude(a.exclude_labels), versions=a.versions,
+                        prune=not a.keep_dropped, artwork=not a.no_artwork)
+        for core, rep in r["cores"].items():
+            print(core, json.dumps({k: rep.get(k) for k in ("complete", "bytes", "clones_dropped",
+                                                            "deferred", "pruned_files", "media",
+                                                            "error", "stopped")}, indent=2))
+        return
     r = romset(a.profile, a.dest, leave_bytes=int(float(a.leave_gb) * 1024 ** 3),
                progress=progress, arcade_status=a.status,
                exclude_labels=_exclude(a.exclude_labels), versions=a.versions,
@@ -523,8 +532,8 @@ def main():
     pb=s.add_parser("playable", help="recompute which arcade sets can be assembled")
     pb.set_defaults(fn=cmd_playable)
     rs=s.add_parser("romset", help="build one core's arcade romset onto a folder, one zip per set")
-    rs.add_argument("profile", choices=["mame", "fbneo", "mame2003"],
-                    help="which core's romset: mame (current MAME dat), fbneo, mame2003 (MAME 2003-Plus)")
+    rs.add_argument("profile", choices=["card", "mame", "fbneo", "mame2003"],
+                    help="which core's romset: card (FBNeo + MAME for the rest, onto a card root), mame (current MAME dat), fbneo, mame2003 (MAME 2003-Plus)")
     rs.add_argument("dest", help="target folder on the card, e.g. J:\\arcade-fbneo")
     rs.add_argument("--leave-gb", default="0",
                     help="gigabytes to leave free on the volume for what comes after")

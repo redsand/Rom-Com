@@ -988,10 +988,14 @@ $("#org-stop").addEventListener("click", async () => {
 // mame = MAME 2003-Plus. The hint follows the chosen core.
 const ROM_FOLDER = {mame: "arcade", fbneo: "fbneo", mame2003: "mame"};
 function romPathHint() {
-  $("#rom-path").placeholder = `J:\\${ROM_FOLDER[$("#rom-profile").value] || "arcade"} (ES-DE launches that folder with this core)`;
+  const p = $("#rom-profile").value;
+  $("#rom-path").placeholder = p === "card"
+    ? "J:\\ (the card itself: fbneo\\ and arcade\\ go on it)"
+    : `J:\\${ROM_FOLDER[p] || "arcade"} (ES-DE launches that folder with this core)`;
+  // The card preset already leaves MAME the games FBNeo lacks.
+  $("#rom-defer-wrap").hidden = p === "fbneo" || p === "card";
 }
 $("#rom-profile").addEventListener("change", romPathHint);
-$("#rom-profile").addEventListener("change", () => { $("#rom-defer-wrap").hidden = $("#rom-profile").value === "fbneo"; });
 romPathHint();
 
 $("#rom-start").addEventListener("click", () => {
@@ -1004,7 +1008,7 @@ $("#rom-start").addEventListener("click", () => {
                                      versions: +$("#rom-versions").value,
                                      prune: $("#rom-prune").checked,
                                      artwork: $("#rom-art").checked,
-                                     defer_to: $("#rom-defer").checked && $("#rom-profile").value !== "fbneo" ? ["fbneo"] : [],
+                                     defer_to: $("#rom-defer").checked && !["fbneo", "card"].includes($("#rom-profile").value) ? ["fbneo"] : [],
                                      exclude_labels: leaveOut("#rom-labels")});
 });
 
@@ -1297,6 +1301,16 @@ $("#ah-repair-out").addEventListener("click", e => {
 });
 
 function renderRomsetResult(r) {
+  if (r.cores) {
+    // The arcade card preset: one report per core, each drawn in the single-core shape.
+    const parts = Object.entries(r.cores).map(([core, rep]) => {
+      renderRomsetResult(rep);
+      const head = core === "mame" ? "MAME, arcade folder (the games FBNeo lacks)" : "FBNeo, fbneo folder";
+      return `<h3 style="margin:16px 0 0">${esc(head)}</h3>` + $("#rom-result").innerHTML;
+    });
+    $("#rom-result").innerHTML = parts.join("");
+    return;
+  }
   if (r.error) {
     $("#rom-result").innerHTML = `<div class="check bad" style="margin-top:12px">
       <span class="mark">✕</span><span class="d">${esc(r.error)}</span></div>` + heldHtml(r.held_back);

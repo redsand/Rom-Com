@@ -906,3 +906,18 @@ def test_romset_writes_the_esde_gamelist(tmp_path, monkeypatch):
         encoding="utf-8")
     assert "./gtclub.zip" in gl and "GTI Club" in gl
     assert r["media"]["gamelist"] == 2
+
+
+def test_arcade_card_puts_fbneo_first_and_mame_only_what_fbneo_lacks(tmp_path, monkeypatch):
+    """The one-click arcade card: fbneo\ and arcade\ on the card root, each game once."""
+    from romcom.organizer import arcade_card
+    dat = tmp_path / "mame.dat"; dat.write_text(FAMILY_DAT, encoding="utf-8")
+    fb = tmp_path / "fbneo.dat"
+    fb.write_text(FAMILY_DAT.split('<machine name="gtclub">')[0] + "</datafile>",
+                  encoding="utf-8")
+    _family_env(monkeypatch, tmp_path, {"mame": dat, "fbneo": fb})
+    card = tmp_path / "card"
+    r = arcade_card(card / "arcade", arcade_status="all", artwork=False)   # folder typed
+    assert [p.stem for p in (card / "fbneo").glob("*.zip")] == ["sf2ua"]
+    assert [p.stem for p in (card / "arcade").glob("*.zip")] == ["gtclub"]
+    assert r["cores"]["mame"]["deferred"] == 1 and not r["stopped"]
