@@ -106,9 +106,16 @@ def loose_changed(folder=None):
     return _loose(folder) != set(_load(folder).get("_loose") or [])
 
 
-def unpack(folder=None, progress=None, stop=None):
-    """Unpack the games from every new archive in the incoming folder. Returns
-    {"archives": n, "unpacked": [folders], "files": n, "skipped": {archive: why}}."""
+ROOM_SPARE = 2 * 1024 ** 3      # left free on the drive after an archive is unpacked
+
+
+def unpack(folder=None, progress=None, stop=None, only=None):
+    """Unpack the games from every new archive in the incoming folder (or just `only`).
+    An archive whose games would not fit with ROOM_SPARE left over is not started: it is
+    reported and tried again once space is back, rather than filling the drive halfway
+    through. Returns {"archives": n, "unpacked": [folders], "files": n,
+    "skipped": {archive: why}}."""
+    import shutil
     from . import esde
     folder = folder or incoming_dir()
     out = {"archives": 0, "unpacked": [], "files": 0, "skipped": {}, "dir": str(folder or "")}
@@ -118,7 +125,7 @@ def unpack(folder=None, progress=None, stop=None):
     if not base:
         return out
     state = _load(folder)
-    todo = pending(folder)
+    todo = only if only is not None else pending(folder)
     for i, p in enumerate(todo):
         if stop is not None and stop.is_set():
             break
@@ -126,7 +133,8 @@ def unpack(folder=None, progress=None, stop=None):
             progress(i, len(todo), f"incoming: looking into {p.name}")
         out["archives"] += 1
         try:
-            names = [n for n, _ in esde.members(p)]
+            listing = esde.members(p)
+            names = [n for n, _ in listing]
         except Exception as e:
             out["skipped"][p.name] = f"unreadable: {e}"[:200]
             continue                      # not remembered: tried again next time
@@ -142,6 +150,16 @@ def unpack(folder=None, progress=None, stop=None):
             _save(folder, state)
             continue
         target = Path(base) / "incoming" / re.sub(r'[<>:"/\\|?*]', "_", p.stem)
+        sizes = dict(listing)
+        need = sum(sizes.get(n, 0) for n in games)
+        try:
+            free = shutil.disk_usage(Path(base)).free
+        except OSError:
+            free = None
+        if free is not None and free < need + ROOM_SPARE:
+            out["skipped"][p.name] = (f"not enough room yet: needs {need / 1e9:.1f} GB, "
+                                      f"{free / 1e9:.1f} GB free — tried again later")
+            continue                      # not remembered: tried again next time
         try:
             if progress:
                 progress(i, len(todo), f"incoming: unpacking {len(games)} game file(s) "
@@ -257,43 +275,70 @@ def tidy(folder, base, scanned_ok, db=None):
 
 
 def run(progress=None, stop=None):
-    """Unpack what is new, then scan the unpacked folders and the incoming folder itself
-    (loose files dropped there), then tidy the incoming folder so no game is kept twice
-    (`tidy`). Returns the unpack report plus the scans' counts and what was tidied."""
+    """Import the incoming folder one archive at a time, smallest first: unpack it, scan
+    what came out, and (incoming_remove) delete the archive and any copy of a game the
+    library already held before starting the next — so a drive with little room left
+    still gets through a large pile, the space each archive frees paying for the next.
+    Then the loose files: scanned, and moved into the library when claimed (`tidy`).
+    Returns the unpack report plus the scans' counts and what was tidied."""
     from .scanner import scan
     folder = incoming_dir()
-    r = unpack(folder, progress=progress, stop=stop)
-    if not folder:
+    r = {"archives": 0, "unpacked": [], "files": 0, "skipped": {}, "dir": str(folder or "")}
+    if not folder or not folder.exists():
         return r | {"note": "no incoming folder (set incoming_dir, or create "
                             "'<download dir> Incoming')"}
+    base = (settings().get("download_dir") or "").strip().strip('"')
     scans = {"matched": 0, "adopted": 0, "files": 0}
-    try:
-        state = _load(folder)
-        state["_loose"] = sorted(_loose(folder))
-        _save(folder, state)
-    except OSError:
-        pass
-    scanned_ok = set()
+    tidied = {"deleted": [], "moved": [], "already_had": 0, "bytes": 0}
     state = _load(folder)
-    earlier = [v["to"] for v in state.values()
-               if isinstance(v, dict) and v.get("to") and v["to"] not in r["unpacked"]]
-    for path in [*r["unpacked"], str(folder)]:
-        if stop is not None and stop.is_set():
-            break
+    # Folders unpacked by an earlier run were scanned then: their archives may go too.
+    scanned_ok = {v["to"] for v in state.values()
+                  if isinstance(v, dict) and v.get("to") and Path(v["to"]).exists()}
+
+    def _scan(path):
         try:
             s = scan(path, name_match=True, adopt=True,
                      progress=None if progress is None else
                      (lambda i, t, n, st=None: progress(i, t, f"incoming: scanning {n}")))
         except Exception as e:
             r["skipped"][path] = f"scan failed: {e}"[:200]
-            continue
-        scanned_ok.add(path)
+            return False
         for k in scans:
             scans[k] += s.get(k) or 0
-    # Archives unpacked by an earlier run were scanned then: they may go now too.
-    scanned_ok |= {t for t in earlier if Path(t).exists()}
-    base = (settings().get("download_dir") or "").strip().strip('"')
-    tidied = tidy(folder, base, scanned_ok) if base and not (
-        stop is not None and stop.is_set()) else {"deleted": [], "moved": [],
-                                                  "already_had": 0, "bytes": 0}
+        return True
+
+    def _tidy():
+        if not base or (stop is not None and stop.is_set()):
+            return
+        t = tidy(folder, base, scanned_ok)
+        tidied["deleted"] += t["deleted"]
+        tidied["moved"] += t["moved"]
+        tidied["already_had"] += t["already_had"]
+        tidied["bytes"] += t["bytes"]
+
+    _tidy()                                   # what earlier runs imported, first
+    todo = sorted(pending(folder), key=lambda p: p.stat().st_size)
+    for i, p in enumerate(todo):
+        if stop is not None and stop.is_set():
+            break
+        if progress:
+            progress(i, len(todo), f"incoming: {p.name} ({i + 1} of {len(todo)})")
+        one = unpack(folder, progress=None, stop=stop, only=[p])
+        r["archives"] += one["archives"]
+        r["files"] += one["files"]
+        r["skipped"].update(one["skipped"])
+        for target in one["unpacked"]:
+            r["unpacked"].append(target)
+            if _scan(target):
+                scanned_ok.add(target)
+        _tidy()
+    try:
+        state = _load(folder)
+        state["_loose"] = sorted(_loose(folder))
+        _save(folder, state)
+    except OSError:
+        pass
+    if not (stop is not None and stop.is_set()) and _scan(str(folder)):
+        scanned_ok.add(str(folder))
+        _tidy()
     return r | {"scan": scans, "tidied": tidied}

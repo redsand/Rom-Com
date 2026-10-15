@@ -143,3 +143,15 @@ def test_a_game_already_in_the_library_is_not_kept_twice(monkeypatch, tmp_path):
     assert not (out / "Turtles in Time (USA).sfc").exists() and (out / "Brand New (USA).sfc").exists()
     assert (lib / "Turtles in Time (USA).sfc").exists()
     assert r["tidied"]["already_had"] == 1
+
+
+def test_an_archive_that_would_fill_the_drive_waits(monkeypatch, tmp_path):
+    games, inc = _env(monkeypatch, tmp_path)
+    with zipfile.ZipFile(inc / "big.zip", "w") as z:
+        z.writestr("ps2/Huge Game.iso", b"I" * 5000)
+    from collections import namedtuple
+    Usage = namedtuple("Usage", "total used free")
+    monkeypatch.setattr("shutil.disk_usage", lambda p: Usage(10 ** 12, 10 ** 12, 1000))
+    r = incoming.unpack()
+    assert "not enough room yet" in r["skipped"]["big.zip"]
+    assert incoming.pending() != []                       # tried again once space is back
