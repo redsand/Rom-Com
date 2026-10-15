@@ -438,7 +438,17 @@ def cmd_artwork(a):
 
 def cmd_chd_cache(a):
     from .organizer import precache_chds
-    r = precache_chds(a.system, progress=lambda i, t, n: print(f"[{i + 1}/{t}] {n}", flush=True))
+    excl = _exclude(a.exclude_labels)
+    if a.profile:
+        from . import exportplan
+        prof = next((p for p in exportplan.list_profiles()
+                     if a.profile in (p["id"], p["name"])), None)
+        if not prof:
+            print(f"no export profile named {a.profile!r}")
+            return
+        excl = prof.get("exclude_labels")
+    r = precache_chds(a.system, exclude_labels=excl,
+                      progress=lambda i, t, n: print(f"[{i + 1}/{t}] {n}", flush=True))
     print(json.dumps(r, indent=2))
 
 
@@ -570,6 +580,8 @@ def main():
     aw.set_defaults(fn=cmd_artwork)
     cc=s.add_parser("chd-cache", help="convert a system's discs to CHD ahead of a card export (they are kept for every later card)")
     cc.add_argument("system", nargs="+")
+    cc.add_argument("--exclude-labels", default=None, help="labels to leave out, comma-separated, as the export will")
+    cc.add_argument("--profile", default=None, help="take the leave-out labels from this saved export profile (name or id)")
     cc.set_defaults(fn=cmd_chd_cache)
     af=s.add_parser("arcade-fetch", help="fetch the chips, devices, bios and CHDs arcade sets lack, by setname, from archive.org's MAME items")
     af.add_argument("sets", nargs="*")
