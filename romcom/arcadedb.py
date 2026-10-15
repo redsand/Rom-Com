@@ -16,6 +16,7 @@ crowding out games.
 """
 import io
 import json
+import re
 import time
 from pathlib import Path
 
@@ -181,7 +182,8 @@ def gamelist_fields(meta):
         # The history text opens with a line of boilerplate ("Arcade Video game published
         # 30 years ago:") and ends with sources and trivia; the story is the first part.
         parts = [p.strip() for p in hist.split("\n\n") if p.strip()]
-        if parts and parts[0].lower().startswith("arcade video game published"):
+        # (Neo Geo sets say "SNK Neo-Geo MVS cart. published 30 years ago:".)
+        if parts and re.search(r"published \d+ years? ago:?$", parts[0], re.I):
             parts = parts[1:]
         body = []
         for p in parts:

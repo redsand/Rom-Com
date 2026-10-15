@@ -177,6 +177,9 @@ def test_arcadedb_facts_become_gamelist_fields():
     assert f == {"desc": "GTI Club is a racer.", "developer": "Konami",
                  "publisher": "Konami", "releasedate": "19960101T000000", "players": "1"}
     assert arcadedb.gamelist_fields({}) == {}
+    neo = arcadedb.gamelist_fields({"history": "SNK Neo-Geo MVS cart. published 30 years ago:"
+                                               "\r\n\r\nMetal Slug (c) 1996 Nazca."})
+    assert neo["desc"] == "Metal Slug (c) 1996 Nazca."
 
 
 def test_a_set_without_a_flyer_gets_its_title_screen_as_cover(monkeypatch, tmp_path):
