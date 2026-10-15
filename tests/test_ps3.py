@@ -144,7 +144,7 @@ def test_an_export_with_ps3_games_brings_sonys_firmware(tmp_path, monkeypatch):
     card = tmp_path / "card"
     r = organize(card)
     assert not r["errors"], r["errors"]
-    assert (card / "ps3" / "Game (USA).iso").read_bytes() == clear
+    assert (card / "ROMs" / "ps3" / "Game (USA).iso").read_bytes() == clear
     assert r["decrypted_ps3"] == 1
     assert (card / "system" / "ps3" / "PS3UPDAT.PUP").read_bytes() == pup.read_bytes()
     assert r["console_bios"]["systems"]["ps3"]["copied"] == ["PS3UPDAT.PUP"]

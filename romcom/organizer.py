@@ -541,7 +541,14 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         rows = [r for r in rows if (r["system"] or "").lower() in wanted_systems]
     rows, nonarcade_dupes = _canonical(rows, distinct_games)
     dupes_skipped = nonarcade_dupes + arcade_dupes_skipped
-    dest = Path(dest)
+    from . import esde
+    dest = esde.card_root(dest)
+    # Games go in <card>/ROMs/<system>/ (Android cannot pick a card's top level as ES-DE's
+    # ROM directory); ES-DE/ and system/ stay at the top. A card written the old way has
+    # its system folders moved into ROMs/ first: a rename, not a copy.
+    roms = esde.roms_dir(dest)
+    if not dry_run and dest.exists():
+        esde.adopt_roms_layout(dest)
     # What reaches the card is what ES-DE can list and launch (esde.py): its folder name,
     # its file types, archives unpacked where the emulator cannot read them, one entry per
     # disc. `layout` 'ranked' keeps the old <system>/<score>/ folders; 'flat' (the default)
@@ -584,8 +591,8 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         if arcade_wanted:
             targets.add("arcade")
             targets |= {esde.ARCADE_FOLDERS[c] for c in arcade_cores if c in esde.ARCADE_FOLDERS}
-        if dest.exists():
-            for child in dest.iterdir():
+        if roms.exists():
+            for child in roms.iterdir():
                 if not child.is_dir() or child.name.lower() not in targets:
                     continue
                 if progress: progress(0, 0, f"measuring {child.name} (to clear it)…")
@@ -620,7 +627,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         The measuring pass wants the full rebuild under a wipe; the real build does not,
         because the wipe (if any) has already cleared the folder by then."""
         base = esde.ARCADE_FOLDERS.get(core, "arcade")
-        dest_dir = dest / base
+        dest_dir = roms / base
         label = f"measuring {base}" if dry_run else base
         dat = mameset.dat_path(core)
         if not dat:
@@ -651,7 +658,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         # need reflects that. Clearing the ticked platforms counts as room the copy may use.
         if progress: progress(0, 0, "measuring what's left to copy…")
         need = (sum(s[-1] or 0 for g in games for s in g["steps"]) if wipe
-                else _bytes_to_copy(games, dest))
+                else _bytes_to_copy(games, roms))
         if arcade_any:
             # A wipe clears the arcade folder before rebuilding it, so the sizing pass
             # must measure the FULL build — fresh=True — not the delta over the old
@@ -740,7 +747,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             not_playable[g["folder"]] = not_playable.get(g["folder"], 0) + g["dropped"]
         if not g["steps"]:
             continue
-        base = dest / g["folder"] / g["sub"] if g["sub"] else dest / g["folder"]
+        base = roms / g["folder"] / g["sub"] if g["sub"] else roms / g["folder"]
         done = True
         for step in g["steps"]:
             if dry_run:
@@ -1361,11 +1368,15 @@ def romset(profile, dest, leave_bytes=0, progress=None, db=None, stop=None,
     from . import mameset, esde
     db = db or connect()
     dest = Path(dest)
-    if dest.parent == dest:
+    if dest.parent == dest or dest.name.lower() == esde.ROMS.lower():
         # A drive root is a card, not a romset folder: 4,365 zips once landed loose beside
         # Android's DCIM and Music, where ES-DE never looks. They go to the core's ES-DE
-        # folder on that card instead (J:\ -> J:\arcade for MAME).
-        dest = dest / esde.ARCADE_FOLDERS.get(profile, profile)
+        # folder in that card's ROMs folder instead (J:\ -> J:\ROMs\arcade for MAME).
+        dest = esde.roms_dir(dest) / esde.ARCADE_FOLDERS.get(profile, profile)
+    elif dest.parent.parent == dest.parent and dest.name.lower() in esde.system_folders():
+        # J:\fbneo, the old layout: ES-DE now looks in the card's ROMs folder.
+        esde.adopt_roms_layout(dest.parent)
+        dest = esde.roms_dir(dest.parent) / dest.name
     empty = {"copied": 0, "bytes": 0, "bytes_needed": 0, "complete": 0, "incomplete": 0,
              "stopped": False, "out_of_room": False, "sets": {}}
     dat = mameset.dat_path(profile)
@@ -1512,7 +1523,8 @@ def _romset_media(dest, setnames, db, fetch=True, progress=None, stop=None):
     system `fbneo` on card J:/, entries `mslug.zip`."""
     from . import artwork as art
     dest = Path(dest).resolve()
-    card, fold, sub = dest.parent, dest.name, Path()
+    from . import esde
+    card, fold, sub = esde.card_root(dest.parent), dest.name, Path()
     rows = _arcade_rows(db, setnames)
     card_games = {fold: [((sub / f"{s}.zip").as_posix(), rows[s]) for s in setnames
                          if s in rows]}
@@ -1582,6 +1594,7 @@ def arcade_card(card, progress=None, db=None, stop=None, arcade_status=None,
     card = Path(card)
     if card.name.lower() in set(esde.ARCADE_FOLDERS.values()) and card.parent != card:
         card = card.parent          # J:\arcade typed for the card: the card is J:\
+    card = esde.card_root(card)     # J:\ROMs typed: the card is J:\
     out = {"card": str(card), "cores": {}}
     for i, profile in enumerate(ARCADE_CARD):
         if stop is not None and stop.is_set():
@@ -1590,7 +1603,8 @@ def arcade_card(card, progress=None, db=None, stop=None, arcade_status=None,
             lambda n, total, name, p=profile: progress(
                 n, total, name if str(name).startswith(f"{p}:") else f"{p}: {name}"))
         out["cores"][profile] = romset(
-            profile, card / esde.ARCADE_FOLDERS[profile], progress=prog, db=db, stop=stop,
+            profile, esde.roms_dir(card) / esde.ARCADE_FOLDERS[profile], progress=prog,
+            db=db, stop=stop,
             arcade_status=arcade_status, exclude_labels=exclude_labels, versions=versions,
             prune=prune, artwork=artwork, defer_to=list(ARCADE_CARD[:i]) or None)
     out["stopped"] = bool(stop is not None and stop.is_set()) or any(

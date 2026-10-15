@@ -25,7 +25,7 @@ def test_scan_then_organize(tmp_path, monkeypatch):
     dest = tmp_path / "sd"
     o = organize(dest)
     assert o["copied"] == 1 and not o["errors"]
-    assert (dest / "nes" / "Example Game (USA).nes").read_bytes() == payload
+    assert (dest / "ROMs" / "nes" / "Example Game (USA).nes").read_bytes() == payload
 
     # Re-run: already present, nothing recopied
     o2 = organize(dest)
@@ -176,8 +176,8 @@ def test_fill_mode_keeps_top_games_when_space_runs_out(tmp_path, monkeypatch):
     monkeypatch.setattr(organizer.shutil, "copy2", copy)
     r = organize(tmp_path / "sd", fill=True)
     assert r["copied"] == 1 and r["stopped"]
-    assert (tmp_path / "sd" / "nes" / "High.nes").exists()
-    assert not (tmp_path / "sd" / "nes" / "Low.nes").exists()
+    assert (tmp_path / "sd" / "ROMs" / "nes" / "High.nes").exists()
+    assert not (tmp_path / "sd" / "ROMs" / "nes" / "Low.nes").exists()
 
 
 def test_unranked_games_sort_last(tmp_path, monkeypatch):
@@ -271,7 +271,7 @@ def test_export_skips_same_content_copies(tmp_path, monkeypatch):
         ("Cars (archive).zip", 9, "aa", None)])
     r = organize(tmp_path / "sd")
     assert r["copied"] == 1 and r["dupes_skipped"] == 2
-    assert len(list((tmp_path / "sd" / "nes").iterdir())) == 1
+    assert len(list((tmp_path / "sd" / "ROMs" / "nes").iterdir())) == 1
 
 
 def test_export_prefers_the_hash_verified_copy(tmp_path, monkeypatch):
@@ -279,8 +279,8 @@ def test_export_prefers_the_hash_verified_copy(tmp_path, monkeypatch):
     _files_for(tmp_path, monkeypatch, "c1", "nes", "Cars", [
         ("guess.zip", 9, "aa", "filename-exact"), ("proof.zip", 9, "aa", "hash")])
     organize(tmp_path / "sd")
-    assert (tmp_path / "sd" / "nes" / "proof.zip").exists()
-    assert not (tmp_path / "sd" / "nes" / "guess.zip").exists()
+    assert (tmp_path / "sd" / "ROMs" / "nes" / "proof.zip").exists()
+    assert not (tmp_path / "sd" / "ROMs" / "nes" / "guess.zip").exists()
 
 
 def test_export_keeps_distinct_content_under_one_item(tmp_path, monkeypatch):
@@ -315,8 +315,8 @@ def test_distinct_games_collapses_variants(tmp_path, monkeypatch):
         db.execute("UPDATE items SET community_score=10 WHERE id='ger'")
     r = organize(tmp_path / "sd", distinct_games=True)
     assert r["copied"] == 1 and r["dupes_skipped"] == 1
-    assert (tmp_path / "sd" / "nes" / "Cars (USA).zip").exists()
-    assert not (tmp_path / "sd" / "nes" / "Cars (Germany).zip").exists()
+    assert (tmp_path / "sd" / "ROMs" / "nes" / "Cars (USA).zip").exists()
+    assert not (tmp_path / "sd" / "ROMs" / "nes" / "Cars (Germany).zip").exists()
 
 
 def test_distinct_games_off_keeps_variants(tmp_path, monkeypatch):
@@ -345,7 +345,7 @@ def test_distinct_games_prefers_the_hash_verified_variant(tmp_path, monkeypatch)
         db.execute("UPDATE items SET community_score=90 WHERE id='ger'")
     r = organize(tmp_path / "sd", distinct_games=True)
     assert r["copied"] == 1
-    assert (tmp_path / "sd" / "nes" / "Cars (USA).zip").exists()
+    assert (tmp_path / "sd" / "ROMs" / "nes" / "Cars (USA).zip").exists()
 
 
 def test_planner_counts_match_a_deduped_export(tmp_path, monkeypatch):
@@ -375,10 +375,10 @@ def test_export_files_games_into_score_folders(tmp_path, monkeypatch):
     _files_for(tmp_path, monkeypatch, "c", "nes", "Mystery",
                [("Mystery.zip", 9, "cc", None)])
     organize(tmp_path / "sd", layout="ranked")
-    assert sorted(p.name for p in (tmp_path / "sd" / "nes").iterdir()) == ["0", "70", "80"]
-    assert (tmp_path / "sd" / "nes" / "80" / "Golden.zip").exists()   # 87 -> 80
-    assert (tmp_path / "sd" / "nes" / "70" / "Silver.zip").exists()   # rating 7 -> 70
-    assert (tmp_path / "sd" / "nes" / "0" / "Mystery.zip").exists()
+    assert sorted(p.name for p in (tmp_path / "sd" / "ROMs" / "nes").iterdir()) == ["0", "70", "80"]
+    assert (tmp_path / "sd" / "ROMs" / "nes" / "80" / "Golden.zip").exists()   # 87 -> 80
+    assert (tmp_path / "sd" / "ROMs" / "nes" / "70" / "Silver.zip").exists()   # rating 7 -> 70
+    assert (tmp_path / "sd" / "ROMs" / "nes" / "0" / "Mystery.zip").exists()
 
 
 def test_wipe_clears_the_ticked_platforms_folder(tmp_path, monkeypatch):
@@ -387,17 +387,17 @@ def test_wipe_clears_the_ticked_platforms_folder(tmp_path, monkeypatch):
     only the ticked platforms' own folders go."""
     _one_rom(tmp_path, monkeypatch, system="nes", name="New.nes")
     dest = tmp_path / "sd"
-    (dest / "nes").mkdir(parents=True)
-    (dest / "nes" / "Stale.nes").write_bytes(b"stale!")
-    (dest / "snes").mkdir(parents=True)
-    (dest / "snes" / "Keepme.sfc").write_bytes(b"keep")
+    (dest / "ROMs" / "nes").mkdir(parents=True)
+    (dest / "ROMs" / "nes" / "Stale.nes").write_bytes(b"stale!")
+    (dest / "ROMs" / "snes").mkdir(parents=True)
+    (dest / "ROMs" / "snes" / "Keepme.sfc").write_bytes(b"keep")
     (dest / "notes.txt").write_bytes(b"x")
     r = organize(dest, systems=["nes"], wipe=True)
     assert r["copied"] == 1 and not r["skipped"]
     assert r["wiped"]["folders"] == ["nes"] and r["wiped"]["files"] == 1
-    assert not (dest / "nes" / "Stale.nes").exists()
-    assert (dest / "nes" / "New.nes").exists()
-    assert (dest / "snes" / "Keepme.sfc").exists()    # unticked: untouched
+    assert not (dest / "ROMs" / "nes" / "Stale.nes").exists()
+    assert (dest / "ROMs" / "nes" / "New.nes").exists()
+    assert (dest / "ROMs" / "snes" / "Keepme.sfc").exists()    # unticked: untouched
     assert (dest / "notes.txt").exists()              # loose file: untouched
 
 
@@ -406,10 +406,10 @@ def test_wipe_without_a_platform_list_is_refused(tmp_path, monkeypatch):
     named — refused rather than guessed at."""
     _one_rom(tmp_path, monkeypatch)
     dest = tmp_path / "sd"
-    (dest / "nes").mkdir(parents=True)
-    (dest / "nes" / "Old.nes").write_bytes(b"old")
+    (dest / "ROMs" / "nes").mkdir(parents=True)
+    (dest / "ROMs" / "nes" / "Old.nes").write_bytes(b"old")
     r = organize(dest, wipe=True)
-    assert "error" in r and (dest / "nes" / "Old.nes").exists()
+    assert "error" in r and (dest / "ROMs" / "nes" / "Old.nes").exists()
 
 
 def test_a_wipe_dry_run_counts_without_deleting(tmp_path, monkeypatch):
@@ -417,10 +417,10 @@ def test_a_wipe_dry_run_counts_without_deleting(tmp_path, monkeypatch):
     cleared, and clears nothing."""
     _one_rom(tmp_path, monkeypatch, name="New.nes")
     dest = tmp_path / "sd"
-    (dest / "nes").mkdir(parents=True)
-    (dest / "nes" / "Stale.nes").write_bytes(b"stale!")
+    (dest / "ROMs" / "nes").mkdir(parents=True)
+    (dest / "ROMs" / "nes" / "Stale.nes").write_bytes(b"stale!")
     r = organize(dest, systems=["nes"], wipe=True, dry_run=True)
-    assert r["wiped"]["files"] == 1 and (dest / "nes" / "Stale.nes").exists()
+    assert r["wiped"]["files"] == 1 and (dest / "ROMs" / "nes" / "Stale.nes").exists()
 
 
 def test_an_export_too_big_for_even_a_cleared_card_refuses_before_wiping(tmp_path, monkeypatch):
@@ -429,13 +429,13 @@ def test_an_export_too_big_for_even_a_cleared_card_refuses_before_wiping(tmp_pat
     copied. The refusal must come first, with the card's contents intact."""
     _one_rom(tmp_path, monkeypatch, name="New.nes")
     dest = tmp_path / "sd"
-    (dest / "nes").mkdir(parents=True)
-    (dest / "nes" / "Stale.nes").write_bytes(b"stale!")
+    (dest / "ROMs" / "nes").mkdir(parents=True)
+    (dest / "ROMs" / "nes" / "Stale.nes").write_bytes(b"stale!")
     _fake_disk(monkeypatch, free=1024 ** 3)  # exactly the reserve: no room for anything
     r = organize(dest, systems=["nes"], wipe=True)
     assert "error" in r and r["copied"] == 0
     assert "still not enough" in r["error"]
-    assert (dest / "nes" / "Stale.nes").exists()   # refused before clearing anything
+    assert (dest / "ROMs" / "nes" / "Stale.nes").exists()   # refused before clearing anything
 
 
 def test_a_wipe_that_makes_it_fit_clears_and_copies(tmp_path, monkeypatch):
@@ -444,8 +444,8 @@ def test_a_wipe_that_makes_it_fit_clears_and_copies(tmp_path, monkeypatch):
     the export fit, and then the old copy goes and the new one lands."""
     _one_rom(tmp_path, monkeypatch, name="New.nes")
     dest = tmp_path / "sd"
-    (dest / "nes").mkdir(parents=True)
-    (dest / "nes" / "Stale.nes").write_bytes(b"x" * 300)
+    (dest / "ROMs" / "nes").mkdir(parents=True)
+    (dest / "ROMs" / "nes" / "Stale.nes").write_bytes(b"x" * 300)
     from romcom import organizer
     state = {"free": 1024 ** 3 + 8}
     monkeypatch.setattr(organizer, "_reserve_bytes", lambda d: 1024 ** 3)
@@ -457,8 +457,8 @@ def test_a_wipe_that_makes_it_fit_clears_and_copies(tmp_path, monkeypatch):
     monkeypatch.setattr(organizer.shutil, "rmtree", rmtree)
     r = organize(dest, systems=["nes"], wipe=True)
     assert r["copied"] == 1 and r["wiped"]["files"] == 1
-    assert not (dest / "nes" / "Stale.nes").exists()
-    assert (dest / "nes" / "New.nes").exists()
+    assert not (dest / "ROMs" / "nes" / "Stale.nes").exists()
+    assert (dest / "ROMs" / "nes" / "New.nes").exists()
 
 
 def _romset_env(monkeypatch, tmp_path, dats, disk):
@@ -520,7 +520,7 @@ def test_export_builds_the_arcade_bios_parents_of_its_selection(tmp_path, monkey
     # 'all': kof97 cannot boot without its parent, and the default health gate would hold
     # it back (see test_arcadehealth) — this is about the parents, so build everything.
     r = organize(tmp_path / "sd", arcade_status="all")
-    card = tmp_path / "sd" / "arcade"
+    card = tmp_path / "sd" / "ROMs" / "arcade"
     assert (card / "mslug.zip").exists() and (card / "kof97.zip").exists()
     assert (card / "neogeo.zip").exists()               # the parent, not ticked, still there
     assert r["arcade_bios_unavailable"] == {"ghost": 1}  # kof97's parent: not in the dump
@@ -629,12 +629,12 @@ def test_distinct_games_reaches_the_arcade_build(tmp_path, monkeypatch):
             db.execute("INSERT INTO items(id,title,system,external_id) "
                        f"VALUES('{iid}','{title}','arcade','arcade/{setname}')")
             db.execute("UPDATE files SET matched_item_id=? WHERE path LIKE ?", (iid, f"%{chip}"))
-    card = tmp_path / "sd" / "arcade"
+    card = tmp_path / "sd" / "ROMs" / "arcade"
     r = organize(tmp_path / "sd", distinct_games=True)
     assert (card / "mslug.zip").exists() and not (card / "mslugu.zip").exists()
     assert r["dupes_skipped"] == 1
     organize(tmp_path / "sd2")                     # off: both variants build
-    assert (tmp_path / "sd2" / "arcade" / "mslugu.zip").exists()
+    assert (tmp_path / "sd2" / "ROMs" / "arcade" / "mslugu.zip").exists()
 
 
 def test_export_gets_the_arcade_core_it_is_asked_for(tmp_path, monkeypatch):
@@ -658,13 +658,13 @@ def test_export_gets_the_arcade_core_it_is_asked_for(tmp_path, monkeypatch):
                        f"VALUES('{iid}','{setname}','arcade','arcade/{setname}')")
             db.execute("UPDATE files SET matched_item_id=? WHERE path LIKE ?", (iid, f"%{chip}"))
     r = organize(tmp_path / "sd", systems=["arcade"], arcade_core="fbneo")
-    card = tmp_path / "sd" / "fbneo"
+    card = tmp_path / "sd" / "ROMs" / "fbneo"
     assert (card / "mslug.zip").exists() and (card / "kof97.zip").exists()
     assert r["arcade"]["complete"] == 2        # one core, its dat alone decides what builds
     alla = organize(tmp_path / "sd3", systems=["arcade"], arcade_core="all")
-    assert (tmp_path / "sd3" / "arcade" / "mslug.zip").exists()
-    assert (tmp_path / "sd3" / "arcade" / "neogeo.zip").exists()   # mame's bios parent
-    assert (tmp_path / "sd3" / "fbneo" / "kof97.zip").exists()   # fbneo's own set
+    assert (tmp_path / "sd3" / "ROMs" / "arcade" / "mslug.zip").exists()
+    assert (tmp_path / "sd3" / "ROMs" / "arcade" / "neogeo.zip").exists()   # mame's bios parent
+    assert (tmp_path / "sd3" / "ROMs" / "fbneo" / "kof97.zip").exists()   # fbneo's own set
     assert set(alla["arcade"].keys()) == {"mame", "fbneo", "mame2003"}
     # mame builds mslug plus the neogeo parent before it; fbneo builds both of its sets.
     assert alla["arcade"]["mame"]["complete"] == 2 and alla["arcade"]["fbneo"]["complete"] == 2
@@ -685,7 +685,7 @@ def test_rating_min_filters_the_export_on_its_own(tmp_path, monkeypatch):
         db.execute("UPDATE items SET community_score=85 WHERE title='Crowd Favourite (Japan).nes'")
     dest = tmp_path / "sd"
     r = organize(dest, rating_min=7)
-    copied = list((dest / "nes").rglob("*.nes"))
+    copied = list((dest / "ROMs" / "nes").rglob("*.nes"))
     assert r["copied"] == 2
     assert {p.name for p in copied} == {"Great (USA).nes", "Crowd Favourite (Japan).nes"}
 
@@ -751,13 +751,13 @@ def test_distinct_games_prunes_the_dats_clone_families(tmp_path, monkeypatch):
         for iid, chip in (("a", "a.bin"), ("b", "b.bin")):
             db.execute("UPDATE files SET matched_item_id=? WHERE path LIKE ?", (iid, f"%{chip}"))
     r = organize(tmp_path / "sd", distinct_games=True)
-    arcade = tmp_path / "sd" / "arcade"
+    arcade = tmp_path / "sd" / "ROMs" / "arcade"
     assert (arcade / "doa2.zip").exists() and not (arcade / "doa2m.zip").exists()
     assert r["clones_pruned"] == {"mame": {"doa2m": "doa2"}}
     assert r["dupes_skipped"] == 1
 
     organize(tmp_path / "sd2")                       # off: the clone is asked for, it builds
-    assert (tmp_path / "sd2" / "arcade" / "doa2m.zip").exists()
+    assert (tmp_path / "sd2" / "ROMs" / "arcade" / "doa2m.zip").exists()
 
 
 def test_clone_pruning_survives_chains_and_scores_the_family(tmp_path, monkeypatch):
@@ -782,7 +782,7 @@ def test_clone_pruning_survives_chains_and_scores_the_family(tmp_path, monkeypat
         for iid, chip in (("a", "a.bin"), ("b", "b.bin"), ("c", "c.bin")):
             db.execute("UPDATE files SET matched_item_id=? WHERE path LIKE ?", (iid, f"%{chip}"))
     r = organize(tmp_path / "sd", distinct_games=True)
-    arcade = tmp_path / "sd" / "arcade"
+    arcade = tmp_path / "sd" / "ROMs" / "arcade"
     # one family, one survivor: the Champion Edition, which the crowd rates highest
     assert (arcade / "sf2ce.zip").exists()
     assert not (arcade / "sf2.zip").exists() and not (arcade / "sf2ced.zip").exists()
@@ -806,7 +806,7 @@ def test_a_set_whose_chips_belong_to_siblings_still_reaches_the_card(tmp_path, m
                    "VALUES('ms','Ms. Pac-Man','arcade','arcade/mspacman','VERIFIED',1)")
         db.execute("UPDATE files SET matched_item_id='p'")
     organize(tmp_path / "sd", arcade_status="all")
-    assert (tmp_path / "sd" / "arcade" / "mspacman.zip").exists()
+    assert (tmp_path / "sd" / "ROMs" / "arcade" / "mspacman.zip").exists()
 
 
 def test_a_bootleg_never_takes_its_familys_slot_from_the_real_game(tmp_path, monkeypatch):
@@ -828,7 +828,7 @@ def test_a_bootleg_never_takes_its_familys_slot_from_the_real_game(tmp_path, mon
             db.execute("UPDATE files SET matched_item_id=? WHERE path LIKE ?", (iid, f"%{chip}"))
     labels.refresh(db)
     organize(tmp_path / "sd", distinct_games=True, arcade_status="all")
-    built = sorted(p.stem for p in (tmp_path / "sd" / "arcade").glob("*.zip"))
+    built = sorted(p.stem for p in (tmp_path / "sd" / "ROMs" / "arcade").glob("*.zip"))
     assert built == ["mslug5"]
 
 
@@ -917,9 +917,9 @@ def test_arcade_card_puts_fbneo_first_and_mame_only_what_fbneo_lacks(tmp_path, m
                   encoding="utf-8")
     _family_env(monkeypatch, tmp_path, {"mame": dat, "fbneo": fb})
     card = tmp_path / "card"
-    r = arcade_card(card / "arcade", arcade_status="all", artwork=False)   # folder typed
-    assert [p.stem for p in (card / "fbneo").glob("*.zip")] == ["sf2ua"]
-    assert [p.stem for p in (card / "arcade").glob("*.zip")] == ["gtclub"]
+    r = arcade_card(card / "ROMs" / "arcade", arcade_status="all", artwork=False)   # folder typed
+    assert [p.stem for p in (card / "ROMs" / "fbneo").glob("*.zip")] == ["sf2ua"]
+    assert [p.stem for p in (card / "ROMs" / "arcade").glob("*.zip")] == ["gtclub"]
     assert r["cores"]["mame"]["deferred"] == 1 and not r["stopped"]
 
 
@@ -987,8 +987,8 @@ def test_a_full_card_still_counts_the_games_already_on_it(tmp_path, monkeypatch)
     with db:
         db.execute("UPDATE items SET community_score=90 WHERE id='nes-Big New.nes'")
     sd = tmp_path / "sd"
-    (sd / "nes").mkdir(parents=True)
-    (sd / "nes" / "Old.nes").write_bytes(b"old")           # on the card from last time
+    (sd / "ROMs" / "nes").mkdir(parents=True)
+    (sd / "ROMs" / "nes" / "Old.nes").write_bytes(b"old")           # on the card from last time
     from romcom import artwork, organizer
     monkeypatch.setattr(artwork, "cached_sizes", lambda *a, **k: {})
     seen = {}
@@ -1001,3 +1001,21 @@ def test_a_full_card_still_counts_the_games_already_on_it(tmp_path, monkeypatch)
     assert r["copied"] == 0 and r["stopped"]
     assert [e for e, _ in seen.get("nes", [])] == ["Old.nes"]
     assert sum("reached its free-space reserve" in e["error"] for e in r["errors"]) == 1
+
+
+def test_games_go_into_a_roms_folder_and_an_old_card_is_rearranged(tmp_path, monkeypatch):
+    """Android will not let ES-DE take the top of an SD card as its ROM directory: the
+    games live in <card>/ROMs/<system>/. A card written the old way has its system folders
+    moved in (a rename), while ES-DE/ and system/ stay at the top."""
+    _one_rom(tmp_path, monkeypatch, name="New.nes")
+    sd = tmp_path / "sd"
+    (sd / "snes").mkdir(parents=True)
+    (sd / "snes" / "Old.sfc").write_bytes(b"old")
+    (sd / "ES-DE" / "gamelists").mkdir(parents=True)
+    (sd / "DCIM").mkdir()
+    organize(sd)
+    assert (sd / "ROMs" / "nes" / "New.nes").exists()
+    assert (sd / "ROMs" / "snes" / "Old.sfc").exists() and not (sd / "snes").exists()
+    assert (sd / "ES-DE" / "gamelists").exists() and (sd / "DCIM").exists()
+    organize(sd / "ROMs")                                 # the ROMs folder typed: same card
+    assert not (sd / "ROMs" / "ROMs").exists()

@@ -547,6 +547,12 @@ next try. A set whose driver is preliminary is not a download, and is left alone
 `romcom organize <card>` (the web app's Export card) writes a card ES-DE, RetroArch and the
 other front ends can open as it is:
 
+- **A `ROMs` folder**: games go in `<card>/ROMs/<system>/`, beside `<card>/ES-DE/` (game lists,
+  covers) and `<card>/system/` (BIOS). Android will not let ES-DE take the top of an SD card
+  as its ROM directory, so on the handheld choose `ROMs` as the ROMs directory and the card's
+  `ES-DE` folder as the ES-DE directory (ES-DE's setup runs again when its storage permission
+  is revoked). A card written the old way, system folders at the top, is rearranged into
+  `ROMs/` by the next export (a rename on the card, not a copy).
 - **Folders by ES-DE's names**: `psx`, `gc`, `n3ds`, `psvita`, `sega32x`, `ngpc`… A folder
   ES-DE does not know is ignored, games and all. Arcade cores go to the folder whose default
   emulator speaks their romset: MAME → `arcade`, FBNeo → `fbneo`, MAME 2003-Plus → `mame`.
@@ -565,7 +571,7 @@ other front ends can open as it is:
 
 ### Arcade romsets for a handheld
 
-`romcom romset fbneo J:bneo` then `romcom romset mame J:rcade --defer-to fbneo` (the
+`romcom romset card J:\` (FBNeo into `J:\ROMs\fbneo`, then MAME into `J:\ROMs\arcade`) (the
 web app's Arcade romsets card) builds a card where each game is there once:
 
 - **Best version of each game** (`--versions 1`, the default; `2` keeps the top two, `0`

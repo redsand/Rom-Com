@@ -102,13 +102,13 @@ def test_an_export_leaves_out_fruit_machines_but_not_the_bios_a_game_needs(monke
     db = _env(monkeypatch, tmp_path)
     labels.refresh(db)
     r = organize(tmp_path / "sd", systems=["arcade"], arcade_status="all")
-    card = tmp_path / "sd" / "arcade"
+    card = tmp_path / "sd" / "ROMs" / "arcade"
     assert (card / "mslug.zip").exists()
     assert (card / "neogeo.zip").exists()                # not-a-game, but mslug needs it
     assert not (card / "m1hotpot.zip").exists()
     assert r["labels_left_out"] == {"arcade": 2}         # m1hotpot and the neogeo item
     r = organize(tmp_path / "sd2", systems=["arcade"], arcade_status="all", exclude_labels=[])
-    assert (tmp_path / "sd2" / "arcade" / "m1hotpot.zip").exists()
+    assert (tmp_path / "sd2" / "ROMs" / "arcade" / "m1hotpot.zip").exists()
 
 
 def test_a_romset_leaves_out_fruit_machines_and_keeps_needed_bios(monkeypatch, tmp_path):

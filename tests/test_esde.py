@@ -74,15 +74,15 @@ def test_an_export_ES_DE_can_open(tmp_path, monkeypatch):
         '<favorite>true</favorite></game></gameList>', encoding="utf-8")
     r = organize(card)
     assert not r["errors"], r["errors"]
-    assert (card / "snes" / "Super Game (USA).sfc").exists()
-    assert not (card / "snes" / "Super Game (USA).nfo").exists()          # no game
+    assert (card / "ROMs" / "snes" / "Super Game (USA).sfc").exists()
+    assert not (card / "ROMs" / "snes" / "Super Game (USA).nfo").exists()          # no game
     assert r["not_playable"] == {"snes": 1}
-    disc = card / "dreamcast" / "Disc Game (Japan).gdi"
+    disc = card / "ROMs" / "dreamcast" / "Disc Game (Japan).gdi"
     assert disc.is_dir() and (disc / "Disc Game (Japan).gdi").exists()    # directory as file
     assert (disc / "track01.bin").exists() and (disc / "track02.raw").exists()
     assert not (disc / "readme.txt").exists()
-    assert (card / "gba" / "Pocket (Europe).zip").exists()               # left zipped
-    assert (card / "psx" / "Old Disc (USA).chd").exists()                # ps1 -> psx
+    assert (card / "ROMs" / "gba" / "Pocket (Europe).zip").exists()               # left zipped
+    assert (card / "ROMs" / "psx" / "Old Disc (USA).chd").exists()                # ps1 -> psx
     assert r["unpacked"] == 1
     gl = ET.parse(card / "ES-DE" / "gamelists" / "snes" / "gamelist.xml").getroot()
     game = gl.find("game")
@@ -127,9 +127,9 @@ def test_disc_games_become_one_chd_each(tmp_path, monkeypatch):
     card = tmp_path / "card"
     r = organize(card)
     assert not r["errors"], r["errors"]
-    assert (card / "dreamcast" / "Disc Game (Japan).chd").exists()
-    assert (card / "psx" / "Loose (USA).chd").exists()
-    assert not (card / "psx" / "Loose (USA).bin").exists()
+    assert (card / "ROMs" / "dreamcast" / "Disc Game (Japan).chd").exists()
+    assert (card / "ROMs" / "psx" / "Loose (USA).chd").exists()
+    assert not (card / "ROMs" / "psx" / "Loose (USA).bin").exists()
     assert sorted(made) == [("Disc Game (Japan).zip", "Disc Game (Japan).gdi"),
                             ("Loose (USA).cue", "Loose (USA).cue")]
     gl = ET.parse(card / "ES-DE" / "gamelists" / "psx" / "gamelist.xml").getroot()
@@ -152,7 +152,7 @@ def test_a_multi_disc_game_is_one_entry_with_an_m3u(tmp_path, monkeypatch):
     card = tmp_path / "card"
     r = organize(card)
     assert not r["errors"], r["errors"]
-    d = card / "psx" / "Big RPG (USA).m3u"
+    d = card / "ROMs" / "psx" / "Big RPG (USA).m3u"
     assert (d / "Big RPG (USA).m3u").read_text() == \
         "Big RPG (USA) (Disc 1).chd\nBig RPG (USA) (Disc 2).chd\n"
     assert (d / "Big RPG (USA) (Disc 2).chd").exists()
@@ -189,7 +189,7 @@ def test_gamecube_discs_share_one_m3u_too(tmp_path, monkeypatch):
             f.write_bytes(f"d{n}".encode())
             _game(db, f"k{n}", f"Killer7 (USA) (Disc {n})", "gamecube", f)
     organize(tmp_path / "card")
-    d = tmp_path / "card" / "gc" / "Killer7 (USA).m3u"
+    d = tmp_path / "card" / "ROMs" / "gc" / "Killer7 (USA).m3u"
     assert (d / "Killer7 (USA).m3u").read_text().splitlines() == [
         "Killer7 (USA) (Disc 1).rvz", "Killer7 (USA) (Disc 2).rvz"]
 
@@ -209,7 +209,7 @@ def test_one_item_holding_every_disc_gets_an_m3u(tmp_path, monkeypatch):
             db.execute("INSERT INTO files(path,bytes,sha1,matched_item_id,match_method) "
                        "VALUES(?,2,?,'k','hash')", (str(f), str(n) * 40))
     organize(tmp_path / "card")
-    d = tmp_path / "card" / "gc" / "Killer7 (USA) (Rev 1).m3u"
+    d = tmp_path / "card" / "ROMs" / "gc" / "Killer7 (USA) (Rev 1).m3u"
     assert (d / "Killer7 (USA) (Rev 1).m3u").read_text().splitlines() == [
         "Killer7 (USA) (Disc 1) (Rev 1).rvz", "Killer7 (USA) (Disc 2) (Rev 1).rvz"]
 
@@ -234,7 +234,7 @@ def test_one_copy_per_game_puts_one_dump_of_a_cartridge_game_on_the_card(tmp_pat
                        "VALUES(?,?,?,'m',?)", (str(f), len(name), hashlib.sha1(name.encode()).hexdigest(), method))
     card = tmp_path / "card"
     r = organize(card, distinct_games=True)
-    assert sorted(p.name for p in (card / "gba").iterdir()) == ["Metroid Fusion (U) [!].gba"]
+    assert sorted(p.name for p in (card / "ROMs" / "gba").iterdir()) == ["Metroid Fusion (U) [!].gba"]
     assert r["dupes_skipped"] == 3
     organize(tmp_path / "card2")                       # off: every dump, as before
-    assert len(list((tmp_path / "card2" / "gba").iterdir())) == 4
+    assert len(list((tmp_path / "card2" / "ROMs" / "gba").iterdir())) == 4

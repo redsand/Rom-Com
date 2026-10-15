@@ -1026,7 +1026,7 @@ function romPathHint() {
   const p = $("#rom-profile").value;
   $("#rom-path").placeholder = p === "card"
     ? "J:\\ (the card itself: fbneo\\ and arcade\\ go on it)"
-    : `J:\\${ROM_FOLDER[p] || "arcade"} (ES-DE launches that folder with this core)`;
+    : `J:\\ROMs\\${ROM_FOLDER[p] || "arcade"} (ES-DE launches that folder with this core)`;
   // The card preset already leaves MAME the games FBNeo lacks.
   $("#rom-defer-wrap").hidden = p === "fbneo" || p === "card";
 }

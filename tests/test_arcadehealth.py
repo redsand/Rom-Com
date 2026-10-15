@@ -203,7 +203,7 @@ def test_export_holds_broken_sets_back_and_a_working_clone_takes_the_slot(
                                   "kinstc": "aaaa0009"}[s]))
     card = tmp_path / "sd"
     r = organizer.organize(card, systems=["arcade"], distinct_games=True)
-    built = sorted(p.stem for p in (card / "arcade").glob("*.zip"))
+    built = sorted(p.stem for p in (card / "ROMs" / "arcade").glob("*.zip"))
     # kinstc won its family's one slot and shares no chip with kinst, so the broken
     # parent stays off the card (CPS3's sfiii3n once dragged a CHD-less sfiii3 along);
     # wip — nothing in its family runs — stays off too.
@@ -276,7 +276,7 @@ def test_every_core_gets_its_bios_parents_not_just_mame(monkeypatch, tmp_path):
                    "VALUES('m','Metal Slug','arcade','arcade/mslug')")
         db.execute("UPDATE files SET matched_item_id='m' WHERE crc32='aaaa0002'")
     organizer.organize(tmp_path / "sd", systems=["arcade"], arcade_core="fbneo")
-    card = tmp_path / "sd" / "fbneo"           # ES-DE launches it with FBNeo
+    card = tmp_path / "sd" / "ROMs" / "fbneo"           # ES-DE launches it with FBNeo
     assert sorted(p.stem for p in card.glob("*.zip")) == ["mslug", "neogeo"]
 
 
@@ -310,7 +310,7 @@ def test_mame2003_bios_comes_from_the_fallback_dat_in_an_export(monkeypatch, tmp
         db.execute("UPDATE files SET matched_item_id='c' WHERE crc32='aaaa0002'")
     r = organizer.organize(tmp_path / "sd", systems=["arcade"], arcade_core="mame2003")
     assert arcadehealth.statuses("mame2003", db)["cvsgame"][0] == "works"
-    card = tmp_path / "sd" / "mame"            # ES-DE: MAME 2003-Plus
+    card = tmp_path / "sd" / "ROMs" / "mame"            # ES-DE: MAME 2003-Plus
     assert sorted(p.stem for p in card.glob("*.zip")) == ["cvs", "cvsgame"]
     assert not r["arcade_bios_unavailable"]
 

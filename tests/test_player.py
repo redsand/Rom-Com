@@ -274,7 +274,7 @@ def test_non_arcade_games_land_in_a_score_folder(monkeypatch, tmp_path):
     player.set_keep("snes-ct", True, db=db)
     dest = tmp_path / "card2"
     organize(str(dest), keep_only=True, layout="ranked")
-    assert (dest / "snes" / "0" / rom.name).exists()
+    assert (dest / "ROMs" / "snes" / "0" / rom.name).exists()
 
 
 def test_play_stages_the_arcade_set_on_demand(monkeypatch, tmp_path):

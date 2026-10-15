@@ -94,6 +94,49 @@ _PRIMARY = (".m3u", ".cue", ".gdi", ".ccd", ".mds", ".toc")
 _TRACKS = {".bin", ".img", ".raw", ".sub", ".mdf", ".ecm", ".iso", ".wav"}
 UNPACK = (".zip", ".7z", ".rar")
 
+# Android will not let an app take the top of an SD card as a folder, so ES-DE's ROM
+# directory must be a folder on it: games live in <card>/ROMs/<system>/, beside
+# <card>/ES-DE/ (gamelists, downloaded_media) and <card>/system/ (BIOS).
+ROMS = "ROMs"
+
+
+def card_root(dest):
+    """The card an export or romset writes to: `dest`, or the card above a ROMs folder."""
+    dest = Path(dest)
+    return dest.parent if dest.name.lower() == ROMS.lower() and dest.parent != dest else dest
+
+
+def roms_dir(dest):
+    return card_root(dest) / ROMS
+
+
+def system_folders():
+    """Folder names that are an ES-DE system: what a card's ROMs folder holds."""
+    return ({f.lower() for f in EXTS} | {f.lower() for f in FOLDERS.values()}
+            | {f.lower() for f in ARCADE_FOLDERS.values()})
+
+
+def adopt_roms_layout(card):
+    """Move system folders a card holds at its top level (RomCom's old layout) into
+    <card>/ROMs/ — a rename on the card, not a copy. A folder already in ROMs/ wins and
+    the old one is left where it is. Returns the names moved."""
+    card = card_root(card)
+    roms = card / ROMS
+    known = system_folders()
+    moved = []
+    if not card.exists():
+        return moved
+    for child in sorted(card.iterdir()):
+        if not child.is_dir() or child.name.lower() not in known:
+            continue
+        target = roms / child.name
+        if target.exists():
+            continue
+        roms.mkdir(exist_ok=True)
+        child.rename(target)
+        moved.append(child.name)
+    return moved
+
 
 def folder(system):
     s = (system or "unknown").lower()
