@@ -276,13 +276,16 @@ NOT_GAME_EXTS = {
     # fonts, images, installers, and the rest of a bundle
     ".ttf", ".otf", ".fon", ".wmf", ".emf", ".ico", ".exe", ".msi", ".dll", ".url",
     ".lnk", ".html", ".htm", ".xml", ".json", ".log",
+    # cover art and frontend furniture that rides along in game folders: a 'nes/images/'
+    # thumbnail was adopted as an NES game for sitting in a folder called nes
+    ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".txt", ".ini",
 }
 
 ARCADE_SET_EXTS = {".zip", ".7z", ".chd"}
 
 EXT_SYSTEM={
  ".nes":"nes",".sfc":"snes",".smc":"snes",".gb":"gb",".gbc":"gbc",".gba":"gba",
- ".n64":"n64",".z64":"n64",".v64":"n64",".vb":"virtualboy",".nds":"nds",".3ds":"3ds",".cia":"3ds",
+ ".wbfs":"wii",".n64":"n64",".z64":"n64",".v64":"n64",".vb":"virtualboy",".nds":"nds",".3ds":"3ds",".cia":"3ds",
  ".md":"genesis",".gen":"genesis",".smd":"genesis",".sms":"mastersystem",".gg":"gamegear",".32x":"32x",
  ".pce":"pcengine",".ws":"wonderswan",".wsc":"wonderswancolor",".ngp":"neogeopocket",".ngc":"neogeopocketcolor",
  ".a26":"atari2600",".a52":"atari5200",".a78":"atari7800",".lnx":"lynx",
@@ -302,6 +305,11 @@ def _detect_file_system(p,known,detect_system):
             return re.sub(r"[^a-z0-9]+","",part.lower())
     ext=EXT_SYSTEM.get(p.suffix.lower())
     if ext: return ext
+    if p.suffix.lower() in sniff.DISC_IMAGES or p.suffix.lower() in (".wbfs",".rvz",".gcm",".cso"):
+        # A disc dropped loose ('RZJE69-005.wbfs'): no folder or extension names its
+        # console, but the disc's own stamp does.
+        found=sniff.systems(sniff.evidence(p))
+        if len(found)==1: return found[0]
     return detect_system(list(reversed(p.parent.parts))[:4])
 
 

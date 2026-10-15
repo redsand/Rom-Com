@@ -155,3 +155,20 @@ def test_an_archive_that_would_fill_the_drive_waits(monkeypatch, tmp_path):
     r = incoming.unpack()
     assert "not enough room yet" in r["skipped"]["big.zip"]
     assert incoming.pending() != []                       # tried again once space is back
+
+
+def test_a_hand_unpacked_folder_beside_its_import_is_not_kept_twice(monkeypatch, tmp_path):
+    """'nes/' (games plus cover art) dropped beside nes.rar: the games are the ones the
+    import already unpacked, so those copies go; the art stays for the owner."""
+    games, inc = _env(monkeypatch, tmp_path)
+    monkeypatch.setattr(incoming, "settings", lambda: {"download_dir": str(games)})
+    with zipfile.ZipFile(inc / "nes.zip", "w") as z:
+        z.writestr("nes/Some Game (USA).nes", b"N" * 1024)
+    (inc / "nes" / "images").mkdir(parents=True)
+    (inc / "nes" / "Some Game (USA).nes").write_bytes(b"N" * 1024)
+    (inc / "nes" / "images" / "Some Game-thumb.png").write_bytes(b"png")
+    r = incoming.run()
+    assert (games / "incoming" / "nes" / "Some Game (USA).nes").exists()
+    assert not (inc / "nes" / "Some Game (USA).nes").exists()
+    assert (inc / "nes" / "images" / "Some Game-thumb.png").exists()
+    assert r["tidied"]["already_had"] == 1

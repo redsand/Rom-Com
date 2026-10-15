@@ -225,15 +225,21 @@ def tidy(folder, base, scanned_ok, db=None):
         out["bytes"] += size
     # Copies of games already in the library, from this import's unpacked folders and the
     # incoming folder itself: same sha1 as a file outside both. Deleted, rows forgotten.
+    # A copy in the incoming folder itself goes when the same bytes are anywhere else
+    # (the unpacked import counts: a hand-made 'nes/' beside nes.rar's import is the same
+    # 828 games); an unpacked copy goes only when the library held it before the import.
     roots = [str(Path(base) / "incoming"), str(folder)]
     for r in db.execute(
             "SELECT path, sha1, bytes FROM files WHERE sha1 IS NOT NULL AND path NOT LIKE '%|%' "
             "AND (path LIKE ? OR path LIKE ?)", (roots[0] + "%", roots[1] + "%")).fetchall():
         if not any(r["path"].startswith(t) for t in scanned_ok):
             continue
+        in_drop = r["path"].startswith(roots[1])
         twin = db.execute(
-            "SELECT 1 FROM files WHERE sha1=? AND path<>? AND path NOT LIKE ? AND path NOT LIKE ? "
-            "LIMIT 1", (r["sha1"], r["path"], roots[0] + "%", roots[1] + "%")).fetchone()
+            "SELECT 1 FROM files WHERE sha1=? AND path<>? AND path NOT LIKE ? "
+            + ("" if in_drop else "AND path NOT LIKE ? ") + "LIMIT 1",
+            (r["sha1"], r["path"], roots[1] + "%") + (() if in_drop else (roots[0] + "%",))
+        ).fetchone()
         if not twin:
             continue
         try:
@@ -254,11 +260,29 @@ def tidy(folder, base, scanned_ok, db=None):
         if p.name == STATE or p.name.startswith(".") or (
                 p.is_file() and p.suffix.lower() in ARCHIVES):
             continue
-        mine = ({str(p)} if p.is_file() else
-                {str(f) for f in p.rglob("*") if f.is_file()})
-        if not mine or not all(any(c == m or c.startswith(m + "|") for c in claimed)
-                               for m in mine):
-            continue                          # something in it nothing claimed: kept
+        def is_claimed(m):
+            return any(c == m or c.startswith(m + "|") for c in claimed)
+        if p.is_dir():
+            # A folder of games and cover art: each claimed game moves on its own; the
+            # art, and anything nothing claimed, stays for the owner.
+            for f in sorted(x for x in p.rglob("*") if x.is_file()):
+                if not is_claimed(str(f)):
+                    continue
+                target = loose / p.name / f.relative_to(p)
+                if target.exists():
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    shutil.move(str(f), str(target))
+                except OSError:
+                    continue
+                with db:
+                    _repath(db, str(f), target)
+                out["moved"].append(f"{p.name}/{f.relative_to(p).as_posix()}")
+            continue
+        mine = {str(p)}
+        if not is_claimed(str(p)):
+            continue                          # nothing claimed it: kept
         target = loose / p.name
         if target.exists():
             continue
@@ -268,8 +292,7 @@ def tidy(folder, base, scanned_ok, db=None):
         except OSError:
             continue
         with db:
-            for m in mine:
-                _repath(db, m, target / Path(m).relative_to(p) if p.is_dir() else target)
+            _repath(db, str(p), target)
         out["moved"].append(p.name)
     return out
 
