@@ -338,10 +338,51 @@ def cached_sizes(kinds=DEFAULT_KINDS, db=None):
         if r["kind"] not in kinds:
             continue
         try:
-            out[r["item_id"]] = out.get(r["item_id"], 0) + Path(r["path"]).stat().st_size
+            size = Path(r["path"]).stat().st_size
         except OSError:
-            pass
+            continue
+        if r["kind"] == "boxart" and size >= CARD_COVER_MIN and not r["path"].endswith(".jpg"):
+            size //= 5                      # card_cover's JPEG, roughly
+        out[r["item_id"]] = out.get(r["item_id"], 0) + size
     return out
+
+
+CARD_COVER_HEIGHT = 720
+CARD_COVER_MIN = 200_000          # a cover under this is copied as it is
+
+
+def card_cover(src):
+    """The cover as it goes onto a card: a big PNG scan scaled to CARD_COVER_HEIGHT and
+    kept as a JPEG (a 600 KB PNG becomes ~80 KB), cached under <cache>/_card so it is
+    made once. A 256 GB card of 2,800 games ran out of room for its covers as PNGs. The
+    original stays in the cache for anything that wants it whole."""
+    src = Path(src)
+    try:
+        if src.stat().st_size < CARD_COVER_MIN or src.suffix.lower() == ".jpg":
+            return src
+        import hashlib
+        key = hashlib.sha1(f"{src}|{src.stat().st_mtime}".encode()).hexdigest()[:16]
+        out = CACHE / "_card" / f"{key}.jpg"
+        if out.exists() and out.stat().st_size:
+            return out
+        from PIL import Image
+        im = Image.open(src)
+        im.load()
+        if im.height > CARD_COVER_HEIGHT:
+            im = im.resize((max(1, round(im.width * CARD_COVER_HEIGHT / im.height)),
+                            CARD_COVER_HEIGHT), Image.LANCZOS)
+        if im.mode not in ("RGB", "L"):
+            rgba = im.convert("RGBA")
+            bg = Image.new("RGB", im.size, (0, 0, 0))
+            bg.paste(rgba, mask=rgba.split()[-1])
+            im = bg
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_suffix(".part")
+        im.save(tmp, "JPEG", quality=85, optimize=True)
+        tmp.replace(out)
+        return out
+    except Exception:
+        return src                 # no Pillow, an unreadable image: the original it is
 
 
 def export_media(dest, kinds=DEFAULT_KINDS, media_dir=None, systems=None, room_for=None,
@@ -393,6 +434,8 @@ def export_media(dest, kinds=DEFAULT_KINDS, media_dir=None, systems=None, room_f
             src = imgs.get(k)
             if not src or not Path(src).exists():
                 continue
+            if k == "boxart" and not dry_run:
+                src = card_cover(src)
             ext = Path(src).suffix.lower() or ".png"
             target = media / fold / ESDE[k] / entry.parent / f"{entry.stem}{ext}"
             size = Path(src).stat().st_size

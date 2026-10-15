@@ -190,3 +190,18 @@ def test_a_set_without_a_flyer_gets_its_title_screen_as_cover(monkeypatch, tmp_p
     p = arcadedb.image("x", "boxart", adb, {"url_image_title": "https://adb/?mame=x&type=title"})
     assert p and p.name == "x.png" and adb.gets == ["https://adb/?mame=x&type=title"]
     assert arcadedb.image("y", "boxart", adb, {}) is None and len(adb.gets) == 1
+
+
+def test_a_big_png_cover_goes_to_the_card_as_a_small_jpeg(monkeypatch, tmp_path):
+    from PIL import Image
+    monkeypatch.setattr(artwork, "CACHE", tmp_path / "cache")
+    png = tmp_path / "cover.png"
+    import os
+    Image.frombytes("RGB", (900, 1400), os.urandom(900 * 1400 * 3)).save(png)
+    out = artwork.card_cover(png)
+    assert out.suffix == ".jpg" and out.stat().st_size < png.stat().st_size
+    assert Image.open(out).height == artwork.CARD_COVER_HEIGHT
+    assert artwork.card_cover(png) == out                     # made once
+    small = tmp_path / "small.png"
+    Image.new("RGB", (10, 10)).save(small)
+    assert artwork.card_cover(small) == small                 # small ones go as they are
