@@ -152,7 +152,7 @@ def test_arcade_sets_get_art_from_arcadedb_by_set_name(monkeypatch, tmp_path):
     artwork.fetch(db=db, workers=2)
     have = {(x["item_id"], x["kind"]): x for x in db.execute("SELECT * FROM artwork")}
     assert have[("sf2", "boxart")]["path"].endswith("sf2.jpg")
-    assert have[("sf2", "marquee")]["source"] == "arcadedb"
+    assert have[("sf2", "marquee")]["source"] == arcadedb.SOURCE
     assert have[("ms", "snap")]["source"] == "MAME"          # ArcadeDB had nothing: libretro
     assert have[("ms", "marquee")]["path"] is None
     card = tmp_path / "card"
@@ -177,3 +177,13 @@ def test_arcadedb_facts_become_gamelist_fields():
     assert f == {"desc": "GTI Club is a racer.", "developer": "Konami",
                  "publisher": "Konami", "releasedate": "19960101T000000", "players": "1"}
     assert arcadedb.gamelist_fields({}) == {}
+
+
+def test_a_set_without_a_flyer_gets_its_title_screen_as_cover(monkeypatch, tmp_path):
+    from romcom import arcadedb
+    monkeypatch.setattr(arcadedb, "CACHE", tmp_path / "adb")
+    adb = FakeADB()
+    monkeypatch.setattr(arcadedb, "_shrink_flyer", lambda data: (data, ".png"))
+    p = arcadedb.image("x", "boxart", adb, {"url_image_title": "https://adb/?mame=x&type=title"})
+    assert p and p.name == "x.png" and adb.gets == ["https://adb/?mame=x&type=title"]
+    assert arcadedb.image("y", "boxart", adb, {}) is None and len(adb.gets) == 1

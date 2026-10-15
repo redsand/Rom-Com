@@ -215,8 +215,8 @@ def fetch(systems=None, kinds=DEFAULT_KINDS, progress=None, stop=None, db=None,
     def fresh_miss(row, arcade):
         if row["path"]:
             return Path(row["path"]).exists()
-        if arcade and row["source"] != "arcadedb":
-            return False                     # never asked ArcadeDB yet
+        if arcade and row["source"] != arcadedb.SOURCE:
+            return False                     # never asked this ArcadeDB revision yet
         try:
             t = time.mktime(time.strptime(row["checked_at"][:19], "%Y-%m-%d %H:%M:%S"))
         except (TypeError, ValueError):
@@ -262,12 +262,12 @@ def fetch(systems=None, kinds=DEFAULT_KINDS, progress=None, stop=None, db=None,
         if setname:
             meta = adb_meta.get(setname)
             p = (arcadedb.image(setname, kind, adb_session(), meta)
-                 if (meta or {}).get(f"url_image_{arcadedb.TYPES.get(kind)}")
+                 if arcadedb.has_image(meta, kind)
                  else arcadedb.image_path(setname, kind))
             if p:
-                return (iid, kind, str(p), "arcadedb")
+                return (iid, kind, str(p), arcadedb.SOURCE)
             if kind not in KINDS:
-                return (iid, kind, None, "arcadedb")
+                return (iid, kind, None, arcadedb.SOURCE)
         for db_name in sources(sys_):
             ix = idx(db_name, kind)
             for n in names:
@@ -279,7 +279,7 @@ def fetch(systems=None, kinds=DEFAULT_KINDS, progress=None, stop=None, db=None,
                         p = None
                     if p:
                         return (iid, kind, str(p), db_name)
-        return (iid, kind, None, "arcadedb" if setname else None)
+        return (iid, kind, None, arcadedb.SOURCE if setname else None)
 
     todo = [t for t in todo if sources(t[1])]
     done = 0

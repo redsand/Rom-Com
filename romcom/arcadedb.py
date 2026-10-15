@@ -25,6 +25,11 @@ BASE = "https://adb.arcadeitalia.net"
 CACHE = ROOT / "artwork" / "ArcadeDB"
 # Our artwork kinds -> ArcadeDB image types.
 TYPES = {"boxart": "flyer", "snap": "ingame", "title": "title", "marquee": "marquee"}
+# A set with no flyer still wants a poster: its cabinet photo, else its title screen (the
+# game's own logo) — a grid of covers with a hole in it every fifth game reads as broken.
+FALLBACK = {"boxart": ("cabinet", "title")}
+# Recorded as the artwork row's source; a miss from an older revision is asked again.
+SOURCE = "arcadedb/2"
 BATCH = 40
 MISS_DAYS = 30
 FLYER_HEIGHT = 720
@@ -121,26 +126,39 @@ def image_path(setname, kind):
     return None
 
 
+def has_image(meta, kind):
+    """Whether ArcadeDB's facts list any image `image` would take for this kind."""
+    return any((meta or {}).get(f"url_image_{t}")
+               for t in (TYPES.get(kind), *FALLBACK.get(kind, ())) if t)
+
+
 def image(setname, kind, session=None, meta=None):
     """Download (once) and cache one image of a set; returns its path or None. Only kinds
     ArcadeDB's facts list a link for are asked for — a set without a marquee costs no
-    request."""
+    request. A box art miss falls back to the cabinet photo, then the title screen."""
     if kind not in TYPES:
         return None
     have = image_path(setname, kind)
     if have:
         return have
     meta = cached(setname) if meta is None else meta
-    url = (meta or {}).get(f"url_image_{TYPES[kind]}")
-    if not url:
+    if not has_image(meta, kind):
         return None
     session = session or _session()
-    try:
-        r = session.get(url, timeout=90)
-    except Exception:
-        return None
-    data = r.content
-    if r.status_code != 200 or not (data.startswith(b"\x89PNG") or data[:3] == b"\xff\xd8\xff"):
+    data = None
+    for typ in (TYPES[kind], *FALLBACK.get(kind, ())):
+        url = (meta or {}).get(f"url_image_{typ}")
+        if not url:
+            continue
+        try:
+            r = session.get(url, timeout=90)
+        except Exception:
+            continue
+        if r.status_code == 200 and (r.content.startswith(b"\x89PNG")
+                                     or r.content[:3] == b"\xff\xd8\xff"):
+            data = r.content
+            break
+    if data is None:
         return None
     ext = ".jpg" if data[:3] == b"\xff\xd8\xff" else ".png"
     if kind == "boxart":
