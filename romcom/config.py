@@ -81,6 +81,8 @@ ENV_VARS = {
     "incoming_dir": "ROMCOM_INCOMING_DIR",
     "incoming_remove": "ROMCOM_INCOMING_REMOVE",
     "acquire_skip_labels": "ROMCOM_ACQUIRE_SKIP_LABELS",
+    "chd_library_dir": "ROMCOM_CHD_LIBRARY",
+    "maintain_chd_batch": "ROMCOM_MAINTAIN_CHD_BATCH",
     "maintain_auto_hours": "ROMCOM_MAINTAIN_AUTO_HOURS",
 }
 # Deliberately NOT here: the web master login (ROMCOM_WEB_USER/ROMCOM_WEB_PASS), the
@@ -176,6 +178,11 @@ def _env_settings():
         # betas, prototypes and demos beside a release are what every card leaves out.
         "acquire_skip_labels": os.getenv("ROMCOM_ACQUIRE_SKIP_LABELS",
                                          "beta,prototype,demo,hack,pirate,trainer"),
+        # Disc games live here as CHD once converted, and their archives are deleted
+        # (discs.py); empty: 'Games CHD' beside the CHD cache.
+        "chd_library_dir": (os.getenv("ROMCOM_CHD_LIBRARY") or "").strip().strip('"'),
+        # Disc games the daily upkeep converts to CHD per run (0: only ones already done).
+        "maintain_chd_batch": os.getenv("ROMCOM_MAINTAIN_CHD_BATCH", "30"),
         # The whole upkeep list (maintain.py) runs this often (hours); 0 = only by hand.
         # The incoming folder is looked at every few minutes regardless.
         "maintain_auto_hours": os.getenv("ROMCOM_MAINTAIN_AUTO_HOURS", "24"),

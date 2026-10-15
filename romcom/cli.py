@@ -462,6 +462,17 @@ def cmd_maintain(a):
     print(json.dumps(r, indent=2, default=str))
 
 
+def cmd_discs(a):
+    from . import discs
+    r = discs.compact(apply=a.apply, convert=a.convert is not None,
+                      limit=a.convert or None,
+                      progress=lambda i, t, n: print(f"[{i}/{t}] {n}", flush=True))
+    print(json.dumps(r, indent=2, default=str))
+    if not a.apply:
+        print(f"{r['chds']} disc archive(s) would be replaced by their CHD "
+              f"({r['planned_bytes'] / 1e9:.1f} GB) — run again with --apply")
+
+
 def cmd_chd_cache(a):
     from .organizer import precache_chds
     excl = _exclude(a.exclude_labels)
@@ -615,6 +626,11 @@ def main():
     mt.add_argument("--step", action="append", help="run only these steps (see --list)")
     mt.add_argument("--list", action="store_true", help="list the steps")
     mt.set_defaults(fn=cmd_maintain)
+    dc=s.add_parser("discs", help="keep disc games once, as CHD in the CHD library, deleting the archives they came from (after chdman verify)")
+    dc.add_argument("--apply", action="store_true")
+    dc.add_argument("--convert", type=int, nargs="?", const=0, default=None,
+                    help="also convert discs not converted yet (at most N; no N: all)")
+    dc.set_defaults(fn=cmd_discs)
     cc=s.add_parser("chd-cache", help="convert a system's discs to CHD ahead of a card export (they are kept for every later card)")
     cc.add_argument("system", nargs="+")
     cc.add_argument("--exclude-labels", default=None, help="labels to leave out, comma-separated, as the export will")

@@ -27,11 +27,12 @@ STEPS = (
     ("wrong", "let go of downloads that are another game or another platform"),
     ("labels", "re-label the library (fruit machines, demos, e-books…)"),
     ("artwork", "fetch covers and screenshots for games that have none"),
+    ("discs", "keep disc games once, as CHD: convert a batch and delete the archives they came from"),
     ("dupes", "delete exact duplicate copies"),
     ("prune", "keep one copy per game: drop extra dumps of the same game"),
 )
 # Steps that remove files: never while an export or romset build may be reading them.
-DESTRUCTIVE = {"dupes", "prune"}
+DESTRUCTIVE = {"dupes", "prune", "discs"}
 def prune_systems():
     """Every system but arcade (whose clone book has its own one-version rule): betas and
     extra dumps of a game the library holds the release of are clutter on any platform,
@@ -67,6 +68,18 @@ def _step(name, progress, stop):
         return {"stopped": r.get("stopped"),
                 "boxart": sum(s["boxart"] for s in r["systems"]),
                 "games": sum(s["games"] for s in r["systems"])}
+    if name == "discs":
+        from . import discs
+        from .config import settings
+        try:
+            batch = int(settings().get("maintain_chd_batch") or 0)
+        except ValueError:
+            batch = 0
+        r = discs.compact(apply=True, convert=batch > 0, limit=batch, progress=progress,
+                          stop=stop)
+        return {"chds": r.get("chds"), "converted": r.get("converted"),
+                "freed": r.get("freed"), "kept": len(r.get("skipped") or {}),
+                "error": r.get("error")} if not r.get("error") else {"error": r["error"]}
     if name == "dupes":
         from . import dupes
         r = dupes.cleanup(apply=True)
