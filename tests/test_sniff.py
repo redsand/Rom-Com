@@ -62,6 +62,7 @@ def test_archive_listings_say_what_the_disc_is(tmp_path):
 
 
 def test_the_scanner_moves_a_vetoed_name_match_to_the_right_console(monkeypatch, tmp_path):
+    monkeypatch.setattr(sniff, "STUB_BYTES", 0)     # the fixtures are toy-sized discs
     db = connect()
     with db:
         db.execute("INSERT INTO items(id,system,title,status) VALUES('p3','ps3','Ape Escape (Europe)','CATALOGED')")
@@ -87,7 +88,8 @@ def test_the_scanner_moves_a_vetoed_name_match_to_the_right_console(monkeypatch,
     assert st["pc"] == ("CATALOGED", 0)
 
 
-def test_a_vetoed_disc_two_lands_on_disc_two_and_dreamcast_images_on_dreamcast(tmp_path):
+def test_a_vetoed_disc_two_lands_on_disc_two_and_dreamcast_images_on_dreamcast(monkeypatch, tmp_path):
+    monkeypatch.setattr(sniff, "STUB_BYTES", 0)     # the fixtures are toy-sized discs
     db = connect()
     with db:
         for iid, sysname, title in (("x", "psp", "Xenogears (Europe) (Unl)"),
