@@ -179,10 +179,13 @@ def tidy(folder, base, scanned_ok, db=None):
     were unpacked and scanned is deleted; a loose file the scan matched or adopted moves
     into <download dir>/incoming/loose/ (a rename on the same drive). Kept for the owner:
     archives holding games RomCom leaves out (Xbox) or nothing importable, and loose files
-    nothing claimed. Returns {"deleted": [...], "moved": [...], "bytes": n}."""
+    nothing claimed. A game the library already held — the same bytes somewhere outside
+    the incoming folders — is not kept a second time: the unpacked or loose copy is
+    deleted at once instead of waiting for the daily duplicate sweep.
+    Returns {"deleted": [...], "moved": [...], "already_had": n, "bytes": n}."""
     import shutil
     from .db import connect
-    out = {"deleted": [], "moved": [], "bytes": 0}
+    out = {"deleted": [], "moved": [], "already_had": 0, "bytes": 0}
     if not remove_enabled() or not folder or not folder.exists():
         return out
     db = db or connect()
@@ -202,6 +205,27 @@ def tidy(folder, base, scanned_ok, db=None):
             _forget(db, p)
         out["deleted"].append(p.name)
         out["bytes"] += size
+    # Copies of games already in the library, from this import's unpacked folders and the
+    # incoming folder itself: same sha1 as a file outside both. Deleted, rows forgotten.
+    roots = [str(Path(base) / "incoming"), str(folder)]
+    for r in db.execute(
+            "SELECT path, sha1, bytes FROM files WHERE sha1 IS NOT NULL AND path NOT LIKE '%|%' "
+            "AND (path LIKE ? OR path LIKE ?)", (roots[0] + "%", roots[1] + "%")).fetchall():
+        if not any(r["path"].startswith(t) for t in scanned_ok):
+            continue
+        twin = db.execute(
+            "SELECT 1 FROM files WHERE sha1=? AND path<>? AND path NOT LIKE ? AND path NOT LIKE ? "
+            "LIMIT 1", (r["sha1"], r["path"], roots[0] + "%", roots[1] + "%")).fetchone()
+        if not twin:
+            continue
+        try:
+            Path(r["path"]).unlink()
+        except OSError:
+            continue
+        with db:
+            _forget(db, r["path"])
+        out["already_had"] += 1
+        out["bytes"] += r["bytes"] or 0
     loose = Path(base) / "incoming" / "loose"
     if str(folder) not in scanned_ok:
         return out
@@ -270,5 +294,6 @@ def run(progress=None, stop=None):
     scanned_ok |= {t for t in earlier if Path(t).exists()}
     base = (settings().get("download_dir") or "").strip().strip('"')
     tidied = tidy(folder, base, scanned_ok) if base and not (
-        stop is not None and stop.is_set()) else {"deleted": [], "moved": [], "bytes": 0}
+        stop is not None and stop.is_set()) else {"deleted": [], "moved": [],
+                                                  "already_had": 0, "bytes": 0}
     return r | {"scan": scans, "tidied": tidied}

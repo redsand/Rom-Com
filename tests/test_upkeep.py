@@ -120,5 +120,26 @@ def test_imported_games_leave_the_incoming_folder(monkeypatch, tmp_path):
 def test_with_incoming_remove_off_nothing_leaves(monkeypatch, tmp_path):
     games, inc = _incoming_env(monkeypatch, tmp_path, remove="false")
     r = incoming.run()
-    assert r["tidied"] == {"deleted": [], "moved": [], "bytes": 0}
+    assert r["tidied"] == {"deleted": [], "moved": [], "already_had": 0, "bytes": 0}
     assert (inc / "snes-001.zip").exists() and (inc / "Pocket Game (USA).gba").exists()
+
+
+def test_a_game_already_in_the_library_is_not_kept_twice(monkeypatch, tmp_path):
+    """Importing a pile that overlaps the library: the archive goes, and so does the
+    unpacked copy of a game the library already holds byte for byte."""
+    from romcom.scanner import scan
+    games, inc = _env(monkeypatch, tmp_path)
+    monkeypatch.setattr(incoming, "settings", lambda: {"download_dir": str(games)})
+    lib = games / "snes"
+    lib.mkdir()
+    (lib / "Turtles in Time (USA).sfc").write_bytes(b"S" * 2048)          # already had it
+    scan(lib, adopt=True)
+    with zipfile.ZipFile(inc / "snes-002.zip", "w") as z:
+        z.writestr("snes/Turtles in Time (USA).sfc", b"S" * 2048)
+        z.writestr("snes/Brand New (USA).sfc", b"N" * 2048)
+    r = incoming.run()
+    out = games / "incoming" / "snes-002"
+    assert not (inc / "snes-002.zip").exists()
+    assert not (out / "Turtles in Time (USA).sfc").exists() and (out / "Brand New (USA).sfc").exists()
+    assert (lib / "Turtles in Time (USA).sfc").exists()
+    assert r["tidied"]["already_had"] == 1

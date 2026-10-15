@@ -1254,6 +1254,7 @@ const UPKEEP_SAYS = {
   incoming: r => r.archives || r.files || (r.scan && (r.scan.matched || r.scan.adopted)) || r.tidied?.deleted?.length || r.tidied?.moved?.length
     ? `${r.files || 0} game file(s) unpacked from ${r.archives || 0} archive(s); ${(r.scan?.matched || 0).toLocaleString()} matched, ${(r.scan?.adopted || 0).toLocaleString()} added`
       + (r.tidied?.deleted?.length || r.tidied?.moved?.length ? `; ${r.tidied.deleted.length} imported archive(s) removed (${fmtBytes(r.tidied.bytes || 0)}), ${r.tidied.moved.length} loose game(s) moved into the library` : "")
+      + (r.tidied?.already_had ? `; ${r.tidied.already_had} game(s) you already had not kept twice` : "")
     : (r.note || "nothing new"),
   claim: r => r.claimed ? `${r.claimed} download(s) attached to their game` : "nothing to attach",
   stubs: r => r.let_go ? `${r.let_go} broken disc archive(s) let go, to be fetched again` : "none",
