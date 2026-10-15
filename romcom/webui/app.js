@@ -847,8 +847,23 @@ function orgApplyProfile(p) {
   loadOrgPlan();
 }
 
+// One plan request at a time: a profile change fired three at once, and they queued behind
+// each other on the server. A call made while one runs asks for one more run afterwards,
+// which reads the settings as they are by then.
+let orgPlanBusy = false, orgPlanAgain = false;
 async function loadOrgPlan() {
-  const picked = orgPendingSystems ?? orgPicked();
+  if (orgPlanBusy) { orgPlanAgain = true; return; }
+  orgPlanBusy = true;
+  if (!orgPlan || orgPendingSystems) $("#org-total").textContent = "sizing the platforms…";
+  try { await loadOrgPlanOnce(); }
+  finally {
+    orgPlanBusy = false;
+    if (orgPlanAgain) { orgPlanAgain = false; loadOrgPlan(); }
+  }
+}
+async function loadOrgPlanOnce() {
+  const pending = orgPendingSystems;
+  const picked = pending ?? orgPicked();
   const body = {path: $("#org-path").value.trim(), capacity_gb: $("#org-capacity").value || null,
                 systems: picked, distinct_games: $("#org-distinct").checked,
                 arcade_core: $("#org-core").value, arcade_status: $("#org-status").value,
@@ -857,6 +872,8 @@ async function loadOrgPlan() {
   let d;
   try { d = await post("/api/organize/plan", body); }
   catch (e) { $("#org-systems").innerHTML = `<p class="sub">${esc(e.message)}</p>`; return; }
+  // A profile chosen while this ran has its own ticks waiting; the run after draws them.
+  if (orgPendingSystems !== pending) return;
   orgPlan = d;
   if (!orgGatesKnown) { orgSetGates(d.gates); orgGatesKnown = true; }
   const fits = new Set((d.systems || []).filter(s => d.usable_bytes != null && s.bytes <= d.usable_bytes).map(s => s.system));
