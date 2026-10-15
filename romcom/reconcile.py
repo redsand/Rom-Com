@@ -1,3 +1,5 @@
+import re
+from datetime import datetime
 """Reconcile the FOUND→VERIFIED gap.
 
 A FOUND item has a file on disk that matched by NAME but never hash-verified. The scanner
@@ -160,3 +162,62 @@ def stub_discs(apply=False, db=None):
                            (b["id"], "stub-disc",
                             f"{b['bytes']} bytes cannot be a {b['system']} disc: {b['path']}"[:400]))
     return {"count": len(bad), "applied": bool(apply), "items": bad}
+
+
+def unclaimed_downloads(apply=False, db=None):
+    """Games marked DOWNLOADED that no file claims, paired with the file the acquirer
+    saved for them. The jobs ledger holds each direct download's exact size and time; the
+    unmatched file of exactly that size is the one (a site's spelling, '[CDI] Who Wants to
+    Beat Up a Millionnaire (US)[DCCM].7z', is why the scan's name match missed it). A size
+    shared by several unmatched files is left alone. `apply` claims each pairing as
+    match 'downloaded', which the scanner keeps (acquirer.claim_download)."""
+    from pathlib import Path
+    from .indexer import plausible
+    from .verify import check_download
+    db = db or connect()
+    orphans = {}
+    for r in db.execute("""SELECT f.path, f.bytes, f.mtime FROM files f WHERE f.matched_item_id IS NULL
+                           AND f.path NOT LIKE '%|%' AND f.bytes > 0"""):
+        orphans.setdefault(r["bytes"], []).append((r["path"], r["mtime"] or 0))
+    pairs = []
+    for j in db.execute("""SELECT j.entity_id, j.bytes, j.result_title, j.completed_at, i.title, i.system FROM jobs j
+                           JOIN items i ON i.id=j.entity_id
+                           WHERE j.entity_type='item' AND j.status='DOWNLOADED' AND j.nzo_id IS NULL
+                             AND i.status='DOWNLOADED' AND j.bytes > 0
+                             AND NOT EXISTS (SELECT 1 FROM files f WHERE f.matched_item_id=i.id)"""):
+        try:
+            done = datetime.fromisoformat(j["completed_at"]).timestamp()
+        except (TypeError, ValueError):
+            continue
+        # The file was written as the download completed: its mtime sits beside the
+        # ledger's completion time. Equal size and a similar name are not enough on their
+        # own (every 64DD disk image is 64 MB; a one-letter catalog title matches anything).
+        # Arcade sets are built by hash, never by a claimed file; a one-letter catalog
+        # title ('Q', '0') is a bad entry whose download was a guess.
+        if (j["system"] or "").lower() == "arcade" or len(re.sub(
+                r"[^a-z]", "", re.split(r"[(\[]", j["title"] or "")[0].lower())) < 3:
+            continue
+        hits = [path for path, mt in orphans.get(j["bytes"], []) if abs(mt - done) < 3600]
+        if len(hits) != 1:
+            continue
+        # Equal size is not enough on its own: every 64DD disk image is 64 MB. The name
+        # must read as the same game and the file must suit the platform — the two checks
+        # every download passes before it is kept.
+        if not plausible(j["title"], j["system"], Path(hits[0]).name, j["bytes"]):
+            continue
+        if Path(hits[0]).exists() and not check_download(hits[0], j["system"])[0]:
+            continue
+        pairs.append({"item_id": j["entity_id"], "title": j["title"], "system": j["system"],
+                      "path": hits[0], "bytes": j["bytes"]})
+    seen, out = set(), []
+    for p in pairs:                     # one file, one game
+        if p["path"] not in seen:
+            seen.add(p["path"]); out.append(p)
+    if apply and out:
+        with db:
+            for p in out:
+                db.execute("UPDATE files SET matched_item_id=?, match_method='downloaded' "
+                           "WHERE path=? AND matched_item_id IS NULL", (p["item_id"], p["path"]))
+                db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
+                           (p["item_id"], "claim-download", p["path"][:400]))
+    return {"count": len(out), "applied": bool(apply), "items": out}

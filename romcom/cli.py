@@ -133,7 +133,15 @@ def cmd_cache(a):
         print(json.dumps(searchcache.stats(),indent=2))
 
 def cmd_reconcile(a):
-    from .reconcile import reconcile, reacquire_mismatches, wrong_downloads, stub_discs
+    from .reconcile import (reconcile, reacquire_mismatches, wrong_downloads, stub_discs,
+                            unclaimed_downloads)
+    if a.unclaimed_downloads:
+        r = unclaimed_downloads(apply=a.apply)
+        for b in r["items"]:
+            print(f"{b['system']:10} {b['title'][:50]:50} <- {b['path']}")
+        print(f"{r['count']} downloaded game(s) paired with their file"
+              + (" — claimed" if r["applied"] else " — run again with --apply to claim them"))
+        return
     if a.stub_discs:
         r = stub_discs(apply=a.apply)
         for b in r["items"]:
@@ -671,6 +679,7 @@ def main():
     rc=s.add_parser("reconcile"); rc.add_argument("--reacquire",action="store_true"); rc.add_argument("--system")
     rc.add_argument("--wrong-downloads",action="store_true",help="website downloads that are another game or another platform")
     rc.add_argument("--stub-discs",action="store_true",help="disc games whose only file is an archive too small to hold the disc")
+    rc.add_argument("--unclaimed-downloads",action="store_true",help="downloaded games no file claims, paired with the file the acquirer saved (by exact size)")
     rc.add_argument("--apply",action="store_true",help="with --wrong-downloads / --stub-discs: let go of them and re-arm the items")
     rc.set_defaults(fn=cmd_reconcile)
     a=p.parse_args(); a.fn(a)

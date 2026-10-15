@@ -193,6 +193,19 @@ def _pending(db):
       WHERE status IN ('QUEUED','DOWNLOADING') AND nzo_id IS NOT NULL""").fetchone()["c"]
 
 
+def claim_download(db, item_id, path):
+    """Attach a file the acquirer fetched for `item_id` to it, as match 'downloaded'. The
+    scanner hashes it on its next pass and keeps the claim unless a hash names another
+    game (scanner.scan)."""
+    p = Path(path)
+    st = p.stat()
+    with db:
+        db.execute("""INSERT INTO files(path,bytes,mtime,matched_item_id,match_method,content,scanned_at)
+                      VALUES(?,?,?,?,'downloaded',1,CURRENT_TIMESTAMP)
+                      ON CONFLICT(path) DO UPDATE SET matched_item_id=excluded.matched_item_id,
+                      match_method='downloaded'""", (str(p), st.st_size, st.st_mtime, item_id))
+
+
 def auto_acquire(progress=None, poll_interval=None, max_wait_minutes=None, batch_max=None,
                  parallel=None, watch=False, stop=None):
     """Search, queue, wait, and import — continuously, with capped parallel downloads.
@@ -584,6 +597,14 @@ def _cycle(progress, poll, max_wait, batch, slots, stop):
                     _fail(c, f"{sname}: {why}", wdb)
                     continue
                 _retry_write(wdb, "UPDATE items SET status='DOWNLOADED' WHERE id=?", (c["id"],))
+                try:
+                    # The file is this game's: say so now. Left to the next scan's name
+                    # match, '[CDI] Who Wants to Beat Up a Millionnaire (US)[DCCM].7z'
+                    # (the site's spelling) never found 'Who Wants to Beat Up a
+                    # Millionaire (USA)', and the game sat DOWNLOADED with nothing to play.
+                    claim_download(wdb, c["id"], path)
+                except Exception:
+                    pass  # the scan's name match remains the fallback
                 try:
                     actions.journal_direct(wdb, c["id"], sname, direct, path)
                 except Exception:

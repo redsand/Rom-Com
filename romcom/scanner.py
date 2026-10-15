@@ -178,6 +178,11 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
                         cand = next((by_sys[(s,) + key] for s in sniff.systems(ev)
                                      if (s,) + key in by_sys), None)
             item_id = cand; method = "filename-exact" if item_id else None
+        if not item_id and prev and prev["matched_item_id"] and prev["match_method"]=="downloaded":
+            # The acquirer fetched this file for that game (acquirer.claim_download): a
+            # site's own spelling of the name is no reason to let go of it. A hash naming
+            # another game would have won above.
+            item_id=prev["matched_item_id"]; method="downloaded"
         if item_id:
             matched+=1
             hit=db.execute("SELECT title,system FROM items WHERE id=?",(item_id,)).fetchone()
