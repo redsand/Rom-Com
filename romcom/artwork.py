@@ -343,12 +343,16 @@ def cached_sizes(kinds=DEFAULT_KINDS, db=None):
             continue
         if r["kind"] == "boxart" and size >= CARD_COVER_MIN and not r["path"].endswith(".jpg"):
             size //= 5                      # card_cover's JPEG, roughly
+        # A big exFAT card stores every file in 128 KiB clusters: a 20 KB snap costs 128 KB
+        # there, and 5,600 images on a 256 GB card cost twice their bytes.
+        size = -(-size // CARD_CLUSTER) * CARD_CLUSTER
         out[r["item_id"]] = out.get(r["item_id"], 0) + size
     return out
 
 
 CARD_COVER_HEIGHT = 720
 CARD_COVER_MIN = 200_000          # a cover under this is copied as it is
+CARD_CLUSTER = 128 * 1024         # exFAT's cluster on the 128 GB+ cards handhelds take
 
 
 def card_cover(src):
