@@ -61,3 +61,23 @@ def test_upkeep_skips_deleting_while_an_export_runs_and_survives_a_failing_step(
     assert maintain.last_full() > 0 and maintain.last()["full"]
     maintain.run(steps=["claim"], busy=lambda: False)
     assert maintain.last()["full"] is False                 # a partial run is not a full one
+
+
+def test_an_archive_of_hundreds_of_games_unpacks(monkeypatch, tmp_path):
+    """828 names on one 7-Zip command line is past Windows' limit (WinError 206)."""
+    import shutil
+    import pytest
+    from romcom import esde
+    if not esde.seven_zip():
+        pytest.skip("7-Zip not installed")
+    src = tmp_path / "src"; (src / "nes").mkdir(parents=True)
+    names = []
+    for i in range(300):
+        n = f"nes/Some Rather Long Game Title Number {i:04d} (USA) [T-Spa1.0v_Wave].nes"
+        (src / n).write_bytes(b"N" * 16)
+        names.append(n)
+    archive = tmp_path / "nes.7z"
+    import subprocess
+    subprocess.run([esde.seven_zip(), "a", str(archive), "nes"], cwd=src, capture_output=True)
+    esde.extract(archive, [n.replace("/", "\\") for n in names], tmp_path / "out")
+    assert len(list((tmp_path / "out").iterdir())) == 300

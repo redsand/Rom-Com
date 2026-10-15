@@ -179,9 +179,27 @@ def extract(archive, names, target_dir):
     exe = seven_zip()
     if not exe:
         raise OSError("7-Zip is needed to unpack .7z/.rar for the card, and was not found")
-    p = subprocess.run([exe, "e", "-y", f"-o{target_dir}", str(archive), *names],
-                       stdin=subprocess.DEVNULL,
-                       capture_output=True, text=True, timeout=7200, errors="replace")
+    # Hundreds of names overflow Windows' 32k command line (WinError 206 on an 828-game
+    # nes.rar): past a few dozen they go to 7-Zip in a list file instead.
+    listfile = None
+    if len(names) > 40:
+        import tempfile
+        fd, listfile = tempfile.mkstemp(prefix="romcom-7z-", suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("\n".join(names))
+        args = ["-scsUTF-8", f"@{listfile}"]
+    else:
+        args = list(names)
+    try:
+        p = subprocess.run([exe, "e", "-y", f"-o{target_dir}", str(archive), *args],
+                           stdin=subprocess.DEVNULL,
+                           capture_output=True, text=True, timeout=7200, errors="replace")
+    finally:
+        if listfile:
+            try:
+                os.unlink(listfile)
+            except OSError:
+                pass
     if p.returncode != 0:
         raise OSError(f"7-Zip could not unpack {Path(archive).name}: "
                       f"{(p.stderr or p.stdout or '').strip()[-200:]}")
