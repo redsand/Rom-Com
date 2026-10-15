@@ -553,7 +553,9 @@ def _convert_chd(src, names, main, target, system):
         raise OSError("chdman (it ships with MAME) is needed to make CHDs, and was not found")
     target = Path(target)
     target.parent.mkdir(parents=True, exist_ok=True)
-    part = target.with_name(target.name + ".part")
+    # One part file per process: `romcom chd-cache` and a card export can be converting the
+    # same disc into the shared cache at once, and must not write into each other's file.
+    part = target.with_name(f"{target.name}.{os.getpid()}.part")
     with tempfile.TemporaryDirectory(prefix="romcom-chd-") as tmp:
         if names is not None:
             extract(src, names, tmp)
