@@ -51,3 +51,18 @@ def test_past_downloads_are_paired_by_size_time_and_name(tmp_path):
     assert [x["item_id"] for x in r["items"]] == ["m"]
     assert db.execute("SELECT matched_item_id FROM files WHERE path=?",
                       (str(f),)).fetchone()[0] == "m"
+
+
+def test_a_disc_in_an_archive_is_unpacked_to_launch(tmp_path, monkeypatch):
+    """RetroArch opens an archive's FIRST file: an uploader's .url ahead of the .cdi meant
+    Flycast got a web shortcut. The playable disc is unpacked and launched instead."""
+    import zipfile
+    from romcom import player, config
+    z = tmp_path / "Millionnaire.zip"
+    with zipfile.ZipFile(z, "w") as f:
+        f.writestr("Replayers.url", "[InternetShortcut]")
+        f.writestr("Game (US).cdi", b"cdi" * 1000)
+    monkeypatch.setattr(config, "settings", lambda: {"download_dir": str(tmp_path)})
+    got = player.unpacked_disc(str(z), "dreamcast")
+    assert got.name == "Game (US).cdi" and got.read_bytes() == b"cdi" * 1000
+    assert player.unpacked_disc(str(tmp_path / "Mario.zip"), "nes") is None   # carts: as is

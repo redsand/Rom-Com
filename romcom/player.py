@@ -12,6 +12,7 @@ call from anywhere including the service, while `launch()` actually spawns and i
 `romcom play`, run by you, in your own session. The web UI uses the first to show you the
 exact command; marking keep/skip works from either, because that is only a database write.
 """
+import hashlib
 import os
 import re
 import shlex
@@ -200,6 +201,42 @@ def command_for(ident, db=None, emulator=None):
             "set": setname, "rom": rom, "command": _with_display(command, system)}
 
 
+_JUNK = {".url", ".txt", ".nfo", ".jpg", ".jpeg", ".png", ".pdf", ".diz", ".htm", ".html"}
+_TRACKS = {".bin", ".raw", ".img", ".sub", ".iso"}
+
+
+def unpacked_disc(rom, system):
+    """For a disc game kept in an archive: the playable disc, unpacked once into the play
+    cache (<download dir>/play-cache), or None to launch `rom` as it is.
+
+    RetroArch handed a .7z opens its FIRST file. '[CDI] Who Wants to Beat Up a
+    Millionnaire (US)[DCCM].7z' starts with the uploader's 'Replayers.url', so Flycast got
+    a web shortcut and closed; a .gdi needs every track beside it besides. Cartridge zips
+    are left alone: their emulators read them whole."""
+    from . import esde
+    from .config import settings
+    p = Path(rom)
+    if p.suffix.lower() not in (".zip", ".7z", ".rar") or esde.single_file(system)             or (system or "").lower() == "arcade":
+        return None
+    names = [n for n, _ in esde.members(p) if Path(n).suffix.lower() not in _JUNK]
+    keep = [n for n in names if esde.playable(system, n) or Path(n).suffix.lower() in _TRACKS]
+    main = esde._main_file(keep) or next(
+        (n for n in sorted(keep, key=lambda n: -dict(esde.members(p)).get(n, 0))
+         if esde.playable(system, n)), None)
+    if not main:
+        return None
+    base = (settings().get("download_dir") or "").strip()
+    if not base:
+        return None
+    st = p.stat()
+    key = hashlib.sha1(f"{p}|{st.st_size}|{st.st_mtime}".encode()).hexdigest()[:12]
+    target = Path(base) / "play-cache" / key
+    done = target / Path(main).name
+    if not done.exists():
+        esde.extract(p, keep, target)
+    return done
+
+
 def launch(ident, db=None, record=True, emulator=None):
     """Start the emulator and return once it has been spawned.
 
@@ -208,6 +245,10 @@ def launch(ident, db=None, record=True, emulator=None):
     """
     db = db or connect()
     plan = command_for(ident, db=db, emulator=emulator)
+    unpacked = unpacked_disc(plan["rom"], plan["system"]) if plan.get("rom") else None
+    if unpacked:
+        plan["command"] = plan["command"].replace(plan["rom"], str(unpacked))
+        plan["rom"] = str(unpacked)
     args = plan["command"] if os.name == "nt" else shlex.split(plan["command"])
     flags = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     subprocess.Popen(args, shell=(os.name == "nt"), close_fds=True, creationflags=flags,
