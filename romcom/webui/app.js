@@ -245,8 +245,24 @@ async function loadLabels() {
     $(sel).innerHTML = Object.entries(labelInfo.tags).map(([k, what]) =>
       `<label title="${esc(what)}"><input type="checkbox" value="${esc(k)}"> ${esc(k)}${c[k] ? ` <span class="sub">${c[k].toLocaleString()}</span>` : ""}</label>`).join(" ");
     $(sel).dataset.drawn = "1";
-    setLeaveOut(sel, was);
+    setLeaveOut(sel, was ?? savedLeaveOut(sel));
   }
+}
+// What each card left out last time is remembered in this browser, so building the same
+// card again is one click. The arcade romset starts from a handheld-sized list: a card of
+// mahjong, quiz boards and prototypes is a card to scroll past.
+const ROM_LEAVE_OUT = ["beta", "hack", "mahjong", "mature", "prototype", "quiz"];
+function savedLeaveOut(sel) {
+  try {
+    const v = localStorage.getItem(`romcom-leaveout-${sel}`);
+    if (v) return JSON.parse(v);
+  } catch {}
+  return sel === "#rom-labels" ? [...junkLabels(), ...ROM_LEAVE_OUT] : null;
+}
+for (const sel of ["#org-labels", "#rom-labels"]) {
+  $(sel).addEventListener("change", () => {
+    try { localStorage.setItem(`romcom-leaveout-${sel}`, JSON.stringify(leaveOut(sel))); } catch {}
+  });
 }
 function leaveOut(sel) {
   if (!$(sel).dataset.drawn) return null;          // not drawn yet: the server's default
@@ -1323,7 +1339,7 @@ function renderRomsetResult(r) {
       <div class="tile"><div class="v">${(r.assemblable || 0).toLocaleString()}</div><div class="l">Sets the dump can build</div></div>
       <div class="tile"><div class="v">${(r.complete || 0).toLocaleString()}</div><div class="l">Complete on the card</div></div>
       <div class="tile"><div class="v">${(r.incomplete || 0).toLocaleString()}</div><div class="l">Incomplete</div></div>
-      <div class="tile"><div class="v">${fmtBytes(r.bytes || 0)}</div><div class="l">Copied this run</div><div class="d">${(r.copied || 0).toLocaleString()} chips</div></div>
+      <div class="tile"><div class="v">${fmtBytes(r.bytes || 0)}</div><div class="l">Size on the card</div><div class="d">${r.copied ? `${fmtBytes(r.bytes_needed || 0)} written this run (${r.copied.toLocaleString()} chips)` : "nothing new to write"}</div></div>
       <div class="tile"><div class="v">${(r.bios_built || []).length}</div><div class="l">Bios parents built</div>
         <div class="d">${esc((r.bios_built || []).join(", ") || "—")}</div></div>
       <div class="tile"><div class="v">${(r.clones_dropped || 0).toLocaleString()}</div><div class="l">Extra versions left out</div>
