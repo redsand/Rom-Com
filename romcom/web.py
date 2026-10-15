@@ -548,7 +548,11 @@ def create_app():
                                        leave_bytes=int(float(params.get("leave_gb") or 0) * 1024 ** 3),
                                        progress=prog, stop=stops["romset"],
                                        arcade_status=params.get("arcade_status"),
-                                       exclude_labels=params.get("exclude_labels"))
+                                       exclude_labels=params.get("exclude_labels"),
+                                       versions=int(params.get("versions", 1) or 0),
+                                       prune=params.get("prune", True) is not False,
+                                       artwork=params.get("artwork", True) is not False,
+                                       defer_to=params.get("defer_to") or None)
         if kind == "acquire":
             return lambda prog: acquirer.auto_acquire(progress=prog, watch=bool(params.get("watch")),
                                                       stop=acquirer.STOP)
@@ -919,7 +923,12 @@ def create_app():
         return start_job("romset", {"profile": body["profile"], "path": path,
                                     "leave_gb": leave_gb,
                                     "arcade_status": body.get("arcade_status"),
-                                    "exclude_labels": body.get("exclude_labels")})
+                                    "exclude_labels": body.get("exclude_labels"),
+                                    "versions": max(0, min(9, int(body.get("versions", 1) or 0))),
+                                    "prune": body.get("prune", True) is not False,
+                                    "artwork": body.get("artwork", True) is not False,
+                                    "defer_to": [c for c in (body.get("defer_to") or [])
+                                                 if c in ("mame", "fbneo", "mame2003")]})
 
     @app.post("/api/organize/plan")
     def api_organize_plan():

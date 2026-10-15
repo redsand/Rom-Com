@@ -366,6 +366,17 @@
           <option value="works_only">only sets that work</option>
           <option value="all">everything assemblable</option>
         </select>
+        <select id="rom-versions" title="Arcade games come in many versions (sf2, sf2ce, sf2j, sf2ua…). Keep the best: one that runs, a proper English release, the best rated">
+          <option value="1">best version of each game</option>
+          <option value="2">top 2 versions of each game</option>
+          <option value="0">every version (clones too)</option>
+        </select>
+        <label class="sub" title="Delete set zips already in this folder that this build no longer chose — e.g. the clones of an earlier every-version build. Only this core's set names are touched">
+          <input type="checkbox" id="rom-prune" checked> remove sets no longer chosen</label>
+        <label class="sub" id="rom-defer-wrap" title="For a card that also carries an FBNeo folder: games FBNeo plays are left out of this build, so each game is on the card once — FBNeo for what it runs, this core for the rest. Build FBNeo too">
+          <input type="checkbox" id="rom-defer"> leave out games FBNeo plays</label>
+        <label class="sub" title="Write ES-DE's gamelist (names, ratings, genres) and copy cached box art and snaps for every set on the card">
+          <input type="checkbox" id="rom-art" checked> names &amp; artwork</label>
         <span class="sub labels-out-wrap" title="Ticked labels stay out of the romset — fruit machines, gambling and computers by default. Bios sets the kept games need always come along">
           Leave&nbsp;out: <span id="rom-labels" class="labels-out"></span></span>
         <button id="rom-start" class="primary">Build romset</button>

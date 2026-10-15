@@ -78,14 +78,34 @@ def _set_scores(db, names):
     return out
 
 
-def _prune_clones(db, core, sets):
+_ENGLISH = re.compile(r"\((?:[^)]*\b(?:world|us|usa|euro|europe|uk|english|asia)\b[^)]*)\)",
+                      re.I)
+_FOREIGN = re.compile(r"\((?:[^)]*\b(?:japan|korea|china|taiwan|hong kong|brazil|spain|"
+                      r"italy|germany|france)\b[^)]*)\)", re.I)
+_ROUGH_TITLE = re.compile(r"\b(?:bootleg|hack|prototype|location test|bet version|"
+                          r"set \d+ bootleg)\b", re.I)
+_HEALTH_RANK = {"works": 0, "partial": 1, "unknown": 2}
+
+
+def _version_key(name, title, score, is_root, rough, health):
+    """How good one version of an arcade game is for a handheld card, best lowest: it
+    starts, a proper release (not a bootleg, hack or prototype), English text over a
+    Japan-only board, then the crowd score, the parent, and the name."""
+    title = title or ""
+    region = 0 if _ENGLISH.search(title) else (2 if _FOREIGN.search(title) else 1)
+    return (_HEALTH_RANK.get(health, 3), rough or bool(_ROUGH_TITLE.search(title)),
+            region, -score, 0 if is_root else 1, name)
+
+
+def _prune_clones(db, core, sets, keep=1):
     """'One copy per game' goes by the dat's own clone book, not just the catalog's
     titles: two sets of one MAME rom family must not both reach the card, however much
     their titles differ (doa2 beside doa2m, bloodstm beside bloodstm104). Every requested
-    set is chased up its cloneof chain to its family root; each family with several
-    members keeps a proper release over a bootleg or hack (ms5plus took Metal Slug 5's
-    slot on score alone), then the best-scored, ties preferring the parent, then the
-    first name."""
+    set is chased up its cloneof chain to its family root; each family keeps its `keep`
+    best versions (`_version_key`): one that runs, a proper release over a bootleg or
+    hack (ms5plus took Metal Slug 5's slot on score alone), English over Japan-only, then
+    the best-scored, ties preferring the parent, then the first name. Returns
+    (kept sets, {dropped set: the family's best})."""
     from . import mameset
     path = mameset.dat_path(core)
     if not path:
@@ -106,15 +126,27 @@ def _prune_clones(db, core, sets):
     fam = {}
     for s in sets:
         fam.setdefault(root[s], []).append(s)
+    keep = max(1, int(keep or 1))
+    multi = [m for members in fam.values() if len(members) > keep for m in members]
+    titles, health = {}, {}
+    if multi:
+        for i in range(0, len(multi), 900):
+            chunk = multi[i:i + 900]
+            for r in db.execute(
+                    "SELECT substr(external_id, instr(external_id,'/')+1) s, title FROM items "
+                    "WHERE system='arcade' AND substr(external_id, instr(external_id,'/')+1) "
+                    f"IN ({','.join('?' * len(chunk))})", chunk):
+                titles.setdefault(r["s"], r["title"])
+        from . import arcadehealth
+        health = {s: v[0] for s, v in arcadehealth.statuses(core, db).items()}
     drop = {}
     for members in fam.values():
-        if len(members) < 2:
+        if len(members) <= keep:
             continue
-        best = min(members, key=lambda m: (m in rough, -scores.get(m, 0),
-                                           0 if m == root[m] else 1, m))
-        for m in members:
-            if m != best:
-                drop[m] = best
+        ranked = sorted(members, key=lambda m: _version_key(
+            m, titles.get(m), scores.get(m, 0), m == root[m], m in rough, health.get(m)))
+        for m in ranked[keep:]:
+            drop[m] = ranked[0]
     return [s for s in sets if s not in drop], drop
 
 
@@ -1188,8 +1220,58 @@ def _discard_partial(target):
         pass
 
 
+def _romset_pick(profile, dat, db, arcade_status=None, exclude_labels=None, versions=1,
+                 progress=None):
+    """The sets a romset build of `profile` puts on a card, best first: what the dump can
+    assemble, minus left-out labels, minus what the health gate holds back, minus extra
+    versions of one game. {"sets", "held", "clones_dropped", "arcade_status"}, or
+    {"error", "held_back"?} when nothing is left."""
+    from . import mameset
+    if progress:
+        progress(0, 0, f"{profile}: finding what the dump can assemble…")
+    sets = _fill_order(db, mameset.assemblable(db, dat))
+    if not sets:
+        return {"error": f"{profile}: nothing assemblable from what is on disk"}
+    # What a set IS comes before whether it runs: a perfect fruit machine is still not a
+    # game for the card (`labels`; bios parents come back below whatever their label).
+    from . import labels
+    exclude_labels = labels.normalize_exclude(exclude_labels)
+    off = labels.excluded_sets(sets, exclude_labels, db)
+    if off:
+        from . import arcadehealth
+        machines = arcadehealth.parse(dat)
+        needed = {p for s in sets if s not in off
+                  for p in arcadehealth.needed_parents(machines, s)}
+        off -= needed          # neogeo is 'System / BIOS' to catver, and mslug needs it
+    sets = [s for s in sets if s not in off]
+    if not sets:
+        return {"error": f"{profile}: every assemblable set carries a label left out "
+                         f"({', '.join(exclude_labels)})"}
+    # Every chip present is not the same as runs: the health gate (see `organize`) also
+    # holds back sets missing a CHD or bios parent, and drivers the core never finished.
+    from . import arcadehealth
+    arcade_status = arcade_status if arcade_status in arcadehealth.GATES         else arcadehealth.DEFAULT_GATE
+    held = {}
+    if arcade_status != "all":
+        if progress:
+            progress(0, 0, f"{profile}: judging which sets will run…")
+        arcadehealth.evaluate(profile, db)
+        sets, held = arcadehealth.gate(profile, sets, arcade_status, db)
+        if not sets:
+            return {"error": f"{profile}: every assemblable set is held back by the "
+                             f"'{arcade_status}' health gate",
+                    "held_back": _held_summary(held)}
+
+    clones_dropped = {}
+    if versions:
+        sets, clones_dropped = _prune_clones(db, profile, sets, keep=versions)
+    return {"sets": sets, "held": held, "clones_dropped": clones_dropped,
+            "arcade_status": arcade_status}
+
+
 def romset(profile, dest, leave_bytes=0, progress=None, db=None, stop=None,
-           arcade_status=None, exclude_labels=None):
+           arcade_status=None, exclude_labels=None, versions=1, prune=True, artwork=True,
+           defer_to=None):
     """Build one emulator core's romset onto a folder: every set its dat can assemble from
     the dump, as one zip per set, plus the bios parents (neogeo.zip, pgm.zip…) its games
     reference but its dat never defines — the cores look for those as their own zips, and
@@ -1207,7 +1289,18 @@ def romset(profile, dest, leave_bytes=0, progress=None, db=None, stop=None,
     games that need them, first from the current-MAME dat and then from any extra dat
     in the profile's own folder — a core's games may need bios sets of another romset
     era (MAME 2003-Plus's cvs, taitofx1…) that neither dat of its own defines. What
-    still cannot be built is reported, not guessed at."""
+    still cannot be built is reported, not guessed at.
+
+    `versions` keeps that many versions of each game (`_prune_clones`: one that runs, a
+    proper English release first); 0 keeps every clone. A card of sf2, sf2ce, sf2j, sf2ua
+    and twenty more Street Fighter IIs is a list to scroll past, not a choice. `prune`
+    deletes the set zips (and CHD folders) of this dat already in the folder that the
+    build no longer chose — a re-run with fewer versions frees their room; nothing that is
+    not one of the dat's set names is touched. `artwork` writes ES-DE's gamelist (name,
+    rating, genre) and copies the cached box art and snaps for every set on the card —
+    a bare `mslug.zip` otherwise shows as a blank tile. `defer_to` names other cores whose
+    romset goes on the same card: a game that core's own build carries is left out of this
+    one (FBNeo plays mslug better on a handheld; MAME keeps what FBNeo cannot run)."""
     from . import mameset, esde
     db = db or connect()
     dest = Path(dest)
@@ -1222,40 +1315,22 @@ def romset(profile, dest, leave_bytes=0, progress=None, db=None, stop=None,
     if not dat:
         where = f"DAT/{mameset.PROFILES[profile][0]}" if profile in mameset.PROFILES else "DAT/"
         return {"error": f"no romset dat for {profile!r} — put its dat under {where}", **empty}
-    if progress:
-        progress(0, 0, f"{profile}: finding what the dump can assemble…")
-    sets = _fill_order(db, mameset.assemblable(db, dat))
-    if not sets:
-        return {"error": f"{profile}: nothing assemblable from what is on disk", **empty}
-    # What a set IS comes before whether it runs: a perfect fruit machine is still not a
-    # game for the card (`labels`; bios parents come back below whatever their label).
-    from . import labels
-    exclude_labels = labels.normalize_exclude(exclude_labels)
-    off = labels.excluded_sets(sets, exclude_labels, db)
-    if off:
-        from . import arcadehealth
-        machines = arcadehealth.parse(dat)
-        needed = {p for s in sets if s not in off
-                  for p in arcadehealth.needed_parents(machines, s)}
-        off -= needed          # neogeo is 'System / BIOS' to catver, and mslug needs it
-    sets = [s for s in sets if s not in off]
-    if not sets:
-        return {"error": f"{profile}: every assemblable set carries a label left out "
-                         f"({', '.join(exclude_labels)})", **empty}
-    # Every chip present is not the same as runs: the health gate (see `organize`) also
-    # holds back sets missing a CHD or bios parent, and drivers the core never finished.
-    from . import arcadehealth
-    arcade_status = arcade_status if arcade_status in arcadehealth.GATES         else arcadehealth.DEFAULT_GATE
-    held = {}
-    if arcade_status != "all":
+    pick = _romset_pick(profile, dat, db, arcade_status, exclude_labels, versions, progress)
+    if pick.get("error"):
+        return {**empty, **pick}
+    sets, held = pick["sets"], pick["held"]
+    clones_dropped, arcade_status = pick["clones_dropped"], pick["arcade_status"]
+    deferred = 0
+    for other in (defer_to or ()):
+        if other == profile or not mameset.dat_path(other):
+            continue
         if progress:
-            progress(0, 0, f"{profile}: judging which sets will run…")
-        arcadehealth.evaluate(profile, db)
-        sets, held = arcadehealth.gate(profile, sets, arcade_status, db)
-        if not sets:
-            return {"error": f"{profile}: every assemblable set is held back by the "
-                             f"'{arcade_status}' health gate", **empty,
-                    "held_back": _held_summary(held)}
+            progress(0, 0, f"{profile}: leaving out the games {other} plays…")
+        theirs = _romset_pick(other, mameset.dat_path(other), db, arcade_status,
+                              exclude_labels, versions)
+        sets, n = _defer(dat, mameset.dat_path(other), sets, theirs.get("sets") or [])
+        deferred += n
+    pruned = _prune_folder(dest, dat, set(sets)) if prune else {"files": 0, "bytes": 0}
 
     def room_for(nbytes):
         free = _free_bytes(dest)
@@ -1298,12 +1373,93 @@ def romset(profile, dest, leave_bytes=0, progress=None, db=None, stop=None,
                       stop=stop,
                       progress=None if progress is None else
                       lambda i, total, name: progress(i, total, name))
+    on_card = [s for s, v in (r.get("sets") or {}).items() if v.get("complete")]
+    on_card += [s for s in bios_built if s not in set(on_card)]
+    media = None
+    if artwork and on_card:
+        if progress:
+            progress(0, 0, f"{profile}: names, ratings and artwork for ES-DE…")
+        try:
+            media = _romset_media(dest, on_card, db)
+        except Exception as e:                       # the games are on the card regardless
+            media = {"error": str(e)[:300]}
     return {"profile": profile, "dat": dat.name, "assemblable": len(sets) + len(held),
             "bios_built": bios_built, "bios_unavailable": bios_unavailable,
             "arcade_status": arcade_status,
             "held_back": _held_summary(held) if held else None,
+            "versions": versions, "clones_dropped": len(clones_dropped),
+            "deferred": deferred, "defer_to": list(defer_to or []),
+            "pruned_files": pruned["files"], "pruned_bytes": pruned["bytes"],
+            "media": media,
             **{k: v for k, v in r.items() if k != "sets"},
             "stopped": bool(r.get("stopped") or r.get("out_of_room"))}
+
+
+def _defer(dat, other_dat, sets, theirs):
+    """`sets` without the games another core's build carries — same family root (the
+    cloneof chain, in each core's own dat, since most set names are shared). Bios and
+    device parents the kept games need stay. Returns (sets, how many were left out)."""
+    from . import arcadehealth
+    mine, other = arcadehealth.parse(dat), arcadehealth.parse(other_dat)
+
+    def root(machines, s):
+        seen = set()
+        while (machines.get(s) or {}).get("cloneof") and s not in seen:
+            seen.add(s)
+            s = machines[s]["cloneof"]
+        return s
+    covered = {root(other, s) for s in theirs}
+    kept = [s for s in sets if root(mine, s) not in covered]
+    need = {p for s in kept for p in arcadehealth.needed_parents(mine, s)}
+    out = [s for s in sets if s in need or root(mine, s) not in covered]
+    return out, len(sets) - len(out)
+
+
+def _prune_folder(dest, dat, keep):
+    """Delete what an earlier build of this dat left in `dest` that is no longer chosen:
+    `<set>.zip` files and `<set>/` CHD folders whose name is one of the dat's sets. Anything
+    else in the folder (another core's zips, the owner's own files) is left alone."""
+    from . import arcadehealth
+    dest = Path(dest)
+    out = {"files": 0, "bytes": 0}
+    if not dest.is_dir():
+        return out
+    known = set(arcadehealth.parse(dat))
+    for p in list(dest.iterdir()):
+        name = p.stem if p.is_file() and p.suffix.lower() == ".zip" else (
+            p.name if p.is_dir() else None)
+        if not name or name not in known or name in keep:
+            continue
+        try:
+            if p.is_dir():
+                size = sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+                shutil.rmtree(p)
+            else:
+                size = p.stat().st_size
+                p.unlink()
+        except OSError:
+            continue
+        out["files"] += 1
+        out["bytes"] += size
+    return out
+
+
+def _romset_media(dest, setnames, db):
+    """ES-DE's gamelist and artwork for the sets a romset build put on the card. The romset
+    folder is ES-DE's system folder and the card is the folder above it: J:\fbneo is
+    system `fbneo` on card J:\, entries `mslug.zip`."""
+    from . import artwork as art
+    dest = Path(dest).resolve()
+    card, fold, sub = dest.parent, dest.name, Path()
+    rows = _arcade_rows(db, setnames)
+    card_games = {fold: [((sub / f"{s}.zip").as_posix(), rows[s]) for s in setnames
+                         if s in rows]}
+    gamelists = _write_gamelists(card, card_games, db)
+    entries = {fold: [(e, r["item_id"]) for e, r in card_games[fold]]}
+    report = art.export_media(card, entries=entries,
+                              room_for=lambda n: (_free_bytes(card) or 0) - n
+                              >= _reserve_bytes(card))
+    return {"gamelist": gamelists.get(fold, 0), **report}
 
 
 def precache_chds(systems, progress=None, stop=None, distinct_games=True, exclude_labels=None):

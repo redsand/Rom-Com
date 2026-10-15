@@ -830,3 +830,79 @@ def test_a_bootleg_never_takes_its_familys_slot_from_the_real_game(tmp_path, mon
     organize(tmp_path / "sd", distinct_games=True, arcade_status="all")
     built = sorted(p.stem for p in (tmp_path / "sd" / "arcade").glob("*.zip"))
     assert built == ["mslug5"]
+
+
+FAMILY_DAT = """<?xml version="1.0"?><datafile>
+<machine name="sf2">
+<rom name="a.bin" size="16" crc="aaaa1111"/>
+</machine>
+<machine name="sf2j" cloneof="sf2" romof="sf2">
+<rom name="b.bin" size="16" crc="bbbb2222"/>
+</machine>
+<machine name="sf2ua" cloneof="sf2" romof="sf2">
+<rom name="c.bin" size="16" crc="cccc3333"/>
+</machine>
+<machine name="gtclub">
+<rom name="d.bin" size="16" crc="dddd4444"/>
+</machine>
+</datafile>"""
+
+
+def _family_env(monkeypatch, tmp_path, dats):
+    db = _romset_env(monkeypatch, tmp_path, dats,
+                     {"a.bin": "aaaa1111", "b.bin": "bbbb2222", "c.bin": "cccc3333",
+                      "d.bin": "dddd4444"})
+    with db:
+        for s, title in (("sf2", "Street Fighter II: The World Warrior (Japan 911210)"),
+                         ("sf2j", "Street Fighter II: The World Warrior (Japan 910522)"),
+                         ("sf2ua", "Street Fighter II: The World Warrior (USA 910206)"),
+                         ("gtclub", "GTI Club")):
+            db.execute("INSERT INTO items(id,title,system,external_id) "
+                       f"VALUES('{s}','{title}','arcade','arcade/{s}')")
+    return db
+
+
+def test_romset_keeps_the_best_version_of_each_game(tmp_path, monkeypatch):
+    """Twenty Street Fighter IIs are a list to scroll past, not a choice: a romset keeps
+    one version per game — an English release over the Japanese parent — and a re-run
+    removes the versions an every-version build left in the folder."""
+    from romcom.organizer import romset
+    dat = tmp_path / "mame.dat"; dat.write_text(FAMILY_DAT, encoding="utf-8")
+    _family_env(monkeypatch, tmp_path, {"mame": dat})
+    card = tmp_path / "card" / "arcade"
+    romset("mame", card, arcade_status="all", versions=0, artwork=False)
+    assert {p.stem for p in card.glob("*.zip")} == {"sf2", "sf2j", "sf2ua", "gtclub"}
+    (card / "mine.zip").write_bytes(b"not a set")             # the owner's own file
+    r = romset("mame", card, arcade_status="all", artwork=False)
+    assert {p.stem for p in card.glob("*.zip")} == {"sf2ua", "gtclub", "mine"}
+    assert r["clones_dropped"] == 2 and r["pruned_files"] == 2
+    romset("mame", card, arcade_status="all", versions=2, artwork=False, prune=False)
+    assert len([p for p in card.glob("sf2*.zip")]) == 2      # the runner-up joins sf2ua
+
+
+def test_romset_leaves_out_games_another_core_carries(tmp_path, monkeypatch):
+    """MAME beside FBNeo on one card: a game FBNeo's build carries stays out of the MAME
+    folder, so each game is on the card once and MAME holds what FBNeo cannot run."""
+    from romcom.organizer import romset
+    dat = tmp_path / "mame.dat"; dat.write_text(FAMILY_DAT, encoding="utf-8")
+    fb = tmp_path / "fbneo.dat"
+    fb.write_text(FAMILY_DAT.split('<machine name="gtclub">')[0] + "</datafile>",
+                  encoding="utf-8")
+    _family_env(monkeypatch, tmp_path, {"mame": dat, "fbneo": fb})
+    card = tmp_path / "card" / "arcade"
+    r = romset("mame", card, arcade_status="all", artwork=False, defer_to=["fbneo"])
+    assert [p.stem for p in card.glob("*.zip")] == ["gtclub"]
+    assert r["deferred"] == 1
+
+
+def test_romset_writes_the_esde_gamelist(tmp_path, monkeypatch):
+    """A bare mslug.zip is a blank tile: the build names its sets for ES-DE."""
+    from romcom.organizer import romset
+    dat = tmp_path / "mame.dat"; dat.write_text(FAMILY_DAT, encoding="utf-8")
+    _family_env(monkeypatch, tmp_path, {"mame": dat})
+    card = tmp_path / "card" / "arcade"
+    r = romset("mame", card, arcade_status="all")
+    gl = (tmp_path / "card" / "ES-DE" / "gamelists" / "arcade" / "gamelist.xml").read_text(
+        encoding="utf-8")
+    assert "./gtclub.zip" in gl and "GTI Club" in gl
+    assert r["media"]["gamelist"] == 2

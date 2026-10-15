@@ -289,7 +289,9 @@ def cmd_romset(a):
             print(f"[{i}/{total}] {name}")
     r = romset(a.profile, a.dest, leave_bytes=int(float(a.leave_gb) * 1024 ** 3),
                progress=progress, arcade_status=a.status,
-               exclude_labels=_exclude(a.exclude_labels))
+               exclude_labels=_exclude(a.exclude_labels), versions=a.versions,
+               prune=not a.keep_dropped, artwork=not a.no_artwork,
+               defer_to=[c for c in (a.defer_to or "").split(",") if c] or None)
     print(json.dumps({k: v for k, v in r.items() if k != "sets"}, indent=2))
 
 def cmd_cores(a):
@@ -529,6 +531,14 @@ def main():
     rs.add_argument("--status", choices=["no_broken", "works_only", "all"], default=None,
                     help="arcade health gate: skip broken sets (default), only working ones, or everything")
     rs.add_argument("--exclude-labels", default=None, help="labels to leave out, comma-separated (default fruit-machine,gambling,not-a-game; 'none' keeps everything)")
+    rs.add_argument("--versions", type=int, default=1,
+                    help="versions of each game to keep (best first: runs, proper English release, score); 0 keeps every clone")
+    rs.add_argument("--keep-dropped", action="store_true",
+                    help="leave set zips already in the folder that the build no longer chose")
+    rs.add_argument("--defer-to", default="",
+                    help="other cores on the same card, comma-separated: games their build carries are left out of this one (e.g. --defer-to fbneo)")
+    rs.add_argument("--no-artwork", action="store_true",
+                    help="skip the ES-DE gamelist and artwork copy")
     rs.set_defaults(fn=cmd_romset)
     lb=s.add_parser("labels", help="what each game is (genre, fruit-machine, hack…): refresh, counts, or your own add/remove")
     lb.add_argument("action", choices=["refresh", "counts", "add", "remove", "clear"])

@@ -991,6 +991,7 @@ function romPathHint() {
   $("#rom-path").placeholder = `J:\\${ROM_FOLDER[$("#rom-profile").value] || "arcade"} (ES-DE launches that folder with this core)`;
 }
 $("#rom-profile").addEventListener("change", romPathHint);
+$("#rom-profile").addEventListener("change", () => { $("#rom-defer-wrap").hidden = $("#rom-profile").value === "fbneo"; });
 romPathHint();
 
 $("#rom-start").addEventListener("click", () => {
@@ -1000,6 +1001,10 @@ $("#rom-start").addEventListener("click", () => {
   startJob("romset", "/api/romset", {profile: $("#rom-profile").value, path,
                                      leave_gb: +$("#rom-leave").value || 0,
                                      arcade_status: $("#rom-status").value,
+                                     versions: +$("#rom-versions").value,
+                                     prune: $("#rom-prune").checked,
+                                     artwork: $("#rom-art").checked,
+                                     defer_to: $("#rom-defer").checked && $("#rom-profile").value !== "fbneo" ? ["fbneo"] : [],
                                      exclude_labels: leaveOut("#rom-labels")});
 });
 
@@ -1305,7 +1310,11 @@ function renderRomsetResult(r) {
       <div class="tile"><div class="v">${(r.incomplete || 0).toLocaleString()}</div><div class="l">Incomplete</div></div>
       <div class="tile"><div class="v">${fmtBytes(r.bytes || 0)}</div><div class="l">Copied this run</div><div class="d">${(r.copied || 0).toLocaleString()} chips</div></div>
       <div class="tile"><div class="v">${(r.bios_built || []).length}</div><div class="l">Bios parents built</div>
-        <div class="d">${esc((r.bios_built || []).join(", ") || "—")}</div></div></div>`
+        <div class="d">${esc((r.bios_built || []).join(", ") || "—")}</div></div>
+      <div class="tile"><div class="v">${(r.clones_dropped || 0).toLocaleString()}</div><div class="l">Extra versions left out</div>
+        <div class="d">${r.deferred ? `${r.deferred.toLocaleString()} more left to ${esc((r.defer_to || []).join(", "))} · ` : ""}${r.pruned_files ? `${r.pruned_files.toLocaleString()} removed from the card (${fmtBytes(r.pruned_bytes || 0)})` : (r.versions ? `best ${r.versions} per game` : "every version kept")}</div></div>
+      ${r.media ? `<div class="tile"><div class="v">${(r.media.games || 0) - (r.media.without_art || 0)}</div><div class="l">Games with artwork</div>
+        <div class="d">${r.media.error ? esc(r.media.error) : `of ${(r.media.games || 0).toLocaleString()} · ${(r.media.gamelist || 0).toLocaleString()} names in gamelist`}</div></div>` : ""}</div>`
     + (missing.length ? `<details class="skiplist" open style="margin-top:12px">
         <summary>${missing.length} bios parent${missing.length > 1 ? "s" : ""} not buildable from the dump</summary>
         <div class="checklist" style="max-height:none">${missing.map(([name, n]) =>
