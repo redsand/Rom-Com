@@ -1432,7 +1432,7 @@ const SET_KEYS = ["nzb_url", "nzb_key", "sab_url", "sab_key", "sab_category", "s
                   "search_cache_ttl", "llm_enabled", "llm_base", "llm_model", "llm_timeout",
                   "export_wanted_only", "export_curated_only", "export_rating_min",
                   "rawg_enabled", "rawg_delay", "rawg_jitter", "rawg_timeout", "rawg_budget",
-                  "ra_enabled", "ra_delay", "ra_timeout", "community_auto_hours", "chd_cache_dir", "incoming_dir", "incoming_remove", "maintain_auto_hours"];
+                  "ra_enabled", "ra_delay", "ra_timeout", "community_auto_hours", "chd_cache_dir", "bios_mirror_dir", "incoming_dir", "incoming_remove", "maintain_auto_hours"];
 
 const SRC_LABEL = { ui: "saved in UI", env: "from .env", default: "default" };
 

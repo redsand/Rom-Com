@@ -210,3 +210,32 @@ def test_every_region_bios_the_library_holds_goes_along(monkeypatch, tmp_path):
     assert sorted(rep["picked"]["nds"]) == ["melonDS DS/bios7.bin", "melonDS DS/bios9.bin",
                                             "melonDS DS/firmware.bin"]
     assert rep["missing"] == {}
+
+
+def test_a_bios_the_library_lacks_comes_from_the_mirror(monkeypatch, tmp_path):
+    """The BIOS mirror sits outside the library (never scanned as games): an export takes
+    from it what the library lacks, and the library's own dump still wins."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "b5.db"))
+    mirror = tmp_path / "retrobios" / "bios"
+    (mirror / "Sega" / "Saturn").mkdir(parents=True)
+    (mirror / "Sega" / "Saturn" / "mpr-17933.bin").write_bytes(b"m" * 4)
+    (mirror / "Sony" / "PS2").mkdir(parents=True)
+    (mirror / "Sony" / "PS2" / "scph39001.bin").write_bytes(b"\0" * 4194304)
+    (mirror / "Sony" / "PlayStation").mkdir(parents=True)
+    (mirror / "Sony" / "PlayStation" / "scph5501.bin").write_bytes(b"mirror")
+    (mirror / ".git").mkdir()
+    (mirror / ".git" / "syscard3.pce").write_bytes(b"git")
+    monkeypatch.setenv("ROMCOM_BIOS_MIRROR", str(tmp_path / "retrobios"))
+    from romcom.config import invalidate
+    invalidate()
+    db = connect()
+    own = tmp_path / "lib" / "scph5501.bin"
+    with db:
+        db.execute("INSERT INTO files(path,bytes) VALUES(?,9)", (str(own),))
+    rep = cores.bios_report(db, systems={"saturn", "ps2", "ps1", "pcenginecd"})
+    assert rep["picked"]["saturn"]["mpr-17933.bin"][0].endswith("mpr-17933.bin")
+    assert list(rep["picked"]["ps2"]) == ["pcsx2/bios/scph39001.bin"]
+    assert rep["picked"]["ps1"]["scph5501.bin"] == (str(own), 9)
+    assert rep["missing"]["pcenginecd"] == [["syscard3.pce"]]     # .git is not the mirror
+    monkeypatch.delenv("ROMCOM_BIOS_MIRROR")
+    invalidate()

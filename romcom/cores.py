@@ -195,6 +195,29 @@ BIOS = {
 }
 
 
+def _mirror():
+    """[(path, bytes)] of the BIOS mirror (setting bios_mirror_dir), its .git left out.
+
+    The mirror sits outside the library on purpose — a BIOS collection is full of zips
+    and .sms/.pce files the scanner would take for games — so it is walked here rather
+    than read from `files`."""
+    import os
+    from .config import settings
+    d = (settings().get("bios_mirror_dir") or "").strip().strip('"')
+    if not d or not os.path.isdir(d):
+        return []
+    out = []
+    for root, dirs, names in os.walk(d):
+        dirs[:] = [x for x in dirs if x != ".git"]
+        for n in names:
+            p = os.path.join(root, n)
+            try:
+                out.append((p, os.path.getsize(p)))
+            except OSError:
+                pass
+    return out
+
+
 def bios_files(db):
     """The library's BIOS-shaped files, indexed case-insensitively by filename.
 
@@ -210,6 +233,12 @@ def bios_files(db):
         name = str(r["path"] or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
         if name in want:
             out.setdefault(name, []).append((r["path"], r["bytes"] or 0))
+    # The mirror only fills what the library lacks: a dump the owner put in the
+    # library is the one that goes on the card.
+    for path, size in _mirror():
+        name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if name in want and name not in out:
+            out[name] = [(path, size)]
     return out
 
 
@@ -222,6 +251,11 @@ def _by_pattern(db, spec):
         name = str(r["path"] or "").replace("\\", "/").rsplit("/", 1)[-1]
         if pat.match(name):
             out.setdefault(name.lower(), []).append((r["path"], r["bytes"] or 0))
+    if not out:
+        for path, size in _mirror():
+            name = path.replace("\\", "/").rsplit("/", 1)[-1]
+            if size == spec["size"] and pat.match(name):
+                out.setdefault(name.lower(), []).append((path, size))
     return out
 
 

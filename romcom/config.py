@@ -84,6 +84,7 @@ ENV_VARS = {
     "chd_library_dir": "ROMCOM_CHD_LIBRARY",
     "maintain_chd_batch": "ROMCOM_MAINTAIN_CHD_BATCH",
     "maintain_auto_hours": "ROMCOM_MAINTAIN_AUTO_HOURS",
+    "bios_mirror_dir": "ROMCOM_BIOS_MIRROR",
 }
 # Deliberately NOT here: the web master login (ROMCOM_WEB_USER/ROMCOM_WEB_PASS), the
 # MCP key (ROMCOM_MCP_KEY), and the community-source API credentials (RA_USERNAME,
@@ -186,6 +187,9 @@ def _env_settings():
         # The whole upkeep list (maintain.py) runs this often (hours); 0 = only by hand.
         # The incoming folder is looked at every few minutes regardless.
         "maintain_auto_hours": os.getenv("ROMCOM_MAINTAIN_AUTO_HOURS", "24"),
+        # A local BIOS collection kept outside the library (a retrobios checkout): an
+        # export looks there for any BIOS the library itself lacks. Never scanned as games.
+        "bios_mirror_dir": (os.getenv("ROMCOM_BIOS_MIRROR") or "").strip().strip('"'),
     }
 
 def _overrides(db_path):
