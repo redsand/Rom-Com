@@ -62,6 +62,28 @@ def _games(db, systems=None):
     return out
 
 
+# What 7-Zip says when an archive's own checksums fail: the download is broken, and no
+# second attempt at converting it will do better.
+import re as _re
+_CORRUPT = _re.compile(r"Data Error|CRC Failed|Unexpected end of archive|Headers Error", _re.I)
+
+
+def _let_go_corrupt(db, iid, src, why):
+    """A corrupt archive goes, and its game is fetched again (from another source: the
+    acquirer skips an address it has already downloaded from)."""
+    try:
+        Path(src).unlink()
+    except OSError:
+        return
+    with db:
+        db.execute("DELETE FROM files WHERE path=? OR path LIKE ?", (src, f"{src}|%"))
+        db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
+                   (iid, "corrupt-download", f"{why[-200:]}: {src}"[:400]))
+        if not db.execute("SELECT 1 FROM files WHERE matched_item_id=?", (iid,)).fetchone():
+            db.execute("UPDATE items SET status='MISSING', wanted=1, authorized=1, "
+                       "updated_at=CURRENT_TIMESTAMP WHERE id=?", (iid,))
+
+
 def compact(apply=False, convert=False, limit=None, systems=None, progress=None,
             stop=None, db=None):
     """Make each disc game's CHD its library file and delete the archive it came from.
@@ -106,7 +128,11 @@ def compact(apply=False, convert=False, limit=None, systems=None, progress=None,
                 try:
                     esde._convert_chd(src, names, main, cached, system)
                 except Exception as e:
-                    out["skipped"][Path(src).name] = f"could not convert: {e}"[:200]
+                    if _CORRUPT.search(str(e)) and Path(src).suffix.lower() in esde.UNPACK:
+                        _let_go_corrupt(db, iid, src, str(e))
+                        out.setdefault("corrupt", []).append(Path(src).name)
+                    else:
+                        out["skipped"][Path(src).name] = f"could not convert: {e}"[:200]
                     continue
                 out["converted"] += 1
             size = Path(src).stat().st_size

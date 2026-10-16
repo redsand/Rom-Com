@@ -57,3 +57,14 @@ def test_a_rescan_keeps_a_converted_chd_on_its_game(monkeypatch, tmp_path):
     discs.compact(apply=True, convert=True)
     scan(lib, adopt=False)
     assert db.execute("SELECT matched_item_id FROM files WHERE path LIKE '%.chd'").fetchone()[0] == "s"
+
+
+def test_a_corrupt_archive_goes_and_its_game_is_fetched_again(monkeypatch, tmp_path):
+    db, a, lib = _env(monkeypatch, tmp_path)
+
+    def broken(src, names, main, target, system):
+        raise OSError("7-Zip could not unpack Shenmue.7z: ERROR: Data Error : Track 3.bin")
+    monkeypatch.setattr(esde, "_convert_chd", broken)
+    r = discs.compact(apply=True, convert=True)
+    assert r["corrupt"] == [a.name] and not a.exists()
+    assert db.execute("SELECT status, wanted FROM items WHERE id='s'").fetchone()[:] == ("MISSING", 1)
