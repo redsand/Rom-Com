@@ -49,3 +49,11 @@ def test_a_chd_that_does_not_verify_keeps_the_archive(monkeypatch, tmp_path):
     db, a, lib = _env(monkeypatch, tmp_path, ok=False)
     r = discs.compact(apply=True, convert=True)
     assert r["chds"] == 0 and a.exists() and "did not verify" in next(iter(r["skipped"].values()))
+
+
+def test_a_rescan_keeps_a_converted_chd_on_its_game(monkeypatch, tmp_path):
+    from romcom.scanner import scan
+    db, a, lib = _env(monkeypatch, tmp_path)
+    discs.compact(apply=True, convert=True)
+    scan(lib, adopt=False)
+    assert db.execute("SELECT matched_item_id FROM files WHERE path LIKE '%.chd'").fetchone()[0] == "s"
