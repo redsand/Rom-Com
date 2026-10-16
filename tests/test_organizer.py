@@ -711,13 +711,13 @@ def test_the_export_carries_console_bios_and_reports_the_gaps(tmp_path, monkeypa
             db.execute("INSERT INTO files(path,bytes) VALUES(?,?)", (str(f), f.stat().st_size))
     dest = tmp_path / "sd"
     r = organize(dest)
-    assert (dest / "system" / "dc_boot.bin").read_bytes() == b"boot"
+    assert (dest / "system" / "dc" / "dc_boot.bin").read_bytes() == b"boot"
     cb = r["console_bios"]
     assert cb["dir"] == str(dest / "system")
-    assert cb["systems"]["dreamcast"]["copied"] == ["dc_boot.bin", "dc_flash.bin"]
+    assert cb["systems"]["dreamcast"]["copied"] == ["dc/dc_boot.bin", "dc/dc_flash.bin"]
     assert cb["systems"]["dreamcast"]["missing"] == []
     # Saturn has no bios anywhere in the dump: the report must say so, not stay silent.
-    assert cb["systems"]["saturn"]["missing"] == ["sega_101.bin or sega_102.bin"]
+    assert cb["systems"]["saturn"]["missing"] == ["mpr-17933.bin or sega_101.bin or sega_102.bin"]
     # One region's Sega CD bios is enough: the slot lists the three and asks for one.
     with db:
         (dump / "bios_CD_U.bin").write_bytes(b"segacd")

@@ -131,10 +131,10 @@ def test_bios_report_fills_a_slot_and_names_the_gaps(monkeypatch, tmp_path):
             (tmp_path / name).write_bytes(b"x")
             db.execute("INSERT INTO files(path,bytes) VALUES(?,1)", (str(tmp_path / name),))
     rep = cores.bios_report(db, systems={"dreamcast", "segacd", "saturn"})
-    assert sorted(rep["picked"]["dreamcast"]) == ["dc_boot.bin", "dc_flash.bin"]
+    assert sorted(rep["picked"]["dreamcast"]) == ["dc/dc_boot.bin", "dc/dc_flash.bin"]
     assert rep["picked"]["segacd"] == {"bios_CD_U.bin": (str(tmp_path / "bios_CD_U.bin"), 1)}
     assert "segacd" not in rep["missing"] and "dreamcast" not in rep["missing"]
-    assert rep["missing"]["saturn"] == [["sega_101.bin", "sega_102.bin"]]
+    assert rep["missing"]["saturn"] == [["mpr-17933.bin", "sega_101.bin", "sega_102.bin"]]
     # A system not being exported is not this report's business.
     assert cores.bios_report(db, systems={"saturn"})["picked"] == {}
 
@@ -158,7 +158,7 @@ def test_bios_status_counts_what_a_missing_bios_blocks(monkeypatch, tmp_path):
     assert st["missing_count"] == 1 and st["games_blocked"] == 20
     [row] = st["missing"]
     assert row["system"] == "saturn" and row["have"] == []
-    assert row["missing"] == [["sega_101.bin", "sega_102.bin"]]
+    assert row["missing"] == [["mpr-17933.bin", "sega_101.bin", "sega_102.bin"]]
 
 
 def test_a_console_with_all_its_bios_is_not_reported_missing(monkeypatch, tmp_path):
@@ -174,7 +174,7 @@ def test_a_console_with_all_its_bios_is_not_reported_missing(monkeypatch, tmp_pa
     st = cores.bios_status(db)
     assert st["missing_count"] == 0 and st["games_blocked"] == 0
     dc = [r for r in st["rows"] if r["system"] == "dreamcast"][0]
-    assert dc["have"] == ["dc_boot.bin", "dc_flash.bin"]
+    assert dc["have"] == ["dc/dc_boot.bin", "dc/dc_flash.bin"]
 
 
 def test_a_ps2_bios_is_found_by_shape_and_placed_for_pcsx2():
@@ -192,3 +192,21 @@ def test_a_ps2_bios_is_found_by_shape_and_placed_for_pcsx2():
     rep = cores.bios_report(db, {"ps2"})
     assert list(rep["picked"]["ps2"]) == ["pcsx2/bios/scph-70012_bios_v12_usa_200.bin"]
     assert "ps2" not in rep["missing"]
+
+
+def test_every_region_bios_the_library_holds_goes_along(monkeypatch, tmp_path):
+    """One file fills a slot, but a Japanese disc wants the Japanese BIOS: the other regions
+    and models a library holds are carried too, and a core with its own folder under
+    system/ (melonDS DS) gets them there."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "b4.db"))
+    db = connect()
+    with db:
+        for name in ("scph5501.bin", "scph5500.bin", "scph5502.bin", "kick34005.A500",
+                     "kick40068.A1200", "bios7.bin", "bios9.bin", "firmware.bin"):
+            db.execute("INSERT INTO files(path,bytes) VALUES(?,1)", (str(tmp_path / name),))
+    rep = cores.bios_report(db, systems={"ps1", "amiga", "nds"})
+    assert sorted(rep["picked"]["ps1"]) == ["scph5500.bin", "scph5501.bin", "scph5502.bin"]
+    assert sorted(rep["picked"]["amiga"]) == ["kick34005.A500", "kick40068.A1200"]
+    assert sorted(rep["picked"]["nds"]) == ["melonDS DS/bios7.bin", "melonDS DS/bios9.bin",
+                                            "melonDS DS/firmware.bin"]
+    assert rep["missing"] == {}

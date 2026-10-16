@@ -120,6 +120,7 @@ BUILDBOT = "https://buildbot.libretro.com/nightly/windows/x86_64/latest/{core}.d
 BIOS = {
     "dreamcast": {"label": "Dreamcast",
                   "slots": [["dc_boot.bin"], ["dc_flash.bin"]],
+                  "dir": "dc",               # Flycast reads system/dc/, not system/
                   # Flycast has carried an HLE BIOS for years: with no dc_boot.bin it boots
                   # games on its own (libretro's docs list both files as optional). The real
                   # BIOS still helps the odd game and shows the boot animation.
@@ -127,11 +128,13 @@ BIOS = {
                   "why": "optional: Flycast boots games with its built-in HLE BIOS; the real "
                          "dc_boot.bin + dc_flash.bin help a few games and add the boot screen"},
     "saturn":    {"label": "Saturn",
-                  "slots": [["sega_101.bin", "sega_102.bin"]],
+                  "slots": [["mpr-17933.bin", "sega_101.bin", "sega_102.bin"]],
+                  "also": ["sega_101.bin"],
                   "why": "Beetle Saturn boots nothing without the console BIOS "
-                         "(sega_101 = US/EU, sega_102 = Japan)"},
+                         "(mpr-17933 = US/EU, sega_101 = Japan)"},
     "segacd":    {"label": "Sega CD",
                   "slots": [["bios_CD_E.bin", "bios_CD_U.bin", "bios_CD_J.bin"]],
+                  "also": ["bios_CD_E.bin", "bios_CD_U.bin", "bios_CD_J.bin"],
                   "why": "the disc's boot code comes from the region BIOS — E = Europe, "
                          "U = US, J = Japan"},
     "3do":       {"label": "3DO",
@@ -154,7 +157,41 @@ BIOS = {
     "amiga":     {"label": "Amiga",
                   "slots": [["kick13.rom", "kick33180.A500", "kick34005.A500",
                              "kick40068.A1200", "kick40063.A600"]],
+                  # 1.3 boots most A500 games; the A1200's 3.1 is for AGA games, and
+                  # PUAE picks the model per game, so every Kickstart there goes along.
+                  "also": ["kick34005.A500", "kick33180.A500", "kick40068.A1200",
+                           "kick40063.A600"],
                   "why": "PUAE needs a Kickstart ROM in the system folder or nothing boots"},
+    "amigacd32": {"label": "Amiga CD32",
+                  "slots": [["kick40060.CD32"], ["kick40060.CD32.ext"]],
+                  "why": "PUAE boots a CD32 disc only with the CD32 Kickstart and its "
+                         "extended ROM"},
+    "ps1":       {"label": "PlayStation",
+                  "slots": [["scph5501.bin", "scph5500.bin", "scph5502.bin", "scph1001.bin"]],
+                  "also": ["scph5500.bin", "scph5501.bin", "scph5502.bin"],
+                  "why": "Beetle PSX and SwanStation need the console BIOS (scph5501 = US, "
+                         "5500 = Japan, 5502 = Europe); PCSX ReARMed's built-in one runs "
+                         "fewer games"},
+    "pcenginecd": {"label": "PC Engine CD",
+                   "slots": [["syscard3.pce"]],
+                   "why": "Beetle PCE boots a CD-ROM game only with the System Card 3.0"},
+    "gba":       {"label": "Game Boy Advance",
+                  "slots": [["gba_bios.bin"]],
+                  "optional": True,
+                  "why": "optional: mGBA and gpSP run games without it; the real BIOS "
+                         "fixes a few and shows the boot logo"},
+    "nds":       {"label": "Nintendo DS",
+                  "slots": [["bios7.bin"], ["bios9.bin"], ["firmware.bin"]],
+                  "dir": "melonDS DS",       # melonDS DS reads system/melonDS DS/
+                  "optional": True,
+                  "why": "optional: melonDS DS and DraStic carry their own BIOS; the real "
+                         "files help the odd game and the DS menu"},
+    "atari5200": {"label": "Atari 5200",
+                  "slots": [["5200.rom"]],
+                  "why": "a8800 and Atari800 boot 5200 games only with its BIOS"},
+    "atarist":   {"label": "Atari ST",
+                  "slots": [["tos.img"]],
+                  "why": "Hatari needs a TOS ROM to boot"},
 }
 
 
@@ -166,7 +203,8 @@ def bios_files(db):
     them. This walks the `files` table and keeps only entries whose basename is a name some
     slot wants.
     """
-    want = {n.lower() for spec in BIOS.values() for slot in spec["slots"] for n in slot}
+    want = {n.lower() for spec in BIOS.values()
+            for n in [x for slot in spec["slots"] for x in slot] + spec.get("also", [])}
     out = {}
     for r in db.execute("SELECT path, bytes FROM files"):
         name = str(r["path"] or "").replace("\\", "/").rsplit("/", 1)[-1].lower()
@@ -210,14 +248,22 @@ def bios_report(db, systems=None):
             else:
                 missing[system] = [["SCPH-*.bin (4 MB, from your own PS2)"]]
             continue
+        # Keyed by the file's place under system/: a core with its own folder there
+        # (Flycast's dc/) gets it, the rest sit at the top.
+        at = (lambda n: f"{spec['dir']}/{n}") if spec.get("dir") else (lambda n: n)
         fills, miss = {}, []
         for slot in spec["slots"]:
             for name in slot:
                 if name.lower() in found:
-                    fills[name] = found[name.lower()][0]
+                    fills[at(name)] = found[name.lower()][0]
                     break
             else:
                 miss.append(slot)
+        # The other regions and models go along when the library has them: one slot is
+        # enough to boot, but a Japanese disc wants the Japanese BIOS.
+        for name in spec.get("also", []):
+            if name.lower() in found:
+                fills.setdefault(at(name), found[name.lower()][0])
         if fills:
             picked[system] = fills
         if miss:
