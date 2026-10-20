@@ -193,6 +193,53 @@ CREATE TABLE IF NOT EXISTS community_state (
  source TEXT NOT NULL, k TEXT NOT NULL, v TEXT,
  PRIMARY KEY(source,k)
 );
+-- SD cards RomCom has written to, and what is on them.
+--
+-- A card is removable, so the database is the only durable record of its contents: while
+-- the card sits in a drawer the app can still say what it held. The card also carries its
+-- own identity in a manifest file (cardindex.py), so the same card mounted at a different
+-- drive letter is still recognised as the same card.
+--
+-- `cards.uuid` is that identity: minted once and written onto the card, so it travels
+-- with it. `cards.path` is only a convenience — where it was last seen.
+CREATE TABLE IF NOT EXISTS cards (
+ id TEXT PRIMARY KEY,          -- uuid minted on first sight; matches the card's own manifest
+ uuid TEXT UNIQUE,             -- the id as the card carries it (NULL for a card never written)
+ path TEXT,                    -- where it was last seen mounted
+ label TEXT,                   -- the owner's name for it
+ last_seen TEXT,
+ created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+ updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+-- One row per game on a card. Not per file: a game is a directory (a disc dumped as
+-- cue+bin is `Game.cue/`, which ES-DE lists as one entry), a zip, a CHD, or a folder of
+-- unpacked files, and the card's byte budget is spent per game.
+--
+-- `item_id` is deliberately a soft reference, not a foreign key: a card outlives the
+-- library, and a game deleted from the catalog must still be evictable from the card.
+-- NULL means the card holds something the library cannot name (untracked) — those are
+-- never deleted, because they may be the owner's own file.
+--
+-- `tracked` says how the entry came to be known: 1 when RomCom wrote it (it knows what it
+-- put there), 0 when a card was indexed by walking it and matching names (a guess — the
+-- export's own `_copy_rank` calls a name match second-best to a hash-verified one). A
+-- guessed entry is not evicted on rank until it has been seen on a card once.
+CREATE TABLE IF NOT EXISTS card_entries (
+ card_id TEXT NOT NULL,
+ folder TEXT NOT NULL,        -- the ES-DE system folder on the card ("psx", "arcade", …)
+ entry TEXT NOT NULL,         -- the path ES-DE lists, relative to <card>/ROMs/<folder>
+ item_id TEXT,                -- the catalog item, NULL when untracked
+ bytes INTEGER,               -- the game's whole footprint on the card
+ score INTEGER,               -- the score it was placed by
+ playcount INTEGER DEFAULT 0, -- read back from the card's own gamelist.xml
+ last_played TEXT,
+ favorite INTEGER DEFAULT 0,   -- the owner marked it a favourite in ES-DE
+ tracked INTEGER NOT NULL DEFAULT 1,
+ updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+ PRIMARY KEY(card_id, folder, entry)
+);
+CREATE INDEX IF NOT EXISTS idx_card_entries_card ON card_entries(card_id);
+CREATE INDEX IF NOT EXISTS idx_card_entries_item ON card_entries(item_id);
 """
 
 # ALTER TABLE has stricter default-expression rules than CREATE TABLE.
@@ -226,7 +273,11 @@ MIGRATIONS = {
  },
  "volumes": {"min_bytes":"INTEGER","max_bytes":"INTEGER","updated_at":"TEXT"},
  "jobs": {"result_url":"TEXT","source":"TEXT"},
- "files": {"match_method":"TEXT","scanned_at":"TEXT","content":"INTEGER"}
+ "files": {"match_method":"TEXT","scanned_at":"TEXT","content":"INTEGER"},
+ # The card tables are new, so their columns come from SCHEMA — but a database that
+ # already has `card_entries` (from a run before the favourite column existed) needs
+ # the column added, so it goes through the same ALTER path as everything else.
+ "card_entries": {"favorite":"INTEGER DEFAULT 0"}
 }
 
 INDEXES = [

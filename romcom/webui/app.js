@@ -669,6 +669,7 @@ const JOBS = {
   import:   {wrap: "#imp-progress",  bar: "#imp-bar",  cur: "#imp-current",  btn: "#imp-start",  out: "#imp-results",  render: renderImportResult,   doneMsg: "Import finished"},
   scan:     {wrap: "#scan-progress", bar: "#scan-bar", cur: "#scan-current", btn: "#scan-start", out: "#scan-result",  render: renderScanResult,     liveRender: renderScanLive, doneMsg: "Scan finished"},
   organize: {wrap: "#org-progress",  bar: "#org-bar",  cur: "#org-current",  btn: "#org-start",  out: "#org-result",   render: renderOrganizeResult, doneMsg: "Export finished"},
+  card:     {wrap: "#card-progress", bar: "#card-bar", cur: "#card-current", btn: "#card-apply", out: "#card-result",  render: renderCardResult,    doneMsg: "Card updated"},
   romset:   {wrap: "#rom-progress",  bar: "#rom-bar",  cur: "#rom-current",  btn: "#rom-start",  out: "#rom-result",   render: renderRomsetResult,   doneMsg: "Romset finished"},
   acquire:  {wrap: "#acq-progress",  bar: "#acq-bar",  cur: "#acq-current",  btn: "#acq-start",  out: "#acq-result",   render: renderAcquireResult, liveRender: renderAcquireLive, doneMsg: "Download run finished"},
   // Lives on the Settings tab; its render refills the coverage line under the button.
@@ -684,6 +685,8 @@ function loadImport() {
   $("#scan-path").value ||= localStorage.getItem("romcom-rom-path") || "";
   $("#org-path").value ||= localStorage.getItem("romcom-sd-path") || "";
   $("#rom-path").value ||= localStorage.getItem("romcom-romset-path") || "";
+  $("#card-path").value ||= localStorage.getItem("romcom-card-path") || $("#org-path").value || "";
+  cardPreviewReady();
   loadOrgProfiles().then(loadOrgPlan);
   loadDupes();
   loadArcadeHealth();
@@ -744,6 +747,7 @@ async function pollJob(kind, loop) {
   jobRunning[kind] = !!s.running;
   if (kind === "organize") $("#org-stop").disabled = !s.running;
   if (kind === "romset") $("#rom-stop").disabled = !s.running;
+  if (kind === "card") $("#card-stop").disabled = !s.running;
   if (s.running) {
     $(j.wrap).hidden = false;
     $(j.btn).disabled = true;
@@ -1002,6 +1006,164 @@ $("#org-stop").addEventListener("click", async () => {
   try { await post("/api/job/organize/cancel"); toast("Stopping after the current file…"); }
   catch (e) { toast(e.message, true); $("#org-stop").disabled = false; }
 });
+
+/* ---------- Update card: make the card match the recipe ---------- */
+function cardPreviewReady() {
+  $("#card-preview").disabled = !($("#card-path").value || "").trim();
+  // A change to the card or its settings makes the old preview stale, and a stale
+  // preview is worse than none: it would ask to apply a plan that no longer holds.
+  $("#card-apply").disabled = true;
+  $("#card-plan").hidden = true;
+}
+const REASON_TEXT = {
+  "no longer selected": "no longer in the recipe",
+  "outranked": "outranked by a better game",
+  "moved": "moved (the layout changed)",
+  "unwritable": "still wanted, but its library file is missing",
+};
+const cardReason = r => REASON_TEXT[r] || r || "";
+
+// The update works on the export card's own picks, so the two can never disagree about
+// what belongs on the card. Untick "use the export card's picks" to send nothing at all.
+function cardBody() {
+  const follow = $("#card-follow").checked;
+  return {path: $("#card-path").value.trim(),
+          systems: follow ? orgPicked() : [],
+          distinct_games: follow ? $("#org-distinct").checked : false,
+          arcade_core: follow ? $("#org-core").value : "mame",
+          arcade_status: follow ? $("#org-status").value : "no_broken",
+          exclude_labels: follow ? leaveOut("#org-labels") : null,
+          layout: follow ? ($("#org-ranked").checked ? "ranked" : "flat") : "flat",
+          chd: follow ? $("#org-chd").checked : true,
+          artwork: follow ? $("#org-art").checked : false,
+          evict: $("#card-evict").checked,
+          protect_played: $("#card-protect").checked,
+          gates: follow ? orgGates() : undefined};
+}
+
+function renderCardPlan(p) {
+  const out = [];
+  const rem = p.remove || [], add = p.add || [];
+  if (!rem.length && !add.length) {
+    out.push(`<p class="sub" style="margin-top:12px">The card already matches the recipe — nothing
+      to take off, nothing to add. ${(p.kept || 0).toLocaleString()} game(s) stay put.</p>`);
+  } else {
+    if (rem.length) {
+      out.push(`<h3 style="margin-top:12px">Would come off (${rem.length})</h3>`);
+      out.push(`<div class="checklist" style="max-height:none">` + rem.map(r =>
+        `<div class="check bad"><span class="mark">✕</span><span class="d">
+          <b>${esc(r.title || r.entry)}</b> <span class="sub">(${esc(r.folder || "")}/${esc(r.entry || "")}
+          · ${fmtBytes(r.bytes || 0)}${r.playcount ? ` · played ${r.playcount}×` : ""})</span><br>
+          <span class="sub">${esc(cardReason(r.reason))}</span></span></div>`).join("") + `</div>`);
+    }
+    if (add.length) {
+      out.push(`<h3 style="margin-top:12px">Would go on (${add.length})</h3>`);
+      out.push(`<div class="checklist" style="max-height:none">` + add.map(a =>
+        `<div class="check ok"><span class="mark">+</span><span class="d">
+          <b>${esc(a.title || a.entry)}</b> <span class="sub">(${esc(a.folder || "")}/${esc(a.entry || "")}
+          · ${fmtBytes(a.bytes || 0)})</span></span></div>`).join("") + `</div>`);
+    }
+    out.push(`<div class="tiles" style="margin-top:12px">
+      <div class="tile"><div class="v">${fmtBytes(p.bytes_remove || 0)}</div><div class="l">Freed</div></div>
+      <div class="tile"><div class="v">${fmtBytes(p.bytes_add || 0)}</div><div class="l">Added</div></div>
+      ${p.free_bytes != null ? `<div class="tile"><div class="v">${fmtBytes(p.free_bytes)}</div><div class="l">Free now</div></div>` : ""}
+    </div>`);
+  }
+  const prot = p.protected || [];
+  if (prot.length)
+    out.push(`<details class="skiplist"><summary>${prot.length} game(s) kept on the card</summary>
+      <div class="checklist" style="max-height:none">` + prot.map(x =>
+        `<div class="check"><span class="mark">•</span><span class="d">${esc(x.title || x.entry)}
+          <span class="sub">— ${esc(x.why || "")}</span></span></div>`).join("") + `</div></details>`);
+  const un = p.untracked || [];
+  if (un.length)
+    out.push(`<details class="skiplist"><summary>${un.length} file(s) the library cannot name — left alone</summary>
+      <div class="checklist" style="max-height:none">` + un.map(x =>
+        `<div class="check"><span class="mark">•</span><span class="d">${esc(x.entry)}
+          <span class="sub">— ${fmtBytes(x.bytes || 0)}</span></span></div>`).join("") + `</div></details>`);
+  const nr = p.no_room || [];
+  if (nr.length)
+    out.push(`<details class="skiplist"><summary>${nr.length} game(s) the card has no room for</summary>
+      <div class="checklist" style="max-height:none">` + nr.map(x =>
+        `<div class="check"><span class="mark">•</span><span class="d">${esc(x.title || x.entry)}
+          <span class="sub">— ${fmtBytes(x.bytes || 0)} · still wanted, off the card for now</span></span></div>`).join("") + `</div></details>`);
+  $("#card-plan").innerHTML = out.join("");
+  $("#card-plan").hidden = false;
+}
+
+$("#card-preview").addEventListener("click", async () => {
+  const body = cardBody();
+  if (!body.path) { toast("Enter the SD card path first", true); return; }
+  if ($("#card-follow").checked && !body.systems.length) {
+    toast("Tick at least one platform in the export card above, or untick “use the export card's picks”",
+          true); return;
+  }
+  const btn = $("#card-preview");
+  btn.disabled = true; btn.textContent = "Reading the card…";
+  try {
+    const p = await post("/api/card/plan", body);
+    renderCardPlan(p);
+    $("#card-apply").disabled = false;
+    localStorage.setItem("romcom-card-path", body.path);
+  } catch (e) {
+    $("#card-plan").innerHTML = `<p class="sub bad">${esc(e.message)}</p>`;
+    $("#card-plan").hidden = false;
+    $("#card-apply").disabled = true;
+  } finally { btn.disabled = false; btn.textContent = "Preview"; }
+});
+
+$("#card-apply").addEventListener("click", () => {
+  const body = cardBody();
+  if (!body.path) { toast("Enter the SD card path first", true); return; }
+  const n = ($("#card-plan").textContent.match(/Would come off \((\d+)\)/) || [])[1];
+  if (n && !confirm(`Take ${n} game(s) off ${body.path} and put the better-ranked ones on?`)) return;
+  startJob("card", "/api/card/update", body);
+});
+
+$("#card-stop").addEventListener("click", async () => {
+  $("#card-stop").disabled = true;
+  try { await post("/api/job/card/cancel"); toast("Stopping after the current game…"); }
+  catch (e) { toast(e.message, true); $("#card-stop").disabled = false; }
+});
+
+// Any change to what the update would do makes the preview stale.
+for (const id of ["#card-path", "#card-follow", "#card-evict", "#card-protect"])
+  $(id).addEventListener("change", cardPreviewReady);
+$("#card-path").addEventListener("input", cardPreviewReady);
+// The export card's picks feed the update, so changing them makes the preview stale too.
+$("#org-systems").addEventListener("change", cardPreviewReady);
+
+function renderCardResult(r) {
+  if (r.error) {
+    $("#card-result").innerHTML = `<div class="check bad" style="margin-top:12px">
+      <span class="mark">✕</span><span class="d">${esc(r.error)}</span></div>`;
+    return;
+  }
+  const rec = r.reconcile || {};
+  const gone = rec.entries || [];
+  const lines = gone.map(g => `<div class="check bad"><span class="mark">✕</span><span class="d">
+    <b>${esc(g.title || g.entry)}</b> <span class="sub">— ${esc(cardReason(g.reason))}</span></span></div>`).join("");
+  const nr = rec.no_room || [];
+  const nrLines = nr.map(g => `<div class="check"><span class="mark">•</span><span class="d">
+    <b>${esc(g.title || g.entry)}</b> <span class="sub">— the card had no room for it</span></span></div>`).join("");
+  $("#card-result").innerHTML =
+    `<div class="tiles" style="margin-top:12px">
+      <div class="tile"><div class="v">${(rec.removed || 0).toLocaleString()}</div><div class="l">Taken off</div></div>
+      <div class="tile"><div class="v">${fmtBytes(rec.bytes_freed || 0)}</div><div class="l">Freed</div></div>
+      <div class="tile"><div class="v">${(r.copied || 0).toLocaleString()}</div><div class="l">Copied on</div></div>
+      <div class="tile"><div class="v">${(r.skipped || 0).toLocaleString()}</div><div class="l">Already there</div></div>
+    </div>`
+    + (gone.length ? `<h3 style="margin-top:12px">Taken off the card</h3>
+        <div class="checklist" style="max-height:none">${lines}</div>` : "")
+    + (nr.length ? `<details class="skiplist"><summary>${nr.length} game(s) the card had no room for</summary>
+        <div class="checklist" style="max-height:none">${nrLines}</div></details>` : "")
+    + (rec.manifest ? `<p class="sub" style="margin-top:12px">What was removed is written down in
+        <code>${esc(rec.manifest)}</code> — each game with the library file it was copied from, so it can be put back.</p>` : "")
+    + ((r.errors || []).length ? `<details class="skiplist" open><summary>${r.errors.length} errors</summary>
+        <div class="checklist" style="max-height:none">` + r.errors.map(x =>
+        `<div class="check bad"><span class="mark">✕</span><span class="d">${esc(x.file)} — ${esc(x.error)}</span></div>`).join("")
+        + `</div></details>` : "");
+}
 
 // ES-DE launches a folder with its own default core: arcade = MAME, fbneo = FBNeo,
 // mame = MAME 2003-Plus. The hint follows the chosen core.
@@ -1523,6 +1685,9 @@ $("#picker").addEventListener("click", e => { if (e.target.id === "picker") $("#
 $("#picker-select").addEventListener("click", () => {
   if (!pickerPath) { toast("Pick a drive first", true); return; }
   $(pickerTarget).value = pickerPath;
+  // The picker sets the value directly, so the "change" nobody fired would leave the
+  // card's Preview button disabled on a path that is perfectly good.
+  $(pickerTarget).dispatchEvent(new Event("change"));
   $("#picker").hidden = true;
 });
 

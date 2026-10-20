@@ -342,7 +342,8 @@ def _safe(name):
 def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
              dry_run=False, keep_only=False, rating_min=None, stop=None, fill=False,
              distinct_games=False, wipe=False, arcade_core="mame", arcade_status=None,
-             artwork=False, exclude_labels=None, layout="flat", chd=True):
+             artwork=False, exclude_labels=None, layout="flat", chd=True,
+             reconcile=False, evict=False, protect_played=True):
     """Copy files matched to a catalog item into <dest>/<system>/<score>/<filename> — the
     score folder (90, 80, ... 0) is the ranking the copy order sorts by, made visible to
     RetroArch, which cannot show a rating.
@@ -416,6 +417,15 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     fail. Re-running was the old "clean": skip-if-present silently kept games that had
     fallen out of the recipe, and a layout change left the old copy behind beside the new
     one.
+
+    `reconcile` makes the card match the recipe instead of only adding to it: games the
+    recipe no longer selects come off, and — with `evict` — a well-ranked newcomer can
+    take the space of a badly-ranked one. It works from the card's own index (what is on
+    it, and what RomCom wrote there), so a game the library cannot name is never
+    touched, and a game the owner marked keep is never traded away. The removals are
+    planned first and the fit check counts their bytes as room, so a card that still
+    would not fit refuses with its contents intact. What is removed is written down
+    before it is removed.
     """
     db = connect()
     if progress: progress(0, 0, "selecting items…")
@@ -424,110 +434,25 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     labels_left_out = {}
     rows = _selection(wanted_only, keep_only, rating_min, exclude_labels, labels_left_out)
     wanted_systems = {s.lower() for s in systems} if systems else None
-    # Arcade is built, not copied. One physical file belongs to many sets, and
-    # `files.matched_item_id` records a single owner, so copying matched files leaves every
-    # set but one incomplete -- galaga came out missing prom-2.5c that way. A flattened dump
-    # also renames collisions (`prom-2.5c_7`), and MAME only looks for the canonical name.
-    # mameset.build resolves each set's roms from the dat by hash and writes them under the
-    # names MAME expects, devices included.
     # A systems filter that leaves arcade out must leave arcade out: the set build used to
     # run regardless, so "export snes" also wrote the whole arcade library.
     arcade_wanted = wanted_systems is None or "arcade" in wanted_systems
     from . import mameset
-    # Which core's romset the card gets. A browser is not trusted with the spelling:
-    # anything unexpected means the default.
-    if arcade_core == "all":
-        arcade_cores = ["mame", "fbneo", "mame2003"]   # one folder per core, under arcade/
-    elif arcade_core in mameset.PROFILES:
-        arcade_cores = [arcade_core]
-    else:
-        arcade_cores = ["mame"]
-    # The selection's order is the fill order (best game first), so an export that runs
-    # out of room misses the obscure tail, not the famous middle. 'One copy per game'
-    # reaches arcade too: the sets come from the same deduped rows the plan's arcade
-    # figure counts, or every clone variant of one game would build although the plan
-    # promised only one.
-    arcade_dupes_skipped = 0
-    arcade_rows = ([r for r in rows if (r["system"] or "").lower() == "arcade"]
-                   if arcade_wanted else [])
-    from . import arcadehealth
-    arcade_status = arcade_status if arcade_status in arcadehealth.GATES         else arcadehealth.DEFAULT_GATE
-    gating = bool(arcade_rows) and arcade_status != "all"
-    known, arcade_held_back = {}, {}
-    if gating:
-        asked = list(dict.fromkeys(
-            (r["external_id"] or "").split("/", 1)[-1] for r in arcade_rows))
-        for core in arcade_cores:
-            if progress: progress(0, 0, f"judging {core} arcade sets…")
-            arcadehealth.evaluate(core, db)
-            known[core] = arcadehealth.statuses(core, db)
-            # Reported against everything the recipe asked for: the rows filter below
-            # removes the sets no core runs before the per-core gate ever sees them.
-            held = arcadehealth.gate(core, asked, arcade_status, db, known=known[core])[1]
-            if held:
-                arcade_held_back[core] = held
-        # Rows no chosen core can run go before the title collapse below, or a broken
-        # variant could win a game's one slot over a working one.
-        dead = arcadehealth.blocked(arcade_cores, arcade_status, db)
-        arcade_rows = [r for r in arcade_rows
-                       if (r["external_id"] or "").split("/", 1)[-1] not in dead]
-    if distinct_games and arcade_rows:
-        # Same bytes only: arcade's one-copy-per-game is the dat's clone book
-        # (`_prune_clones` below). By title, Sega's tetris and Atari's atetris were one
-        # game and only one reached the card.
-        arcade_rows, arcade_dupes_skipped = _canonical(arcade_rows, False)
-    arcade_sets = list(dict.fromkeys(
-        (r["external_id"] or "").split("/", 1)[-1] for r in arcade_rows))
-    # Each core has its own romset book, so the clone pruning is per core: two sets of
-    # one MAME family must not both reach a MAME card, but an FBNeo family may differ.
-    # The mame romof parents below follow mame's own pruned list.
-    core_sets = {core: arcade_sets for core in arcade_cores}
-    if gating:
-        for core in arcade_cores:
-            core_sets[core] = arcadehealth.gate(core, arcade_sets, arcade_status,
-                                                db, known=known[core])[0]
-    clones_pruned = {}
-    if distinct_games and arcade_sets:
-        for core in arcade_cores:
-            core_sets[core], drop = _prune_clones(db, core, core_sets[core])
-            if drop:
-                clones_pruned[core] = drop
-                arcade_dupes_skipped += len(drop)
-    arcade_sets = core_sets.get("mame", arcade_sets)
-    # The romof parents a set cannot boot without (neogeo, pgm…) come along whether or not
-    # the recipe ticked them: mslug on a card without neogeo.zip beside it refuses to boot.
-    # Every core, not just mame — FBNeo's dat lists no bios chips in its games at all.
-    # Parents first, so a build that runs out of room stops before the games needing them.
-    # One the core's own dat cannot build may come from a fallback dat (the 0.78 bios MAME
-    # 2003-Plus leans on); what nothing can build is reported, not guessed at.
-    arcade_bios_unavailable, fallback_bios = {}, {}
-    for core in arcade_cores:
-        dat = mameset.dat_path(core)
-        if not dat or not core_sets[core]:
-            continue
-        machines = arcadehealth.parse(dat)
-        parents = {}
-        for name in core_sets[core]:
-            for p in arcadehealth.needed_parents(machines, name):
-                parents[p] = parents.get(p, 0) + 1
-        if not parents:
-            continue
-        ok = mameset.assemblable(db, dat)
-        hold = sorted(p for p in parents if p in ok)
-        pending = {p: n for p, n in parents.items() if p not in ok}
-        plan = []
-        for alt in (arcadehealth.alt_dats(core, dat) if pending else []):
-            got = sorted(set(pending) & mameset.assemblable(db, alt))
-            if got:
-                plan.append((alt, got))
-                for g in got:
-                    pending.pop(g)
-        fallback_bios[core] = plan
-        arcade_bios_unavailable.update(pending)
-        core_sets[core] = hold + [x for x in core_sets[core] if x not in set(hold)]
-    arcade_sets = core_sets.get("mame", arcade_sets)
-    # Something to build on some core — arcade_sets alone only speaks for mame.
-    arcade_any = any(core_sets.values())
+    # The arcade half of the recipe, worked out once and shared: the export builds it and
+    # the card update reads it, so the two cannot disagree about what belongs on the card.
+    _ap = _arcade_plan(rows, arcade_core=arcade_core, arcade_status=arcade_status,
+                       distinct_games=distinct_games, wanted=arcade_wanted, db=db,
+                       progress=progress)
+    arcade_cores = _ap["arcade_cores"]
+    arcade_status = _ap["arcade_status"]
+    arcade_dupes_skipped = _ap["dupes_skipped"]
+    arcade_held_back = _ap["held_back"]
+    clones_pruned = _ap["clones_pruned"]
+    arcade_bios_unavailable = _ap["bios_unavailable"]
+    fallback_bios = _ap["fallback_bios"]
+    core_sets = _ap["core_sets"]
+    # Something to build on some core.
+    arcade_any = _ap["any"]
     arcade_reports = {}
     rows = [r for r in rows if (r["system"] or "").lower() != "arcade"]
     if sources:
@@ -611,7 +536,38 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                  "files": sum(f for _, f, _ in wipe_plan),
                  "bytes": sum(b for _, _, b in wipe_plan)}
 
+    # The reconcile's removals are PLANNED here, before the fit check, and performed
+    # after it. The order is the safety property: a card that still would not fit must
+    # refuse with its contents intact, and the removals' bytes count as room so the
+    # check passes on its own once they are gone.
     reserve = _reserve_bytes(dest)
+
+    rec_plan = None
+    if reconcile:
+        from . import cardindex
+        try:
+            cardindex.index_card(dest, db=db)
+        except OSError as e:
+            errors.append({"file": "", "error": f"could not read the card: {e}"})
+        rec_plan = cardindex.plan_update(dest, games, db=db, systems=systems,
+                                          evict=evict, protect_played=protect_played,
+                                          free_bytes=_free_bytes(dest),
+                                          reserve_bytes=reserve,
+                                          arcade={"core_sets": core_sets})
+        if progress:
+            progress(0, 0, f"planning the update ({len(rec_plan['remove'])} to remove, "
+                            f"{len(rec_plan['add'])} to add)…")
+    # A game the update evicted is still in the recipe — it was pushed off to make room
+    # for a better one, not dropped from the library. Copying it back would undo the
+    # eviction in the same run, so the copy loop steps over it.
+    evicted_items = {e.get("item_id") for e in (rec_plan or {}).get("evicted") or []
+                     if e.get("item_id")}
+    # A game the update could not fit is left off the card this time. The plan has
+    # already worked out what the card can hold, and a game that does not fit is not
+    # worth trading a better one for. Copying it anyway would run the card into its
+    # reserve and stop the run part-way through, so the copy loop steps over it too.
+    no_room_items = {e.get("item_id") for e in (rec_plan or {}).get("no_room") or []
+                     if e.get("item_id")}
 
     def room_for(nbytes):
         free = _free_bytes(dest)
@@ -657,8 +613,12 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         # selection's full bytes; without one, present same-size files are skipped and the
         # need reflects that. Clearing the ticked platforms counts as room the copy may use.
         if progress: progress(0, 0, "measuring what's left to copy…")
-        need = (sum(s[-1] or 0 for g in games for s in g["steps"]) if wipe
-                else _bytes_to_copy(games, roms))
+        # A game the update left off the card is not written, so it does not need room.
+        # Counting it would make the fit check refuse a run that is in fact going to fit.
+        copy_games = [g for g in games
+                      if g["row"]["item_id"] not in no_room_items] if rec_plan else games
+        need = (sum(s[-1] or 0 for g in copy_games for s in g["steps"]) if wipe
+                else _bytes_to_copy(copy_games, roms))
         if arcade_any:
             # A wipe clears the arcade folder before rebuilding it, so the sizing pass
             # must measure the FULL build — fresh=True — not the delta over the old
@@ -675,12 +635,21 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         if free is None:
             return {"error": f"cannot read free space on {dest} — is the card mounted?",
                     "copied": 0, "matched_files": len(rows), "by_system": {}, "errors": [],
-                    "dupes_skipped": dupes_skipped, "stopped": False}
-        room = free + (wiped["bytes"] if wipe else 0)
+                    "dupes_skipped": dupes_skipped, "stopped": False,
+                    "reconcile": _reconcile_report(rec_plan, None, dry_run)}
+        # The removals' bytes are room the copy may use, exactly as a cleared platform's
+        # are: the plan has already decided what comes off, and the check asks whether
+        # what is left on the card plus what goes on will fit. A refusal here leaves the
+        # card exactly as it was — nothing has been removed yet.
+        freed = rec_plan["bytes_remove"] if rec_plan else 0
+        room = free + (wiped["bytes"] if wipe else 0) + freed
         if need > room - reserve and not fill:
             gb = 1024 ** 3
             clearing = (f" ({(wiped['bytes'] / gb):.1f} GB more once the ticked platforms "
                         f"are cleared — still not enough)") if wipe else ""
+            if rec_plan and freed:
+                clearing += (f" ({freed / gb:.1f} GB more once the update removes "
+                             f"{len(rec_plan['remove'])} game(s) — still not enough)")
             return {"error": f"export needs {need / gb:.1f} GB but {dest} has "
                              f"{free / gb:.1f} GB free{clearing} "
                              f"({reserve / gb:.1f} GB is kept in reserve) — pick fewer "
@@ -688,11 +657,33 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                              f"card' to copy until it is nearly full",
                     "needed_bytes": need, "free_bytes": free, "reserve_bytes": reserve,
                     "copied": 0, "matched_files": len(rows), "by_system": {}, "errors": [],
-                    "dupes_skipped": dupes_skipped, "stopped": False}
+                    "dupes_skipped": dupes_skipped, "stopped": False,
+                    "reconcile": _reconcile_report(rec_plan, None, dry_run)}
         # The refusal is past: the plan's deletions can go ahead and make the room real.
         for child, _, _ in wipe_plan:
             if progress: progress(0, 0, f"clearing {child.name}…")
             shutil.rmtree(child, ignore_errors=True)
+
+    # The removals happen here, between the fit check and the copy: the card has been
+    # found to have room once they are gone, and the copy needs that room. What goes is
+    # written down first, so a removal is reversible by record.
+    reconcile_report = None
+    if rec_plan and rec_plan.get("remove") and not dry_run:
+        from . import cardindex
+        if progress:
+            progress(0, 0, f"removing {len(rec_plan['remove'])} game(s) from the card…")
+        reconcile_report = cardindex.apply_removals(
+            dest, rec_plan, db=db, stop=stop,
+            progress=(None if progress is None else
+                      lambda i, total, name: progress(i, total, f"removing {name}…")))
+        for e in reconcile_report.get("errors") or []:
+            errors.append({"file": e.get("entry") or "", "error": e.get("error") or ""})
+        if reconcile_report.get("removed"):
+            with db:
+                db.execute("INSERT INTO events(item_id,event,detail) "
+                           "VALUES(NULL,'card-update',?)",
+                           (f"{reconcile_report['removed']} game(s) removed from "
+                            f"{dest} to make room for better-ranked ones",))
 
     # A card filled to its reserve used to have no room left for the covers, and an
     # export that stopped there skipped artwork altogether: 2,793 games on a 256 GB card
@@ -722,6 +713,9 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
 
     copied = skipped = missing = 0
     planned_bytes = 0
+    # The games the card had no room for. They are wanted and still in the library, so
+    # they are not "missing" — they are what the card could not take this time.
+    no_room = []
     # A fill that runs out of room does not end the walk. Games further down the order
     # may already be on the card from an earlier run (a top-up after new imports): they
     # are still counted, so their covers and gamelist entries are written, while nothing
@@ -746,6 +740,12 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         if g["dropped"]:
             not_playable[g["folder"]] = not_playable.get(g["folder"], 0) + g["dropped"]
         if not g["steps"]:
+            continue
+        if r["item_id"] in evicted_items:
+            continue                      # pushed off the card by this very update
+        if r["item_id"] in no_room_items:
+            no_room.append(r["title"] or Path(g["entries"][0]).name
+                           if g["entries"] else r["title"] or "")
             continue
         base = roms / g["folder"] / g["sub"] if g["sub"] else roms / g["folder"]
         done = True
@@ -952,6 +952,23 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             gamelists = _write_gamelists(dest, card_games, db)
         except OSError as e:
             errors.append({"file": "gamelist.xml", "error": str(e)})
+    card_id = None
+    if not dry_run and card_games:
+        # Write down what the card now holds. `card_games` IS the record — the export
+        # knows exactly what it put there, so the index needs no guesswork and the card
+        # carries a manifest saying the same. Without this, an update would have to
+        # work out from names alone what was on the card, and a name is a guess.
+        from . import cardindex
+        try:
+            card_id = cardindex.record_export(dest, card_games, db=db, profile={
+                "systems": sorted(wanted_systems) if wanted_systems else None,
+                "layout": layout, "gates": {"wanted_only": wanted_only,
+                                            "keep_only": keep_only,
+                                            "rating_min": rating_min},
+                "arcade_core": arcade_core, "arcade_status": arcade_status,
+                "distinct_games": distinct_games, "chd": chd})
+        except OSError as e:
+            errors.append({"file": "card index", "error": str(e)})
     artwork_report = None
     art_owed[0] = art_owed[1] = 0            # what was set aside is now spent
     if artwork and not dry_run and card_games and not (stop is not None and stop.is_set()):
@@ -973,6 +990,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
             planned_bytes += sum(r.get("bytes_needed", 0) for r in arcade_reports.values())
     out = {"matched_files": len(rows), "copied": copied, "skipped": skipped,
            "missing": missing, "by_system": by_system, "errors": errors,
+           "no_room": no_room or None,
            "arcade": (next(iter(arcade_reports.values())) if len(arcade_reports) == 1
                       else arcade_reports),
            "arcade_bios_unavailable": arcade_bios_unavailable,
@@ -986,12 +1004,58 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
            "layout": layout, "not_playable": not_playable or None, "unpacked": unpacked,
            "converted_chd": converted, "decrypted_ps3": decrypted,
            "gamelists": gamelists,
+           "card_id": card_id,
+           "reconcile": _reconcile_report(rec_plan, reconcile_report, dry_run),
            "wanted_only": bool(wanted_only), "keep_only": bool(keep_only),
            "sources": sorted(sources) if sources else None, "stopped": stopped}
     if dry_run:
         out |= {"dry_run": True, "would_copy": sum(by_system.values()),
                 "would_copy_bytes": planned_bytes,
                 "would_copy_gb": round(planned_bytes / (1024 ** 3), 2)}
+    return out
+
+
+def _reconcile_report(plan, done, dry_run):
+    """What the update did, or would have done, to the card's contents.
+
+    A dry run reports the plan and removes nothing; a real run reports what it removed
+    and where the record of it was written.
+    """
+    if not plan:
+        return None
+    removed = done.get("removed") if done else 0
+    out = {
+        "card_id": plan.get("card_id"),
+        "card": plan.get("card"),
+        "would_remove": [{"folder": r.get("folder"), "entry": r.get("entry"),
+                          "title": r.get("title") or "", "item_id": r.get("item_id"),
+                          "bytes": r.get("bytes") or 0, "reason": r.get("reason"),
+                          "playcount": r.get("playcount") or 0}
+                         for r in plan.get("remove") or []],
+        "would_add": [{"folder": a.get("folder"), "entry": a.get("entry"),
+                       "title": a.get("title") or "", "item_id": a.get("item_id"),
+                       "bytes": a.get("bytes") or 0}
+                      for a in plan.get("add") or []],
+        "bytes_remove": plan.get("bytes_remove") or 0,
+        "bytes_add": plan.get("bytes_add") or 0,
+        "free_bytes": plan.get("free_bytes"),
+        "protected": [{"entry": p.get("entry"), "title": p.get("title") or "",
+                       "why": p.get("why") or ""} for p in plan.get("protected") or []],
+        # The games the card had no room for: still wanted, still in the library, and
+        # off the card for now. They are not a failure — a card cannot hold everything.
+        "no_room": [{"folder": a.get("folder"), "entry": a.get("entry"),
+                     "title": a.get("title") or "", "bytes": a.get("bytes") or 0}
+                    for a in plan.get("no_room") or []],
+        "untracked": [{"entry": u.get("entry"), "bytes": u.get("bytes") or 0}
+                      for u in plan.get("untracked") or []],
+    }
+    if dry_run:
+        out["dry_run"] = True
+    else:
+        out["removed"] = removed
+        out["bytes_freed"] = (done or {}).get("bytes_freed") or 0
+        out["manifest"] = (done or {}).get("manifest")
+        out["entries"] = (done or {}).get("entries") or []
     return out
 
 
@@ -1466,6 +1530,123 @@ def romset(profile, dest, leave_bytes=0, progress=None, db=None, stop=None,
             "media": media,
             **{k: v for k, v in r.items() if k != "sets"},
             "stopped": bool(r.get("stopped") or r.get("out_of_room"))}
+
+
+def _arcade_plan(rows, arcade_core="mame", arcade_status=None, distinct_games=False,
+                 wanted=True, db=None, progress=None):
+    """What the arcade half of a card should hold: the set names each core builds.
+
+    Arcade is built, not copied. One physical file belongs to many sets and
+    `files.matched_item_id` records a single owner, so copying matched files leaves every
+    set but one incomplete — galaga came out missing prom-2.5c that way. A flattened dump
+    also renames collisions (`prom-2.5c_7`), and MAME only looks for the canonical name.
+    `mameset.build` resolves each set's roms from the dat by hash and writes them under
+    the names MAME expects, devices included.
+
+    The export and the update both ask this, so they cannot disagree about what belongs
+    on the card. That matters: a card update that decided arcade held nothing would take
+    every set off the card as "no longer selected".
+
+    Returns a dict: `core_sets` ({core: [set names]}), `arcade_cores`, `arcade_status`,
+    `dupes_skipped`, `held_back` ({core: [...]}), `clones_pruned` ({core: [...]}),
+    `bios_unavailable`, `fallback_bios` ({core: [(dat, [names])]}), and `any` (whether
+    there is anything to build at all).
+    """
+    from . import mameset, arcadehealth
+    db = db or connect()
+    arcade_status = (arcade_status if arcade_status in arcadehealth.GATES
+                      else arcadehealth.DEFAULT_GATE)
+    if arcade_core == "all":
+        arcade_cores = ["mame", "fbneo", "mame2003"]   # one folder per core, under arcade/
+    elif arcade_core in mameset.PROFILES:
+        arcade_cores = [arcade_core]
+    else:
+        arcade_cores = ["mame"]
+    arcade_rows = ([r for r in rows if (r["system"] or "").lower() == "arcade"]
+                   if wanted else [])
+    dupes_skipped = 0
+    # The selection's order is the fill order (best game first), so an export that runs
+    # out of room misses the obscure tail, not the famous middle. 'One copy per game'
+    # reaches arcade too: the sets come from the same deduped rows the plan's arcade
+    # figure counts, or every clone variant of one game would build although the plan
+    # promised only one.
+    gating = bool(arcade_rows) and arcade_status != "all"
+    known, held_back = {}, {}
+    if gating:
+        asked = list(dict.fromkeys(
+            (r["external_id"] or "").split("/", 1)[-1] for r in arcade_rows))
+        for core in arcade_cores:
+            if progress: progress(0, 0, f"judging {core} arcade sets…")
+            arcadehealth.evaluate(core, db)
+            known[core] = arcadehealth.statuses(core, db)
+            # Reported against everything the recipe asked for: the rows filter below
+            # removes the sets no core runs before the per-core gate ever sees them.
+            held = arcadehealth.gate(core, asked, arcade_status, db, known=known[core])[1]
+            if held:
+                held_back[core] = held
+        # Rows no chosen core can run go before the title collapse below, or a broken
+        # variant could win a game's one slot over a working one.
+        dead = arcadehealth.blocked(arcade_cores, arcade_status, db)
+        arcade_rows = [r for r in arcade_rows
+                       if (r["external_id"] or "").split("/", 1)[-1] not in dead]
+    if distinct_games and arcade_rows:
+        # Same bytes only: arcade's one-copy-per-game is the dat's clone book
+        # (`_prune_clones` below). By title, Sega's tetris and Atari's atetris were one
+        # game and only one reached the card.
+        arcade_rows, dupes_skipped = _canonical(arcade_rows, False)
+    arcade_sets = list(dict.fromkeys(
+        (r["external_id"] or "").split("/", 1)[-1] for r in arcade_rows))
+    # Each core has its own romset book, so the clone pruning is per core: two sets of
+    # one MAME family must not both reach a MAME card, but an FBNeo family may differ.
+    # The mame romof parents below follow mame's own pruned list.
+    core_sets = {core: arcade_sets for core in arcade_cores}
+    if gating:
+        for core in arcade_cores:
+            core_sets[core] = arcadehealth.gate(core, arcade_sets, arcade_status,
+                                                db, known=known[core])[0]
+    clones_pruned = {}
+    if distinct_games and arcade_sets:
+        for core in arcade_cores:
+            core_sets[core], drop = _prune_clones(db, core, core_sets[core])
+            if drop:
+                clones_pruned[core] = drop
+                dupes_skipped += len(drop)
+    # The romof parents a set cannot boot without (neogeo, pgm…) come along whether or not
+    # the recipe ticked them: mslug on a card without neogeo.zip beside it refuses to boot.
+    # Every core, not just mame — FBNeo's dat lists no bios chips in its games at all.
+    # Parents first, so a build that runs out of room stops before the games needing them.
+    # One the core's own dat cannot build may come from a fallback dat (the 0.78 bios MAME
+    # 2003-Plus leans on); what nothing can build is reported, not guessed at.
+    bios_unavailable, fallback_bios = {}, {}
+    for core in arcade_cores:
+        dat = mameset.dat_path(core)
+        if not dat or not core_sets[core]:
+            continue
+        machines = arcadehealth.parse(dat)
+        parents = {}
+        for name in core_sets[core]:
+            for p in arcadehealth.needed_parents(machines, name):
+                parents[p] = parents.get(p, 0) + 1
+        if not parents:
+            continue
+        ok = mameset.assemblable(db, dat)
+        hold = sorted(p for p in parents if p in ok)
+        pending = {p: n for p, n in parents.items() if p not in ok}
+        plan = []
+        for alt in (arcadehealth.alt_dats(core, dat) if pending else []):
+            got = sorted(set(pending) & mameset.assemblable(db, alt))
+            if got:
+                plan.append((alt, got))
+                for g in got:
+                    pending.pop(g, None)
+        fallback_bios[core] = plan
+        bios_unavailable.update(pending)
+        core_sets[core] = hold + [x for x in core_sets[core] if x not in set(hold)]
+    return {"core_sets": core_sets, "arcade_cores": arcade_cores,
+            "arcade_status": arcade_status, "dupes_skipped": dupes_skipped,
+            "held_back": held_back, "clones_pruned": clones_pruned,
+            "bios_unavailable": bios_unavailable, "fallback_bios": fallback_bios,
+            "any": any(core_sets.values())}
 
 
 def _defer(dat, other_dat, sets, theirs):

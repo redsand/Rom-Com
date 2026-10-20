@@ -7,6 +7,7 @@ from .db import connect
 from .catalog import import_dats
 from .scanner import scan, adopt_unmatched
 from .organizer import organize, romset
+from .exportplan import _flag as _flag
 from .report import summary
 from .planner import bulk_plan, next_individuals, next_picks
 from .doctor import run as doctor_run
@@ -525,12 +526,13 @@ def create_app():
     jobs = {k: {"running": False, "done": 0, "total": 0, "current": "", "stats": None,
                 "result": None, "error": None, "last_beat": None}
             for k in ("import", "scan", "organize", "romset", "adopt", "acquire", "community",
-                      "artwork", "maintain")}
+                      "artwork", "maintain", "card")}
     job_lock = threading.Lock()
     # Jobs the UI can stop. Acquire is stopped through the watcher toggle (acquirer.STOP),
     # which the watchdog also reads, so it is deliberately not here.
     stops = {"organize": threading.Event(), "romset": threading.Event(),
-             "artwork": threading.Event(), "maintain": threading.Event()}
+             "artwork": threading.Event(), "maintain": threading.Event(),
+             "card": threading.Event()}
 
     def _job_fn(kind, params):
         if kind == "import":
@@ -562,7 +564,30 @@ def create_app():
                                           artwork=bool(params.get("artwork")),
                                           exclude_labels=params.get("exclude_labels"),
                                           layout=params.get("layout") or "flat",
-                                          chd=params.get("chd", True) is not False)
+                                          chd=_flag(params.get("chd"), True))
+        if kind == "card":
+            # An update: the card is made to match the recipe, not just topped up. The
+            # removals are planned and shown before they happen, so the owner sees what
+            # would come off and says yes.
+            g = _export_gates(params.get("gates"))
+            return lambda prog: organize(params["path"], systems=params.get("systems") or None,
+                                          progress=prog,
+                                          wanted_only=g["wanted_only"],
+                                          keep_only=g["keep_only"],
+                                          rating_min=g["rating_min"],
+                                          stop=stops["card"],
+                                          fill=bool(params.get("fill")),
+                                          distinct_games=bool(params.get("distinct_games")),
+                                          arcade_core=params.get("arcade_core") or "mame",
+                                          arcade_status=params.get("arcade_status"),
+                                          artwork=bool(params.get("artwork")),
+                                          exclude_labels=params.get("exclude_labels"),
+                                          layout=params.get("layout") or "flat",
+                                          chd=_flag(params.get("chd"), True),
+                                          reconcile=True,
+                                          evict=_flag(params.get("evict"), True),
+                                          protect_played=_flag(params.get("protect_played"),
+                                                              True))
         if kind == "romset" and params["profile"] == "card":
             from .organizer import arcade_card
             return lambda prog: arcade_card(params["path"], progress=prog, stop=stops["romset"],
@@ -725,8 +750,9 @@ def create_app():
             if kind not in jobs: continue
             # Never resume an export. It writes to a device the owner may have pulled or
             # swapped, and restarting the service was the only way to stop one — so resuming
-            # turned "stop this" into "start it again".
-            if kind in ("organize", "romset"): continue
+            # turned "stop this" into "start it again". A card update is the same: it
+            # removes games from a card the owner may have swapped.
+            if kind in ("organize", "romset", "card"): continue
             if params.get("path") and not Path(params["path"]).exists(): continue
             _launch(kind, params)
 
@@ -838,7 +864,7 @@ def create_app():
                                       "artwork": bool(body.get("artwork")),
                                       "exclude_labels": body.get("exclude_labels"),
                                       "layout": body.get("layout") or "flat",
-                                      "chd": body.get("chd", True) is not False,
+                                      "chd": _flag(body.get("chd"), True),
                                       "gates": _export_gates(body.get("gates"))})
 
     @app.get("/api/artwork")
@@ -1029,6 +1055,123 @@ def create_app():
         if not exportplan.delete_profile(pid):
             return jsonify({"error": "no such profile"}), 404
         return jsonify({"deleted": pid})
+
+    # ------------------------------------------------------------------------ the card
+    def _card_plan(body):
+        """What an update of this card would do — the preview, and the same computation
+        the real run makes.
+
+        The plan is built from the export's own recipe, so what the preview says and what
+        the run does cannot drift apart. Nothing is written and nothing is deleted.
+        """
+        from . import cardindex
+        from .organizer import _arcade_plan, _plan_games, _selection, _canonical
+        body = body or {}
+        path = (body.get("path") or "").strip().strip('"')
+        if not path:
+            return None, {"error": "a card path is required"}, 400
+        g = _export_gates(body.get("gates"))
+        systems = [s for s in (body.get("systems") or []) if s]
+        db = connect()
+        try:
+            rows = _selection(g["wanted_only"], g["keep_only"], g["rating_min"],
+                              body.get("exclude_labels"))
+        except Exception as e:
+            return None, {"error": f"could not read the library: {e}"}, 500
+        wanted = {s.lower() for s in systems} if systems else None
+        if wanted is not None:
+            rows = [r for r in rows if (r["system"] or "").lower() in wanted]
+        rows, _ = _canonical(rows, bool(body.get("distinct_games")))
+        layout = body.get("layout") if body.get("layout") in ("flat", "ranked") else "flat"
+        games = _plan_games(rows, layout, chd=_flag(body.get("chd"), True),
+                            one_file=bool(body.get("distinct_games")))
+        # Arcade is built rather than copied, so it is not in `games` — but the sets are
+        # on the card, and the update has to know they belong there. The same helper the
+        # export uses, so the preview and the run agree.
+        arcade = _arcade_plan(rows, arcade_core=body.get("arcade_core") or "mame",
+                              arcade_status=body.get("arcade_status"),
+                              distinct_games=bool(body.get("distinct_games")),
+                              wanted=(wanted is None or "arcade" in wanted), db=db)
+        try:
+            cardindex.index_card(path, db=db)
+        except OSError as e:
+            return None, {"error": f"could not read the card: {e}"}, 400
+        plan = cardindex.plan_update(
+            path, games, db=db, systems=systems,
+            evict=_flag(body.get("evict"), True),
+            protect_played=_flag(body.get("protect_played"), True),
+            arcade={"core_sets": arcade["core_sets"]})
+        return plan, None, 200
+
+    @app.post("/api/card/plan")
+    def api_card_plan():
+        """Preview an update: what would come off the card, what would go on, and why."""
+        plan, err, code = _card_plan(request.get_json(force=True, silent=True) or {})
+        if err:
+            return jsonify(err), code
+        return jsonify({
+            "card_id": plan["card_id"], "card": plan["card"],
+            "remove": [{"folder": r.get("folder"), "entry": r.get("entry"),
+                        "title": r.get("title") or "", "item_id": r.get("item_id"),
+                        "bytes": r.get("bytes") or 0, "reason": r.get("reason"),
+                        "playcount": r.get("playcount") or 0,
+                        "last_played": r.get("last_played")}
+                       for r in plan.get("remove") or []],
+            "add": [{"folder": a.get("folder"), "entry": a.get("entry"),
+                     "title": a.get("title") or "", "item_id": a.get("item_id"),
+                     "bytes": a.get("bytes") or 0}
+                    for a in plan.get("add") or []],
+            "protected": [{"folder": p.get("folder"), "entry": p.get("entry"),
+                           "title": p.get("title") or "", "why": p.get("why") or ""}
+                          for p in plan.get("protected") or []],
+            "no_room": [{"folder": a.get("folder"), "entry": a.get("entry"),
+                         "title": a.get("title") or "", "bytes": a.get("bytes") or 0}
+                        for a in plan.get("no_room") or []],
+            "untracked": [{"folder": u.get("folder"), "entry": u.get("entry"),
+                           "bytes": u.get("bytes") or 0} for u in plan.get("untracked") or []],
+            "bytes_remove": plan.get("bytes_remove") or 0,
+            "bytes_add": plan.get("bytes_add") or 0,
+            "free_bytes": plan.get("free_bytes"),
+            "reserve_bytes": plan.get("reserve_bytes"),
+            "kept": len(plan.get("keep") or [])})
+
+    @app.get("/api/card/index")
+    def api_card_index():
+        """What the app believes is on a card — the index, from the database.
+
+        This is the memory of a card in a drawer: it does not need the card mounted.
+        """
+        from . import cardindex
+        path = (request.args.get("path") or "").strip().strip('"')
+        if not path:
+            return jsonify({"error": "a card path is required"}), 400
+        return jsonify(cardindex.stored(path))
+
+    @app.post("/api/card/update")
+    def api_card_update():
+        """Update a card: make it match the recipe, and put better-ranked games on it.
+
+        The removals are planned by the same code the preview uses, and the plan is
+        reported in the job's result — so an update that removed something is always
+        explainable, and always on the record.
+        """
+        body = request.get_json(force=True, silent=True) or {}
+        path = _checked_path(body, must_exist=False)
+        if not path:
+            return jsonify({"error": "a card path is required"}), 400
+        systems = [s for s in (body.get("systems") or []) if s]
+        return start_job("card", {"path": path, "systems": systems,
+                                  "fill": bool(body.get("fill")),
+                                  "distinct_games": bool(body.get("distinct_games")),
+                                  "arcade_core": body.get("arcade_core") or "mame",
+                                  "arcade_status": body.get("arcade_status"),
+                                  "artwork": bool(body.get("artwork")),
+                                  "exclude_labels": body.get("exclude_labels"),
+                                  "layout": body.get("layout") or "flat",
+                                  "chd": _flag(body.get("chd"), True),
+                                  "evict": _flag(body.get("evict"), True),
+                                  "protect_played": _flag(body.get("protect_played"), True),
+                                  "gates": _export_gates(body.get("gates"))})
 
     @app.post("/api/job/<kind>/cancel")
     def api_job_cancel(kind):

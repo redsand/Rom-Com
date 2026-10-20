@@ -1,4 +1,5 @@
 import hashlib, zlib
+from pathlib import Path
 from romcom.db import connect
 from romcom.scanner import scan
 from romcom.organizer import organize
@@ -1019,3 +1020,185 @@ def test_games_go_into_a_roms_folder_and_an_old_card_is_rearranged(tmp_path, mon
     assert (sd / "ES-DE" / "gamelists").exists() and (sd / "DCIM").exists()
     organize(sd / "ROMs")                                 # the ROMs folder typed: same card
     assert not (sd / "ROMs" / "ROMs").exists()
+
+
+# ------------------------------------------------------------------- the card reconcile
+def _two_roms(tmp_path, monkeypatch, old_size=1000, new_size=1000, keep=True):
+    """Two games in the library, one better-ranked than the other.
+
+    Both are wanted, so the export's "wanted only" gate selects them. `keep` marks
+    them as earning a slot on the card, which is what the export's "kept only" gate
+    selects on — and what protects a game from being traded away.
+    """
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "test.db"))
+    roms = tmp_path / "roms"; roms.mkdir(exist_ok=True)
+    db = connect()
+    for iid, title, score, name, size in (("nes-old", "Old Game", 10, "Old Game.nes", old_size),
+                                           ("nes-new", "New Game", 99, "New Game.nes", new_size)):
+        f = roms / name; f.write_bytes(b"x" * size)
+        with db:
+            db.execute("INSERT INTO items(id,title,system,community_score,keep,wanted) "
+                       "VALUES(?,?,?,?,?,1)",
+                       (iid, title, "nes", score, 1 if keep else 0))
+            db.execute("INSERT INTO files(path,bytes,matched_item_id) VALUES(?,?,?)",
+                       (str(f), size, iid))
+    return db
+
+
+def _drop_from_recipe(db, item_id):
+    """Take a game out of the recipe: it is no longer marked wanted."""
+    with db:
+        db.execute("UPDATE items SET wanted=0 WHERE id=?", (item_id,))
+
+
+def _card_disk(monkeypatch, card, headroom=5000, reserve=1024):
+    """A card whose free space follows what is actually on it.
+
+    The plain `_fake_disk` is a fixed number, so a removal frees nothing and a card
+    with no room stays a card with no room — and the trade this feature exists for
+    could never happen. This one measures the card, so taking a game off really does
+    make room for the next one.
+
+    `headroom` is how much room the card has left over the games it holds, and
+    `reserve` the space an export keeps free. They are small on purpose: a card with a
+    gigabyte in reserve cannot hold a 9 KB ROM at all, and the trade would never be
+    reachable.
+    """
+    from collections import namedtuple
+    Usage = namedtuple("Usage", "total used free")
+
+    def used_now():
+        used = 0
+        for f in Path(card).rglob("*"):
+            try:
+                if f.is_file():
+                    used += f.stat().st_size
+            except OSError:
+                pass
+        return used
+
+    # The card's capacity is fixed; its free space moves as games come and go.
+    total = used_now() + headroom
+
+    def usage(p):
+        used = used_now()
+        return Usage(total, used, total - used)
+
+    monkeypatch.setattr("romcom.organizer.shutil.disk_usage", usage)
+    monkeypatch.setattr("romcom.organizer._reserve_bytes", lambda d: reserve)
+    monkeypatch.setattr("romcom.organizer._free_bytes",
+                        lambda d: usage(d).free)
+
+
+def test_an_update_takes_off_a_game_the_recipe_no_longer_selects(tmp_path, monkeypatch):
+    """The point of the feature: as new titles come in, the old ones go — but only the
+    ones the library no longer wants, and only from a card RomCom wrote."""
+    db = _two_roms(tmp_path, monkeypatch)
+    dest = tmp_path / "sd"
+    organize(dest, systems=["nes"], wanted_only=True)
+    assert (dest / "ROMs" / "nes" / "Old Game.nes").exists()
+    _drop_from_recipe(db, "nes-old")
+    r = organize(dest, systems=["nes"], wanted_only=True, reconcile=True)
+    assert r["reconcile"]["removed"] == 1
+    assert not (dest / "ROMs" / "nes" / "Old Game.nes").exists()
+    assert (dest / "ROMs" / "nes" / "New Game.nes").exists()
+
+
+def test_an_update_leaves_the_owners_own_files_alone(tmp_path, monkeypatch):
+    """A file the library cannot name is the owner's own. An update never takes it off,
+    whatever else it does."""
+    db = _two_roms(tmp_path, monkeypatch)
+    dest = tmp_path / "sd"
+    organize(dest, systems=["nes"], wanted_only=True)
+    own = dest / "ROMs" / "nes" / "MyOwnSave.nes"
+    own.write_bytes(b"mine")
+    _drop_from_recipe(db, "nes-old")
+    r = organize(dest, systems=["nes"], wanted_only=True, reconcile=True)
+    assert own.exists()
+    assert any(u["entry"] == "MyOwnSave.nes" for u in r["reconcile"]["untracked"])
+
+
+def test_an_update_that_will_not_fit_refuses_with_the_card_intact(tmp_path, monkeypatch):
+    """A card that still would not fit after the removals refuses — and refuses BEFORE
+    anything is removed, so the card is left exactly as it was."""
+    db = _two_roms(tmp_path, monkeypatch)
+    dest = tmp_path / "sd"
+    organize(dest, systems=["nes"], wanted_only=True)
+    _drop_from_recipe(db, "nes-old")
+    # A card with no room at all: the copy cannot fit, so the run must refuse.
+    _fake_disk(monkeypatch, free=0, total=100 * 1024 ** 3)
+    r = organize(dest, systems=["nes"], wanted_only=True, reconcile=True)
+    assert "error" in r
+    assert (dest / "ROMs" / "nes" / "Old Game.nes").exists()   # not removed
+    assert (dest / "ROMs" / "nes" / "New Game.nes").exists()
+
+
+def test_an_update_dry_run_removes_nothing(tmp_path, monkeypatch):
+    """The preview is the plan; it deletes nothing."""
+    db = _two_roms(tmp_path, monkeypatch)
+    dest = tmp_path / "sd"
+    organize(dest, systems=["nes"], wanted_only=True)
+    _drop_from_recipe(db, "nes-old")
+    r = organize(dest, systems=["nes"], wanted_only=True, reconcile=True, dry_run=True)
+    assert (dest / "ROMs" / "nes" / "Old Game.nes").exists()
+    assert r["reconcile"]["dry_run"] is True
+    assert len(r["reconcile"]["would_remove"]) == 1
+
+
+def test_an_update_writes_down_what_it_removes_before_it_removes_it(tmp_path, monkeypatch):
+    """The house rule: the record precedes the deletion, so a removal is reversible."""
+    monkeypatch.chdir(tmp_path)      # the manifest lands in backups/ relative to here
+    db = _two_roms(tmp_path, monkeypatch)
+    dest = tmp_path / "sd"
+    organize(dest, systems=["nes"], wanted_only=True)
+    _drop_from_recipe(db, "nes-old")
+    r = organize(dest, systems=["nes"], wanted_only=True, reconcile=True)
+    manifest = r["reconcile"]["manifest"]
+    assert manifest and manifest.endswith(".json")
+    import json as _json
+    m = _json.loads(open(manifest, encoding="utf-8").read())
+    assert m["removed"][0]["entry"] == "Old Game.nes"
+    assert m["removed"][0]["source_path"]        # the library file, so it can go back
+    # ...and the removal is on the events table, as every other removal is.
+    ev = db.execute("SELECT detail FROM events WHERE event='card-removed'").fetchone()
+    assert ev and "Old Game" in ev["detail"]
+
+
+def test_a_better_game_takes_the_space_of_a_worse_one(tmp_path, monkeypatch):
+    """The trade: a well-ranked newcomer takes the slot of a badly-ranked game, and the
+    evicted game is NOT copied straight back."""
+    db = _two_roms(tmp_path, monkeypatch, old_size=9000, new_size=9000, keep=False)
+    dest = tmp_path / "sd"
+    organize(dest, systems=["nes"], wanted_only=True)
+    # The old game is on the card; the new one is in the library but not on it.
+    (dest / "ROMs" / "nes" / "New Game.nes").unlink()
+    # A card with no room for the newcomer: it has to take the slot from the old game.
+    _card_disk(monkeypatch, dest, headroom=5000, reserve=1024)
+    r = organize(dest, systems=["nes"], wanted_only=True, reconcile=True, evict=True)
+    rec = r["reconcile"]
+    assert rec["removed"] == 1, rec
+    gone = rec["entries"][0]
+    assert gone["entry"] == "Old Game.nes" and gone["reason"] == "outranked"
+    # The old game is still in the recipe — it must not come back.
+    assert not (dest / "ROMs" / "nes" / "Old Game.nes").exists()
+    assert (dest / "ROMs" / "nes" / "New Game.nes").exists()
+
+
+def test_a_kept_game_is_never_traded_away(tmp_path, monkeypatch):
+    """A game marked keep earned its slot. An update never trades it for a better one."""
+    db = _two_roms(tmp_path, monkeypatch, old_size=9000, new_size=9000, keep=True)
+    dest = tmp_path / "sd"
+    organize(dest, systems=["nes"], wanted_only=True)
+    (dest / "ROMs" / "nes" / "New Game.nes").unlink()
+    _card_disk(monkeypatch, dest, headroom=5000, reserve=1024)
+    r = organize(dest, systems=["nes"], wanted_only=True, reconcile=True, evict=True)
+    # The old game is marked keep, so it may not go: the update leaves it where it is
+    # and says why, and the newcomer that wanted its slot is left off the card.
+    assert (dest / "ROMs" / "nes" / "Old Game.nes").exists()
+    assert not (dest / "ROMs" / "nes" / "New Game.nes").exists()
+    rec = r.get("reconcile") or {}
+    assert rec.get("removed") == 0
+    assert any(p["entry"] == "Old Game.nes" for p in rec.get("protected") or [])
+    assert [a["entry"] for a in rec.get("no_room") or []] == ["New Game.nes"]
+    assert any(p["entry"] == "Old Game.nes" for p in (r.get("reconcile") or {}).get("protected")
+               or [])

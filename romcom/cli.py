@@ -430,6 +430,50 @@ def cmd_organize(a):
                              layout=a.layout, chd=not a.no_chd), indent=2))
 
 
+def cmd_card(a):
+    """What is on a card, and what an update of it would do."""
+    from . import cardindex
+    if a.action == "index":
+        r = cardindex.index_card(a.card)
+        print(json.dumps(r, indent=2, default=str))
+        return
+    # card-update: the plan, and — with --apply — the removals and the copy.
+    #
+    # The plan is a dry run of the real update, not a second implementation of it: the
+    # export's own reconcile does the planning, so what the preview says and what the run
+    # does cannot drift apart.
+    from .organizer import organize
+    r = organize(a.card, systems=a.system or None, distinct_games=a.distinct_games,
+                 arcade_core=a.arcade_core or "mame", arcade_status=a.arcade_status,
+                 reconcile=True, evict=not a.no_evict,
+                 protect_played=not a.no_protect_played, dry_run=not a.apply)
+    rec = r.get("reconcile") or {}
+    if not a.apply:
+        print(json.dumps({"card": rec.get("card"), "card_id": rec.get("card_id"),
+                          "remove": [{"entry": x["entry"], "title": x.get("title") or "",
+                                      "reason": x.get("reason"), "bytes": x.get("bytes") or 0}
+                                     for x in rec.get("would_remove") or []],
+                          "add": [{"entry": x["entry"], "title": x.get("title") or "",
+                                   "bytes": x.get("bytes") or 0}
+                                  for x in rec.get("would_add") or []],
+                          "protected": [{"entry": p.get("entry"), "why": p.get("why")}
+                                        for p in rec.get("protected") or []],
+                          "no_room": [{"entry": a.get("entry"), "title": a.get("title") or "",
+                                       "bytes": a.get("bytes") or 0}
+                                      for a in rec.get("no_room") or []],
+                          "bytes_remove": rec.get("bytes_remove"),
+                          "bytes_add": rec.get("bytes_add")}, indent=2, default=str))
+        print(f"\n{len(rec.get('would_remove') or [])} game(s) would come off, "
+              f"{len(rec.get('would_add') or [])} would go on"
+              + (f", {len(rec.get('no_room') or [])} would not fit"
+                 if rec.get("no_room") else "")
+              + f" — run again with --apply to do it")
+        return
+    print(json.dumps(r, indent=2, default=str))
+    print(f"\n{rec.get('removed', 0)} game(s) removed, {r.get('copied', 0)} copied"
+          + (f" — what went is written down in {rec['manifest']}" if rec.get("manifest") else ""))
+
+
 def cmd_artwork(a):
     from . import artwork
     if a.action == "fetch":
@@ -682,6 +726,24 @@ def main():
     og.add_argument("--layout",choices=["flat","ranked"],default="flat",help="flat: every game in its ES-DE system folder (default); ranked: <system>/<score>/ folders")
     og.add_argument("--no-chd",action="store_true",help="copy/unpack disc images as they are instead of converting .cue/.gdi (and PS2 .iso) to CHD")
     og.set_defaults(fn=cmd_organize)
+    cd=s.add_parser("card", help="what is on an SD card, and what an update of it would do")
+    cd.add_argument("action", choices=["index", "update"], nargs="?", default="index",
+                    help="index: read the card and record what is on it; update: reconcile it with the recipe")
+    cd.add_argument("card", help="the card, e.g. J:\\")
+    cd.add_argument("--apply", action="store_true",
+                    help="card update: actually take the games off (without it, only the plan is shown)")
+    cd.add_argument("--system", action="append", help="limit the update to these systems")
+    cd.add_argument("--distinct-games", action="store_true", help="one copy per game")
+    cd.add_argument("--no-evict", action="store_true",
+                    help="do not trade a game for a better-ranked one; only take off what fell out of the recipe")
+    cd.add_argument("--no-protect-played", action="store_true",
+                    help="allow a game the handheld has played to be traded away")
+    cd.add_argument("--arcade-core", default="mame",
+                    help="which romset the card's arcade folder gets: mame, fbneo, mame2003, all")
+    cd.add_argument("--arcade-status", choices=["all", "no_broken", "works_only"],
+                    default="no_broken",
+                    help="the arcade health gate: no_broken (default), works_only, or all")
+    cd.set_defaults(fn=cmd_card)
     rec=s.add_parser("recommend", help="the n best games to play next, in hand now")
     rec.add_argument("--system", help="one system, or omit for the whole shelf")
     rec.add_argument("--n", type=int, default=5)

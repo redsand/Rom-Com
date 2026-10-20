@@ -27,16 +27,37 @@ def reserve_for(total_bytes):
 
 
 # ------------------------------------------------------------------------------ profiles
+def _flag(v, default=False):
+    """A checkbox, as the browser sends it.
+
+    An HTML checkbox arrives as `true`/`false` from a JSON body, but a form post, a
+    saved profile written by an older version, or a hand-edited row can all arrive as
+    `0`, `1`, `"on"` or `""`. `is not False` reads the number `0` as "on" — 0 and False
+    are different objects — so a policy that means "off" would silently stay on.
+    """
+    if v is None:
+        return default
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() in ("1", "true", "yes", "on")
+
+
 def _clean(p):
     """Only the fields a profile means, with types fixed — the browser is not trusted to
     send a well-formed one."""
     gates = p.get("gates") or {}
     cap = p.get("capacity_gb")
+    budget = p.get("budget_gb")
     return {"name": str(p.get("name") or "").strip()[:80] or "Untitled card",
             "path": str(p.get("path") or "").strip(),
             "systems": sorted({str(s) for s in (p.get("systems") or []) if s}),
             "fill": bool(p.get("fill")),
             "capacity_gb": float(cap) if cap not in (None, "", 0, "0") else None,
+            # How much of the card games may take. `capacity_gb` is how big the card is;
+            # this is how much of it the games get. None means the card's own free space
+            # decides, which is what an unstated budget should mean.
+            "budget_gb": (float(budget) if budget not in (None, "", 0, "0")
+                          else None),
             "gates": {"wanted_only": bool(gates.get("wanted_only")),
                       "keep_only": bool(gates.get("keep_only")),
                       "rating_min": max(0, min(10, int(gates.get("rating_min") or 0)))},
@@ -47,11 +68,16 @@ def _clean(p):
                 "all", "no_broken", "works_only") else None,
             "artwork": bool(p.get("artwork")),
             "layout": p.get("layout") if p.get("layout") in ("flat", "ranked") else "flat",
-            "chd": p.get("chd", True) is not False,
+            "chd": _flag(p.get("chd"), True),
             # None (never chosen) keeps the default; a list, even empty, is the choice.
             "exclude_labels": (None if p.get("exclude_labels") is None
                                else labels.normalize_exclude(p.get("exclude_labels"))),
-            "wipe": bool(p.get("wipe"))}
+            "wipe": bool(p.get("wipe")),
+            # The update's own policy. `evict` lets a better-ranked newcomer take the
+            # space of a worse game; `protect_played` keeps a game the owner has played
+            # on the handheld out of the trade.
+            "evict": _flag(p.get("evict")),
+            "protect_played": _flag(p.get("protect_played"), True)}
 
 
 def list_profiles():

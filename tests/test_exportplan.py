@@ -92,6 +92,29 @@ def test_profiles_round_trip_and_are_cleaned(monkeypatch, tmp_path):
     assert c.delete(f"/api/export/profiles/{made['id']}").status_code == 404
 
 
+def test_a_profile_carries_the_updates_own_policy(monkeypatch, tmp_path):
+    """The update's policy is part of the profile: it says whether a better-ranked game
+    may take a slot, and whether a game the owner has played is protected."""
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "t.db"))
+    c = create_app().test_client()
+    made = c.post("/api/export/profiles", json={
+        "name": "Odin 2", "systems": ["nes"], "evict": 1, "protect_played": 0,
+        "budget_gb": "8"}).get_json()
+    assert made["evict"] is True
+    assert made["protect_played"] is False
+    assert made["budget_gb"] == 8.0
+    # An unstated policy takes the safe default: evict only when asked, and never trade
+    # away something the owner has played.
+    plain = c.post("/api/export/profiles", json={"name": "plain", "systems": ["nes"]}).get_json()
+    assert plain["evict"] is False
+    assert plain["protect_played"] is True
+    assert plain["budget_gb"] is None
+    # And it survives the round trip, so a saved card remembers what it agreed to.
+    [got] = [p for p in c.get("/api/export/profiles").get_json() if p["id"] == made["id"]]
+    assert got["evict"] is True and got["protect_played"] is False
+    assert got["budget_gb"] == 8.0
+
+
 def test_plan_endpoint_plans_a_card_by_size(monkeypatch, tmp_path):
     _library(monkeypatch, tmp_path, {"3ds": [(4 * G, 0, None)], "gba": [(200 * G, 0, None)]})
     c = create_app().test_client()

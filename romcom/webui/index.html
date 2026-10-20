@@ -300,13 +300,44 @@
         are unpacked, and a multi-file disc becomes one entry. gamelist.xml gives ES-DE each game's
         name, rating and genre. Best-rated games go first (your rating or the crowd's score). Nothing is moved or
         deleted; files already on the card are skipped, so re-running tops up. An export that would not
-        fit is refused before anything is written, and a card is never filled past its last 1 GB (or 1%).</p>
+        fit is refused before anything is written, and a card is never filled past its last 1 GB (or 1%).
+        To take old titles off the card, use <b>Update card</b> below.</p>
       <div id="org-progress" hidden>
         <div class="meter big"><i id="org-bar" style="width:0%"></i></div>
         <div class="sub" id="org-current"></div>
         <button id="org-stop" class="ghost">Stop export</button>
       </div>
       <div id="org-result"></div>
+    </div>
+
+    <div class="card" id="card-update-card">
+      <h2>Update card <span class="hint">make the card match the recipe — take old titles off, put better-ranked ones on</span></h2>
+      <div class="filters">
+        <input id="card-path" type="search" placeholder="E:\ (the SD card)" spellcheck="false" style="width:340px">
+        <button class="ghost browse" data-target="#card-path">Browse&hellip;</button>
+        <button id="card-preview" class="ghost" disabled>Preview</button>
+        <button id="card-apply" class="primary" disabled>Update the card</button>
+      </div>
+      <div class="filters">
+        <label class="sub" title="Use the export card's platforms, gates and settings, so the update and the export agree about what belongs on the card">
+          <input type="checkbox" id="card-follow" checked> use the export card's picks</label>
+        <label class="sub" title="Let a well-ranked newcomer take the space of a badly-ranked game. Off: only games that fell out of the recipe come off">
+          <input type="checkbox" id="card-evict" checked> make room for better-ranked games</label>
+        <label class="sub" title="A game you have played on the handheld keeps its place, however well or badly it ranks">
+          <input type="checkbox" id="card-protect" checked> protect games you've played</label>
+      </div>
+      <p class="sub">An export only ever adds. This makes the card match the recipe: games the library no
+        longer selects come off, and — if the card is full — a better-ranked newcomer can take the space of a
+        worse one. Games you marked <b>kept</b>, games the handheld has played, and anything the library
+        cannot name are never taken off. Nothing is deleted until you have seen the preview; what is removed
+        is written down first, in <code>backups\card-removed-*.json</code>, so a removal is reversible by record.</p>
+      <div id="card-plan" hidden></div>
+      <div id="card-progress" hidden>
+        <div class="meter big"><i id="card-bar" style="width:0%"></i></div>
+        <div class="sub" id="card-current"></div>
+        <button id="card-stop" class="ghost">Stop</button>
+      </div>
+      <div id="card-result"></div>
     </div>
 
     <div class="card" id="upkeep-card">

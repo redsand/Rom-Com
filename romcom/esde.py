@@ -721,3 +721,38 @@ def rating(score):
     if not score:
         return None
     return round(min(100, max(0, score)) / 10) / 10
+
+
+def read_gamelist(dest, folder):
+    """What ES-DE wrote back onto the card, for one system folder.
+
+    ES-DE on the handheld keeps its own bookkeeping in the card's gamelist.xml: how many
+    times a game was played, when it was last played, whether it is a favourite. The
+    library knows nothing about this — `items.last_played` only moves when a game is
+    launched from the PC — so the card is the only place the owner's play counts exist.
+
+    Returns {entry path: {"playcount", "lastplayed", "favorite", "completed", "name"}},
+    keyed by the path ES-DE lists ("./Game (USA).cue", the leading "./" stripped). A card
+    with no gamelist is normal, and returns an empty dict rather than raising.
+    """
+    path = Path(dest) / "ES-DE" / "gamelists" / folder / "gamelist.xml"
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError):
+        return {}
+    out = {}
+    for g in root.findall("game"):
+        p = (g.findtext("path") or "").strip()
+        if not p:
+            continue
+        p = p.replace("\\", "/")
+        if p.startswith("./"):
+            p = p[2:]
+        out[p] = {
+            "playcount": int(g.findtext("playcount") or 0),
+            "lastplayed": (g.findtext("lastplayed") or "").strip() or None,
+            "favorite": (g.findtext("favorite") or "").strip().lower() == "true",
+            "completed": (g.findtext("completed") or "").strip().lower() == "true",
+            "name": (g.findtext("name") or "").strip() or None,
+        }
+    return out
