@@ -131,6 +131,57 @@ def test_the_card_is_recognised_at_another_drive_letter(tmp_path, monkeypatch):
     assert db.execute("SELECT COUNT(*) FROM cards").fetchone()[0] == 1
 
 
+def test_a_card_carries_its_own_id_from_the_first_time_it_is_seen(tmp_path, monkeypatch):
+    """The id has to travel with the card, or the card is only known by the drive letter
+    it happened to be plugged into — and the same card in another reader is a new card
+    whose games are all guesses."""
+    db = _lib(tmp_path, monkeypatch)
+    card = _card(tmp_path, {"nes": {"Game (USA).nes": 100}})
+    from romcom import cardindex
+    r = cardindex.index_card(card, db=db)
+    manifest = json.loads((card / ".romcom-card.json").read_text(encoding="utf-8"))
+    assert manifest["card_id"] == r["card_id"]
+    # The same card, moved to a different reader.
+    moved = tmp_path / "reader2" / "card"
+    (moved / "ROMs" / "nes").mkdir(parents=True)
+    (moved / "ROMs" / "nes" / "Game (USA).nes").write_bytes(b"x" * 100)
+    (moved / ".romcom-card.json").write_text(
+        json.dumps(manifest), encoding="utf-8")
+    r2 = cardindex.index_card(moved, db=db)
+    assert r2["card_id"] == r["card_id"]
+    assert db.execute("SELECT COUNT(*) FROM cards").fetchone()[0] == 1
+
+
+def test_a_card_that_states_its_identity_is_not_the_card_that_used_to_be_in_the_slot(
+        tmp_path, monkeypatch):
+    """A card that says what it is beats the reader's memory of what was in the slot.
+
+    Otherwise a card whose database was rebuilt inherits the old card's index, and the
+    two are told apart by nothing at all.
+    """
+    db = _lib(tmp_path, monkeypatch)
+    slot = tmp_path / "slot"
+    old = slot / "card"
+    (old / "ROMs" / "nes").mkdir(parents=True)
+    (old / "ROMs" / "nes" / "Old Game.nes").write_bytes(b"x" * 100)
+    from romcom import cardindex
+    cardindex.index_card(old, db=db)
+    old_id = db.execute("SELECT id FROM cards").fetchone()["id"]
+
+    # A different card turns up in the same slot, and carries its own id.
+    new = slot / "card"
+    (new / "ROMs" / "nes" / "Old Game.nes").unlink()
+    (new / "ROMs" / "nes" / "New Game.nes").write_bytes(b"x" * 100)
+    cardindex.write_manifest(new, {"card_id": "brand-new-card", "entries": []})
+    r = cardindex.index_card(new, db=db)
+    assert r["card_id"] == "brand-new-card" != old_id
+    # Each card keeps its own index: the new card's game is filed under the new card,
+    # and the old card's memory of itself is not rewritten by the card that replaced it.
+    rows = db.execute("SELECT card_id,entry FROM card_entries").fetchall()
+    assert {(x["card_id"], x["entry"]) for x in rows} == {
+        ("brand-new-card", "New Game.nes"), (old_id, "Old Game.nes")}
+
+
 def test_play_counts_are_read_back_off_the_card(tmp_path, monkeypatch):
     """ES-DE's own bookkeeping on the card is the only place the owner's play counts
     exist — the library's own play data is barely there at all."""

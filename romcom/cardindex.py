@@ -84,34 +84,72 @@ def identify(card, db=None, create=True):
     the same card. The path is a convenience only: a card that has been moved is
     recognised by its manifest, and a card whose manifest is gone is a new card.
 
+    A card that states an identity the database has never seen is a NEW card, even if
+    something else used to sit in that drive letter. The card's own word beats the
+    reader's memory of the slot: otherwise a card whose database was rebuilt would
+    inherit the old card's index, and the two would be told apart by nothing at all.
+
     A cloned card carries the original's uuid, so it is taken for the same card. That is
     harmless: an update works from what is physically on the mounted card, and two copies
     of one card hold the same games.
     """
     db = db or connect()
     card = card_root(card)
+    path = str(card)
     manifest = read_manifest(card)
     cid = (manifest or {}).get("card_id")
     row = None
     if cid:
         row = db.execute("SELECT * FROM cards WHERE id=?", (cid,)).fetchone()
-    if row is None:
+        if row is None:
+            if not create:
+                return None
+            with db:
+                db.execute("INSERT OR IGNORE INTO cards(id,path,last_seen) "
+                           "VALUES(?,?,CURRENT_TIMESTAMP)", (cid, path))
+            row = db.execute("SELECT * FROM cards WHERE id=?", (cid,)).fetchone()
+    else:
         # A card the app knows only by where it was last plugged in.
-        path = str(card)
         row = db.execute("SELECT * FROM cards WHERE path=? AND id IS NOT NULL "
                          "ORDER BY updated_at DESC LIMIT 1", (path,)).fetchone()
-    if row is None:
-        if not create:
-            return None
-        cid = cid or uuid.uuid4().hex
-        with db:
-            db.execute("INSERT OR IGNORE INTO cards(id,path,last_seen) VALUES(?,?,CURRENT_TIMESTAMP)",
-                       (cid, path))
-        row = db.execute("SELECT * FROM cards WHERE id=?", (cid,)).fetchone()
+        if row is None:
+            if not create:
+                return None
+            cid = uuid.uuid4().hex
+            with db:
+                db.execute("INSERT OR IGNORE INTO cards(id,path,last_seen) "
+                           "VALUES(?,?,CURRENT_TIMESTAMP)", (cid, path))
+            row = db.execute("SELECT * FROM cards WHERE id=?", (cid,)).fetchone()
     with db:
         db.execute("UPDATE cards SET path=?, last_seen=CURRENT_TIMESTAMP, "
-                   "updated_at=CURRENT_TIMESTAMP WHERE id=?", (str(card), row["id"]))
+                   "updated_at=CURRENT_TIMESTAMP WHERE id=?", (path, row["id"]))
     return row["id"]
+
+
+def stamp_identity(card, cid, manifest=None):
+    """Give the card its own id on the card, so the id travels with the card.
+
+    The database remembers a card by the drive letter it was last plugged into, which is
+    a fact about the reader and not about the card. The uuid on the card is the fact
+    about the card: the same card in a different reader is still the same card, and its
+    index comes with it instead of starting again as a set of guesses.
+
+    Best effort — a card that cannot be written to is still perfectly indexable, it just
+    cannot carry its own name.
+    """
+    if manifest and manifest.get("card_id"):
+        return False
+    root = card_root(card)
+    if not root.is_dir():
+        return False
+    try:
+        write_manifest(card, {
+            "card_id": cid, "written_at": datetime.now().isoformat(timespec="seconds"),
+            "romcom_version": VERSION, "profile": (manifest or {}).get("profile") or {},
+            "entries": (manifest or {}).get("entries") or []})
+    except OSError:
+        return False
+    return True
 
 
 # ------------------------------------------------------------------------ reading the card
@@ -275,6 +313,11 @@ def index_card(card, db=None, progress=None):
     card = card_root(card)
     cid = identify(card, db)
     manifest = read_manifest(card) or {}
+    # The card carries its own id from the first time it is seen, so the next time it is
+    # plugged into a different reader it is recognised as the same card rather than
+    # starting over as a set of guesses.
+    if stamp_identity(card, cid, manifest):
+        manifest = read_manifest(card) or {}
     known = {(e.get("folder"), e.get("entry")): e
              for e in (manifest.get("entries") or []) if e.get("folder") and e.get("entry")}
 
