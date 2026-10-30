@@ -73,11 +73,23 @@ def _release(db,item_id,p):
         db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
                    (item_id,"scan-unmatch",f"not this game after all: {p}"))
 
+# A member whose hash belongs to more games than this says nothing about which game the
+# zip is: Dreamcast's standard audio track sits on 176 discs, and taking the first owner
+# of it filed a 31 MB Dreamon demo disc as Sonic Adventure. A disc's own data track is
+# shared only by its regional twins, a handful at most.
+SHARED_MAX = 8
+
+
 def _zip_member_matches(db,p):
     """Match a zip by its members. Zip central directories store each member's CRC32 of the
     UNCOMPRESSED data, so candidates are found without decompressing; only candidate members
-    are decompressed to confirm via md5/sha1 when the catalog has them."""
-    strong_items=[]; weak=[]
+    are decompressed to confirm via md5/sha1 when the catalog has them.
+
+    A member is evidence for a game only when its hash names that game alone. One shared
+    by a few games (regional twins, demo discs carrying the same demo) is kept aside and
+    decides only when every such member agrees on a single game; one shared by many (a
+    console's standard audio track) is no evidence at all."""
+    strong_items=[]; weak=[]; shared=[]
     members=0
     try:
         with zipfile.ZipFile(p) as z:
@@ -85,19 +97,26 @@ def _zip_member_matches(db,p):
             members=len(infos)
             for info in infos:
                 crc=f"{info.CRC & 0xffffffff:08x}"
-                cand=db.execute("SELECT item_id FROM file_hashes WHERE algorithm='crc' AND digest=? LIMIT 1",(crc,)).fetchone()
-                if not cand: continue
+                owners=[r[0] for r in db.execute(
+                    "SELECT DISTINCT h.item_id FROM file_hashes h JOIN items i ON i.id=h.item_id "
+                    "WHERE h.algorithm='crc' AND h.digest=? LIMIT ?",
+                    (crc,SHARED_MAX+1))]
+                if not owners or len(owners)>SHARED_MAX: continue   # nothing, or a track every disc shares
                 md5=hashlib.md5(); sha1=hashlib.sha1()
                 with z.open(info) as fh:
                     while True:
                         b=fh.read(CHUNK)
                         if not b: break
                         md5.update(b); sha1.update(b)
-                strong=db.execute("""SELECT item_id FROM file_hashes
-                  WHERE (algorithm='sha1' AND digest=?) OR (algorithm='md5' AND digest=?) LIMIT 1""",
-                  (sha1.hexdigest(),md5.hexdigest())).fetchone()
-                if strong: strong_items.append(strong["item_id"])
-                else: weak.append(cand["item_id"])
+                strong=[r[0] for r in db.execute("""SELECT DISTINCT h.item_id FROM file_hashes h
+                  JOIN items i ON i.id=h.item_id
+                  WHERE (h.algorithm='sha1' AND h.digest=?) OR (h.algorithm='md5' AND h.digest=?) LIMIT ?""",
+                  (sha1.hexdigest(),md5.hexdigest(),SHARED_MAX+1))]
+                if len(strong)>SHARED_MAX: continue
+                if len(strong)==1: strong_items.append(strong[0])
+                elif strong: shared.append(set(strong))
+                elif len(owners)==1: weak.append(owners[0])
+                else: shared.append(set(owners))
     except (zipfile.BadZipFile,OSError):
         pass
     # A CRC32 hit alone can be a collision (MAME chunk zips vs a million catalog hashes).
@@ -105,7 +124,67 @@ def _zip_member_matches(db,p):
     items=strong_items[:]
     for it,n in {w:weak.count(w) for w in weak}.items():
         if n>=2 or members<=4: items.append(it)
+    if not items and shared:
+        common=set.intersection(*shared)
+        if len(common)==1 and len(shared)>=2:
+            items.append(common.pop())
+        elif common:
+            # The same game listed by two catalogs (Redump's "Nickelodeon Avatar" and
+            # No-Intro's "Avatar") shares its hash: the zip's own name settles which,
+            # but only when it names exactly one of them.
+            named=_named_by(db,common,Path(p).stem)
+            if named: items.append(named)
     return items
+
+
+def _hash_owner(db,sha1,md5,crc,stem):
+    """The catalog item a file's hashes name, or None.
+
+    The strongest digest the catalog holds decides (sha1, then md5, then crc). Arcade
+    chips are shared between sets by design and assembled per set, so for them the first
+    owner stands, as it always has. Anything else shared by several games names none of
+    them on its own: a Dreamcast disc's standard audio track (on 176 discs) made a loose
+    'Virtua Tennis 2 (Track 2).bin' the owner's copy of Sonic Adventure. The file's own
+    name settles a game listed by two catalogs; otherwise the file is left unmatched."""
+    for alg,dig in (("sha1",sha1),("md5",md5),("crc",crc)):
+        if not dig: continue
+        rows=db.execute("""SELECT DISTINCT h.item_id, lower(COALESCE(i.system,'')) s FROM file_hashes h
+          JOIN items i ON i.id=h.item_id WHERE h.algorithm=? AND h.digest=? LIMIT ?""",
+          (alg,dig,SHARED_MAX+1)).fetchall()
+        if not rows: continue
+        if alg=="crc":
+            # A CRC32 alone is 32 bits against millions of catalog hashes: when the
+            # catalog knows the game's sha1/md5 and the file's is not among them, the
+            # CRC agreeing is a collision (a GBA rom was "verified" as a Vita DLC).
+            rows=[r for r in rows if not db.execute(
+                "SELECT 1 FROM file_hashes WHERE item_id=? AND algorithm IN ('sha1','md5') LIMIT 1",
+                (r[0],)).fetchone()]
+            if not rows: return None
+        if len(rows)==1 or all(r[1]=="arcade" for r in rows):
+            return rows[0][0]
+        if len(rows)>SHARED_MAX: return None
+        named=_named_by(db,{r[0] for r in rows},stem)
+        if named: return named
+        # A few entries on one system are one game listed twice (Redump and No-Intro,
+        # a dump and its re-release): any of them is right, as it always was. Across
+        # systems they are different things (a MAME chip is not a Master System game).
+        return rows[0][0] if len({r[1] for r in rows})==1 else None
+    # Hashes owned only by deleted catalog items (rows the cascade missed) name nothing:
+    # matching them left files pointing at games that no longer exist.
+    return None
+
+
+def _named_by(db,item_ids,name):
+    """The one item among `item_ids` whose title is `name` (exactly, then with the
+    bracketed tags set aside), or None when none or several are."""
+    def bare(t): return re.sub(r"\s+"," ",re.sub(r"[\(\[][^\)\]]*[\)\]]","",t or "")).strip().lower()
+    rows=[(r[0],r[1] or "") for r in db.execute(
+        f"SELECT id,title FROM items WHERE id IN ({','.join('?'*len(item_ids))})",list(item_ids))]
+    for key in (lambda t: t.strip().lower(), bare):
+        hit=[i for i,t in rows if key(t)==key(name)]
+        if len(hit)==1: return hit[0]
+        if hit: return None
+    return None
 
 def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=True):
     db=connect(); root=Path(root); count=matched=verified=reused=0
@@ -139,10 +218,8 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
                 crc,md5,sha1=digest_file(p)
             except OSError:
                 continue
-        match=db.execute("""SELECT item_id FROM file_hashes
-          WHERE (algorithm='sha1' AND digest=?) OR (algorithm='md5' AND digest=?) OR (algorithm='crc' AND digest=?)
-          LIMIT 1""",(sha1,md5,crc)).fetchone()
-        item_id=match["item_id"] if match else None
+        # An empty file hashes like every other empty file in every dat: it is no game.
+        item_id=_hash_owner(db,sha1,md5,crc,p.stem) if st.st_size else None
         method="hash" if item_id else None
         extra=[]
         if not item_id and p.suffix.lower()==".zip":
@@ -153,7 +230,9 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
                 if row and sniff.stub_disc(st.st_size,row["system"],row["title"]):
                     # One shared track is not the disc (see sniff.stub_disc).
                     item_id=None; method=None; extra=[]
-        if not item_id and name_match:
+        if not item_id and name_match and not sniff.is_web_page(p):
+            # (A site's error page saved under the game's name matches the name perfectly
+            # and is no game: eighteen of them were 32X and SNES "games" on a card.)
             cand = idx.get(_norm(p.name))
             # A name match is a guess, and the extension is evidence against it. "Donkey
             # Kong (JU).nes" is not the arcade machine `dkong` however well the titles line

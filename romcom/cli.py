@@ -437,16 +437,47 @@ def cmd_card(a):
         r = cardindex.index_card(a.card)
         print(json.dumps(r, indent=2, default=str))
         return
+    if a.action == "check":
+        r = cardindex.check_card(a.card)
+        print(json.dumps(r, indent=2, default=str))
+        gaps = {s: v["missing"] for s, v in r["bios"].items() if v["missing"]}
+        print(f"\n{r['games']} game(s) checked: {len(r['problems'])} with a problem"
+              + (f"; BIOS missing for {', '.join(sorted(gaps))}" if gaps else "; every console has its BIOS"))
+        return
     # card-update: the plan, and — with --apply — the removals and the copy.
     #
     # The plan is a dry run of the real update, not a second implementation of it: the
     # export's own reconcile does the planning, so what the preview says and what the run
     # does cannot drift apart.
     from .organizer import organize
-    r = organize(a.card, systems=a.system or None, distinct_games=a.distinct_games,
-                 arcade_core=a.arcade_core or "mame", arcade_status=a.arcade_status,
-                 reconcile=True, evict=not a.no_evict,
-                 protect_played=not a.no_protect_played, dry_run=not a.apply)
+    # A saved export profile is the card's recipe: the systems, the leave-out labels, the
+    # gates and the card options it was written with. Without it an update planned against
+    # "everything", which is not what any card was made from.
+    kw = dict(systems=a.system or None, distinct_games=a.distinct_games,
+              arcade_core=a.arcade_core or "mame", arcade_status=a.arcade_status)
+    if a.profile:
+        from . import exportplan
+        prof = next((p for p in exportplan.list_profiles()
+                     if a.profile in (p["id"], p["name"])), None)
+        if not prof:
+            print(f"no export profile named {a.profile!r}")
+            return
+        g = prof.get("gates") or {}
+        kw.update(systems=a.system or prof.get("systems") or None,
+                  distinct_games=bool(prof.get("distinct_games")) or a.distinct_games,
+                  arcade_core=prof.get("arcade_core") or kw["arcade_core"],
+                  arcade_status=prof.get("arcade_status") or kw["arcade_status"],
+                  exclude_labels=prof.get("exclude_labels"),
+                  chd=prof.get("chd", True) is not False,
+                  artwork=bool(prof.get("artwork")),
+                  fill=bool(prof.get("fill")),
+                  layout=prof.get("layout") or "flat",
+                  wanted_only=bool(g.get("wanted_only")), keep_only=bool(g.get("keep_only")),
+                  rating_min=int(g.get("rating_min") or 0))
+    if a.add_system:
+        kw["systems"] = sorted(set(kw["systems"] or []) | set(a.add_system))
+    r = organize(a.card, reconcile=True, evict=not a.no_evict,
+                 protect_played=not a.no_protect_played, dry_run=not a.apply, **kw)
     rec = r.get("reconcile") or {}
     if not a.apply:
         print(json.dumps({"card": rec.get("card"), "card_id": rec.get("card_id"),
@@ -727,12 +758,15 @@ def main():
     og.add_argument("--no-chd",action="store_true",help="copy/unpack disc images as they are instead of converting .cue/.gdi (and PS2 .iso) to CHD")
     og.set_defaults(fn=cmd_organize)
     cd=s.add_parser("card", help="what is on an SD card, and what an update of it would do")
-    cd.add_argument("action", choices=["index", "update"], nargs="?", default="index",
-                    help="index: read the card and record what is on it; update: reconcile it with the recipe")
+    cd.add_argument("action", choices=["index", "update", "check"], nargs="?", default="index",
+                    help="index: read the card and record what is on it; update: reconcile it with the recipe; "
+                         "check: is every game whole and every console's BIOS there")
     cd.add_argument("card", help="the card, e.g. J:\\")
     cd.add_argument("--apply", action="store_true",
                     help="card update: actually take the games off (without it, only the plan is shown)")
     cd.add_argument("--system", action="append", help="limit the update to these systems")
+    cd.add_argument("--profile", help="the saved export profile (name or id) the card was written with: its systems, labels and options")
+    cd.add_argument("--add-system", action="append", help="a system to update beside the profile's own")
     cd.add_argument("--distinct-games", action="store_true", help="one copy per game")
     cd.add_argument("--no-evict", action="store_true",
                     help="do not trade a game for a better-ranked one; only take off what fell out of the recipe")

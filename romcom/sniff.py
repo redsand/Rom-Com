@@ -283,3 +283,23 @@ def nintendo_disc_title(path):
         return None
     title = head[0x20:0x60].split(b"\x00")[0].decode("utf-8", "replace").strip()
     return title or None
+
+
+# What a download site sends instead of the file when something goes wrong: a login wall,
+# a "file not found", a Cloudflare challenge. Saved under the game's name, eighteen such
+# pages sat in the library as 32X and SNES "games" and were copied onto a card.
+_WEB_PAGE = (b"<!doctype html", b"<html", b"<head", b"<!--")
+_WEB_OK = {".html", ".htm", ".xml", ".nzb", ".dat", ".txt", ".nfo"}
+
+
+def is_web_page(path):
+    """True when `path` is an HTML page wearing a game's file name."""
+    p = Path(path)
+    if p.suffix.lower() in _WEB_OK:
+        return False
+    try:
+        with open(p, "rb") as f:
+            head = f.read(512).lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+    except OSError:
+        return False
+    return head.startswith(_WEB_PAGE)

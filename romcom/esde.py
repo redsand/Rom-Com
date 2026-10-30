@@ -279,10 +279,11 @@ def plan(system, files, chd=False):
     if sys_ == "ps3":
         return _plan_ps3(files)
     keep, unpack, dropped = [], [], 0
+    own = {Path(src).name.lower() for src, _ in files}
     for src, size in files:
         ext = Path(src).suffix.lower()
-        if ext == ".cue" and not _cue_tracks_present(src):
-            dropped += 1                   # nothing can play a .cue without its tracks
+        if ext in (".cue", ".gdi") and not _cue_tracks_present(src, own):
+            dropped += 1                   # nothing can play a disc without its tracks
             continue
         if ext in exts and ext != ".rar":
             keep.append((src, size))
@@ -530,16 +531,37 @@ _RAW_BIN = {"psx": "MODE2/2352", "saturn": "MODE1/2352", "segacd": "MODE1/2352",
             "pcenginecd": "MODE1/2352"}
 
 
-def _cue_tracks_present(cue):
-    """Every FILE a loose .cue names is beside it on disk (a .cue naming none is given
-    the benefit of the doubt)."""
+# A track named only by its number ("track01.bin") says nothing about which disc it is.
+_GENERIC_TRACK = re.compile(r"^(?:track)?\s*\d+\.(?:bin|raw|iso|img|wav)$", re.I)
+
+
+def _cue_tracks_present(desc, own=None):
+    """Every track a loose .cue or .gdi names is beside it on disk (one naming none is
+    given the benefit of the doubt).
+
+    In a shared download folder a generic name proves nothing: a lone
+    'Game (Disc 1).gdi' naming track01.bin would be "complete" with another game's
+    track01.bin beside it, and chdman would build a CHD of that other disc. So a generic
+    track counts only when it is one of this game's own files (`own`: lower-cased names)."""
     try:
-        text = Path(cue).read_text(encoding="utf-8", errors="replace")
+        text = Path(desc).read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
-    names = re.findall(r'^\s*FILE\s+"([^"]+)"', text, re.M | re.I) or \
-        re.findall(r"^\s*FILE\s+(\S+)", text, re.M | re.I)
-    return all((Path(cue).parent / n).exists() for n in names)
+    if Path(desc).suffix.lower() == ".gdi":
+        names = [m.group(1) or m.group(2) for m in re.finditer(
+            r'^\s*\d+\s+\d+\s+\d+\s+\d+\s+(?:"([^"]+)"|(\S+))', text, re.M)]
+        if not names:
+            return False                   # a .gdi always names its tracks
+    else:
+        names = (re.findall(r'^\s*FILE\s+"([^"]+)"', text, re.M | re.I)
+                 or re.findall(r"^\s*FILE\s+(\S+)", text, re.M | re.I))
+    for n in names:
+        if not (Path(desc).parent / n).exists():
+            return False
+        if (own is not None and _GENERIC_TRACK.match(Path(n).name)
+                and Path(n).name.lower() not in own):
+            return False
+    return True
 
 
 def chdman():

@@ -86,6 +86,11 @@ _NAME_TAGS = (
     ("not-a-game", re.compile(r"\[eb[ab]\]|\bslide ?show\b|\bhel library\b|\bmusic player\b"
                               r"|\bmp3 player\b|\bpicture viewer\b|\breadboy\b"
                               r"|\bgoodbook advance\b|\(chinese book\b")),
+    # Cheat cartridges and accessory software: dumps of a device, not a game to play
+    # ('Action Replay (G) [a1]', 'CodeBreaker (USA)', 'GBA AV Adapter (China)').
+    ("not-a-game", re.compile(r"^(?:pro )?action replay\b|^code ?breaker\b|^game ?shark\b"
+                              r"|^game genie\b|^xploder\b|^game buster\b|\bav adapter\b"
+                              r"|\bplay-yan\b")),
     # The NES, SNES, PC Engine, Master System and Spectrum game is in its own folder,
     # where it runs natively; the GBA build of it inside an emulator is a second copy.
     ("wrapped", re.compile(r"^(?:pocketnes|snesadvance|pceadvance|drsms|smsadvance"

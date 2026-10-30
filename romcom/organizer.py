@@ -728,6 +728,47 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     by_system = {}
     not_playable, unpacked, converted, card_games = {}, 0, 0, {}
     decrypted = 0
+    # The BIOS files go in BEFORE the games. They are a few MB, and a console whose games
+    # are on the card plays nothing without them; copied last, they never landed on a
+    # card the games had filled (a 256 GB card held 2,100 games and not one BIOS). Copying
+    # is the same skip-if-present/room rule the games use; what makes the report earn its
+    # place is `missing`: the slots nothing in the library fills, which are the ones that
+    # leave a whole console unplayable.
+    console_bios = {}
+    for system in sorted(bios_plan["picked"] | bios_plan["missing"].keys()):
+        fills = bios_plan["picked"].get(system, {})
+        rep = {"copied": [], "skipped": [],
+               "missing": [" or ".join(s) for s in bios_plan["missing"].get(system, [])]}
+        console_bios[system] = rep
+        for name in sorted(fills):
+            srcb, size = fills[name]
+            if stopped or (stop is not None and stop.is_set()):
+                stopped = True
+                break
+            target = dest / "system" / name
+            if dry_run:
+                planned_bytes += size
+                rep["copied"].append(name)
+                continue
+            try:
+                if target.exists() and target.stat().st_size == size:
+                    rep["skipped"].append(name)
+                elif not room_for(size):
+                    rep["missing"].append(f"{name} (no room left on the card)")
+                    continue
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(Path(srcb), target)
+                    rep["copied"].append(name)
+            except OSError as e:
+                errors.append({"file": name, "error": str(e)})
+                if e.errno == errno.ENOSPC:
+                    _discard_partial(target)
+                    errors.append({"file": "", "error": f"{dest} is full — export stopped"})
+                    stopped = True
+                    break
+        if stopped:
+            break
     for i, g in enumerate(games):
         if stopped or (stop is not None and stop.is_set()):
             stopped = True
@@ -805,7 +846,7 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                 elif step[0] == "chd":
                     _, src, names, main, rel, size = step
                     target = base / rel
-                    if target.exists() and target.stat().st_size > 0:
+                    if _chd_current(target, src, main, system):
                         skipped += 1
                         continue
                     if not room_ok(size):
@@ -874,47 +915,6 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
         errors[:] = kept
     if progress: progress(len(games), len(games), "stopped" if stopped else "done")
 
-    # The BIOS files go in after the games — nobody browses for them, and a run that
-    # stops early has already said so. Copying is the same skip-if-present/room rule the
-    # games use; what makes the report earn its place is `missing`: the slots nothing in
-    # the library fills, which are the ones that leave a whole console unplayable.
-    console_bios = {}
-    for system in sorted(bios_plan["picked"] | bios_plan["missing"].keys()):
-        fills = bios_plan["picked"].get(system, {})
-        rep = {"copied": [], "skipped": [],
-               "missing": [" or ".join(s) for s in bios_plan["missing"].get(system, [])]}
-        console_bios[system] = rep
-        for name in sorted(fills):
-            srcb, size = fills[name]
-            if stopped or (stop is not None and stop.is_set()):
-                stopped = True
-                break
-            target = dest / "system" / name
-            if dry_run:
-                planned_bytes += size
-                rep["copied"].append(name)
-                continue
-            try:
-                if target.exists() and target.stat().st_size == size:
-                    rep["skipped"].append(name)
-                elif not room_for(size):
-                    errors.append({"file": "", "error": f"{dest} reached its free-space "
-                                                        f"reserve — stopped before {name}"})
-                    stopped = True
-                    break
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(Path(srcb), target)
-                    rep["copied"].append(name)
-            except OSError as e:
-                errors.append({"file": name, "error": str(e)})
-                if e.errno == errno.ENOSPC:
-                    _discard_partial(target)
-                    errors.append({"file": "", "error": f"{dest} is full — export stopped"})
-                    stopped = True
-                    break
-        if stopped:
-            break
     # PS3: every emulator (aPS3e, RPCS3) installs Sony's system software from
     # PS3UPDAT.PUP before a game will boot. It is mirrored once from Sony (ps3.firmware)
     # and rides along in system/ps3/, where the emulator's "install firmware" can find it.
@@ -1249,6 +1249,30 @@ def _unpacked(tdir, archive, names):
     return True
 
 
+def _chd_current(target, src, main, system):
+    """Is the card's CHD for this disc the one the library would write now?
+
+    A CHD on the card used to count as done whenever it existed, so a disc the library
+    later fixed (re-downloaded, or converted again from a good archive) kept its old CHD
+    on the card for good. When the CHD cache holds this disc's conversion, the card's copy
+    must be that file, byte for byte in size; without a cached conversion there is
+    nothing better to compare with, and a whole CHD is left alone."""
+    from . import esde
+    try:
+        have = target.stat().st_size
+    except OSError:
+        return False
+    if have <= 0:
+        return False
+    try:
+        cached = esde.chd_cached(src, main, system)
+        if cached is not None and cached.exists():
+            return cached.stat().st_size == have
+    except OSError:
+        pass
+    return True
+
+
 def _bytes_to_copy(games, dest):
     """Bytes a real run would write for the planned games: what is not already on the card
     at its full size (the same rule the copy loop uses to skip)."""
@@ -1264,7 +1288,7 @@ def _bytes_to_copy(games, dest):
                 except OSError:
                     pass
             elif step[0] == "chd":
-                if (base / step[4]).exists():
+                if _chd_current(base / step[4], step[1], step[3], g["row"]["system"]):
                     continue
             elif step[0] == "ps3":
                 if esde.ps3_done(base / step[3], step[5]):

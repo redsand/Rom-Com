@@ -89,3 +89,113 @@ def test_a_name_match_is_refused_when_the_extension_contradicts_it(monkeypatch, 
            for r in db.execute("SELECT path, matched_item_id FROM files")}
     assert got["Donkey Kong.nes"] is None, "a .nes file must not be matched to an arcade item"
     assert got["Track and Field.nes"] == "nesitem"
+
+
+def _zip_db(tmp_path, monkeypatch, owners):
+    """Items whose catalogs hold the given member contents: {item_id: [bytes, ...]}."""
+    import zlib
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "z.db")); db = connect()
+    with db:
+        for iid, blobs in owners.items():
+            db.execute("INSERT INTO items(id,title,system) VALUES(?,?,'dreamcast')", (iid, iid))
+            for b in blobs:
+                db.execute("INSERT INTO file_hashes(item_id,algorithm,digest) VALUES(?,'crc',?)",
+                           (iid, f"{zlib.crc32(b) & 0xffffffff:08x}"))
+                db.execute("INSERT INTO file_hashes(item_id,algorithm,digest) VALUES(?,'sha1',?)",
+                           (iid, hashlib.sha1(b).hexdigest()))
+    return db
+
+
+def test_a_track_every_disc_shares_does_not_name_the_zip(tmp_path, monkeypatch):
+    """Dreamcast's standard audio track is on 176 discs: a demo disc holding it was filed
+    as Sonic Adventure, the first owner of that hash. Shared tracks are no evidence."""
+    import zipfile
+    from romcom.scanner import _zip_member_matches
+    audio, demo = b"standard audio" * 10, b"demo data" * 10
+    owners = {f"disc-{n}": [audio] for n in range(12)}           # the shared track
+    owners.update({f"demo-{n}": [demo] for n in range(3)})       # three demo discs share data
+    db = _zip_db(tmp_path, monkeypatch, owners)
+    z = tmp_path / "Dreamon Volume 10 (France).zip"
+    with zipfile.ZipFile(z, "w") as f:
+        f.writestr("Track 2.bin", audio)
+        f.writestr("Track 4.bin", demo)
+    assert _zip_member_matches(db, z) == []                      # no single game is named
+
+
+def test_members_that_agree_on_one_game_still_name_it(tmp_path, monkeypatch):
+    import zipfile
+    from romcom.scanner import _zip_member_matches
+    t1, t3 = b"data one" * 10, b"data three" * 10
+    db = _zip_db(tmp_path, monkeypatch, {"usa": [t1, t3], "eur": [t1], "jpn": [t3]})
+    z = tmp_path / "Game.zip"
+    with zipfile.ZipFile(z, "w") as f:
+        f.writestr("Track 1.bin", t1)
+        f.writestr("Track 3.bin", t3)
+    assert _zip_member_matches(db, z) == ["usa"]
+
+
+def test_the_zips_own_name_settles_a_game_two_catalogs_list(tmp_path, monkeypatch):
+    import zipfile
+    from romcom.scanner import _zip_member_matches
+    iso = b"the iso" * 10
+    db = _zip_db(tmp_path, monkeypatch, {"redump-cars": [iso], "nointro-cars": [iso]})
+    with db:
+        db.execute("UPDATE items SET title='Disney-Pixar Cars - Race-O-Rama (USA)' WHERE id='redump-cars'")
+        db.execute("UPDATE items SET title='Cars - Race-O-Rama (USA) (En,Fr)' WHERE id='nointro-cars'")
+    z = tmp_path / "Disney-Pixar Cars - Race-O-Rama (USA).zip"
+    with zipfile.ZipFile(z, "w") as f:
+        f.writestr("Disney-Pixar Cars - Race-O-Rama (USA).iso", iso)
+    assert _zip_member_matches(db, z) == ["redump-cars"]
+
+
+def test_a_track_many_discs_share_does_not_verify_a_game(tmp_path, monkeypatch):
+    """A loose 'Virtua Tennis 2 (Track 2).bin' was Sonic Adventure's file: the standard
+    audio track is on 176 Dreamcast discs, and the first owner of the hash took it."""
+    audio = b"standard audio" * 10
+    db = _zip_db(tmp_path, monkeypatch, {f"disc-{n}": [audio] for n in range(12)})
+    root = tmp_path / "lib"; root.mkdir()
+    (root / "Virtua Tennis 2 (Track 2).bin").write_bytes(audio)
+    scan(root, adopt=False)
+    assert connect().execute("SELECT matched_item_id FROM files").fetchone()[0] is None
+
+
+def test_a_crc_alone_does_not_beat_the_catalogs_sha1(tmp_path, monkeypatch):
+    import zlib
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "c.db")); db = connect()
+    data = b"some gba rom" * 10
+    with db:
+        db.execute("INSERT INTO items(id,title,system) VALUES('vita','Vita DLC','vita')")
+        db.execute("INSERT INTO file_hashes(item_id,algorithm,digest) VALUES('vita','crc',?)",
+                   (f"{zlib.crc32(data) & 0xffffffff:08x}",))
+        db.execute("INSERT INTO file_hashes(item_id,algorithm,digest) VALUES('vita','sha1','00')")
+    root = tmp_path / "lib"; root.mkdir(); (root / "Game.gba").write_bytes(data)
+    scan(root, adopt=False)
+    assert connect().execute("SELECT matched_item_id FROM files").fetchone()[0] is None
+
+
+def test_an_empty_file_is_no_game(tmp_path, monkeypatch):
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "e.db")); db = connect()
+    with db:
+        db.execute("INSERT INTO items(id,title,system) VALUES('dlc','Empty DLC','psp')")
+        db.execute("INSERT INTO file_hashes(item_id,algorithm,digest) VALUES('dlc','sha1',?)",
+                   (hashlib.sha1(b"").hexdigest(),))
+    root = tmp_path / "lib"; root.mkdir(); (root / "stderr.txt").write_bytes(b"")
+    scan(root, adopt=False)
+    assert connect().execute("SELECT status FROM items WHERE id='dlc'").fetchone()[0] != "VERIFIED"
+
+
+def test_a_saved_error_page_is_never_a_game(tmp_path, monkeypatch):
+    """A download site's HTML error page saved as 'BC Racers.zip' matched the game by
+    name and went onto a card as a 32X game."""
+    from romcom.verify import check_download
+    monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "w.db")); db = connect()
+    with db:
+        db.execute("INSERT INTO items(id,title,system) VALUES('bc','BC Racers','32x')")
+        db.execute("INSERT INTO aliases(item_id,alias) VALUES('bc','BC Racers')")
+    root = tmp_path / "lib"; root.mkdir()
+    page = root / "BC Racers.zip"
+    page.write_bytes(b"<!DOCTYPE html><html><head><title>Not found</title></head></html>")
+    scan(root, adopt=False)
+    assert connect().execute("SELECT matched_item_id FROM files").fetchone()[0] is None
+    ok, why = check_download(page, "32x")
+    assert not ok and "web page" in why

@@ -558,6 +558,8 @@ def plan_update(card, games, db=None, systems=None, evict=False, protect_played=
             return True
         return folder.lower() in wanted_systems
 
+    broken = _let_go(db, {r["item_id"] for r in actual.values() if r["item_id"]}
+                     - {w["item_id"] for w in want.values()})
     remove, keep, untracked, protected = [], [], [], []
     for key, row in actual.items():
         folder, entry = key
@@ -571,6 +573,14 @@ def plan_update(card, games, db=None, systems=None, evict=False, protect_played=
                 continue
             # The same game under another name, or another name for the same place.
             same = next((w for w in want.values() if w["item_id"] == row["item_id"]), None)
+            if row["item_id"] in broken:
+                # The library threw its own copy away as the wrong game, a stub or a
+                # corrupt download: the card's copy came from the same file and does
+                # not work either. Keeping it as "still wanted" left a broken game on
+                # the card with nothing to replace it.
+                remove.append({**row, "reason": "broken — the library let its file go",
+                               "title": _title(db, row)})
+                continue
             if row["item_id"] in wanted_items and same is None:
                 # Still wanted, but its library file is gone so it cannot be written
                 # where it belongs. It stays: the export will put it back when the
@@ -585,12 +595,24 @@ def plan_update(card, games, db=None, systems=None, evict=False, protect_played=
                 continue
             remove.append({**row, "reason": "no longer selected", "title": _title(db, row)})
         else:
+            row = dict(row)
+            if not row.get("tracked") and row.get("item_id") and d.get("item_id") == row["item_id"]:
+                # The card holds exactly the entry the recipe writes for this game, under
+                # the name it writes: that is RomCom's own output, from an export made
+                # before cards were tracked. Treating it as a stranger's file protected
+                # every game on such a card from ever being traded for a better one.
+                row["tracked"] = 1
             keep.append({**row, "reason": "kept"})
 
     # What wants to go on that is not on the card.
     on_card = {k for k in actual}
     incoming = [{"folder": k[0], "entry": k[1], **v}
                 for k, v in want.items() if k not in on_card]
+    # Best first, as the export ranks. The recipe's own order is per system and by name,
+    # and walking it that way handed the card's room to whatever sorted first: an
+    # unrated newcomer that may not trade for anything took the space, and a rated game
+    # later in the alphabet never got to displace an unrated one already on the card.
+    incoming.sort(key=lambda a: -(a.get("score") or 0))
 
     # The room there is.
     from .organizer import _free_bytes, _reserve_bytes as _reserve
@@ -602,7 +624,7 @@ def plan_update(card, games, db=None, systems=None, evict=False, protect_played=
     # has to know what will fit BEFORE anything is removed, so the space the removals
     # will free is counted here.
     freed = sum(r.get("bytes") or 0 for r in remove
-                if r.get("reason") in ("no longer selected", "moved"))
+                if r.get("reason") != "outranked")
     room = (free or 0) + freed - reserve
 
     # The newcomers, best first. The export copies in rank order and stops when the card
@@ -650,6 +672,28 @@ def plan_update(card, games, db=None, systems=None, evict=False, protect_played=
             "bytes_remove": sum(r.get("bytes") or 0 for r in remove),
             "bytes_add": sum(a["bytes"] for a in fits),
             "free_bytes": free, "reserve_bytes": reserve, "usable_bytes": usable}
+
+
+# What the library writes down when it lets a game's file go because the file was bad:
+# another game or platform (reconcile.wrong_downloads), a 'disc' too small to hold the
+# disc (reconcile.stub_discs), an archive whose checksums fail (discs._let_go_corrupt).
+BROKEN_EVENTS = ("wrong-download", "stub-disc", "corrupt-download")
+
+
+def _let_go(db, item_ids):
+    """The items among `item_ids` whose library file was let go as broken and that have
+    no file in the library now. Only games the recipe cannot write are asked about: a
+    game the library holds a good copy of again is simply written over."""
+    out, ids = set(), [i for i in item_ids if i]
+    for n in range(0, len(ids), 900):
+        chunk = ids[n:n + 900]
+        qs = ",".join("?" * len(chunk))
+        out |= {r[0] for r in db.execute(
+            f"SELECT DISTINCT e.item_id FROM events e WHERE e.item_id IN ({qs}) "
+            f"AND e.event IN ({','.join('?' * len(BROKEN_EVENTS))}) "
+            "AND NOT EXISTS(SELECT 1 FROM files f WHERE f.matched_item_id=e.item_id)",
+            chunk + list(BROKEN_EVENTS))}
+    return out
 
 
 def _title(db, row):
@@ -828,6 +872,13 @@ def apply_removals(card, plan, db=None, stop=None, progress=None):
                            (r["item_id"],
                             f"{r.get('title') or r.get('entry')} removed from the card "
                             f"({r.get('reason')})"))
+    # ES-DE's side of the card follows: a removed game's gamelist entry and its images
+    # would otherwise stay behind for good (the images are a few MB a game, and stale
+    # entries are what ES-DE's "orphaned data" cleanup is for).
+    try:
+        forget_in_esde(card, removed)
+    except OSError as e:
+        errors.append({"entry": "", "error": f"could not tidy ES-DE's files: {e}"})
     # The card's own manifest has to say what is on it NOW, not what was on it before
     # the removals: a manifest still listing a game that has just been deleted would
     # make the next update think the game is there.
@@ -841,6 +892,54 @@ def apply_removals(card, plan, db=None, stop=None, progress=None):
                          "item_id": r.get("item_id"), "title": r.get("title") or "",
                          "reason": r.get("reason"), "bytes": r.get("bytes") or 0}
                         for r in removed]}
+
+
+def forget_in_esde(card, removed):
+    """Drop removed games from ES-DE's gamelists and delete their images.
+
+    ES-DE names a game's media after the entry it lists without its extension, in a
+    folder per kind (covers, screenshots, ...) that mirrors the system folder, and its
+    gamelist keys a game by "./<entry>". Returns {"entries": n, "images": n}."""
+    import xml.etree.ElementTree as ET
+    card = card_root(card)
+    es = card / "ES-DE"
+    by_folder = {}
+    for r in removed:
+        if r.get("folder") and r.get("entry"):
+            by_folder.setdefault(r["folder"], set()).add(r["entry"].replace("\\", "/"))
+    dropped = images = 0
+    for folder, entries in by_folder.items():
+        gl = es / "gamelists" / folder / "gamelist.xml"
+        try:
+            tree = ET.parse(gl)
+        except (OSError, ET.ParseError):
+            tree = None
+        if tree is not None:
+            root = tree.getroot()
+            gone = {"./" + e for e in entries}
+            for g in list(root.findall("game")):
+                if (g.findtext("path") or "").strip() in gone:
+                    root.remove(g)
+                    dropped += 1
+            tmp = gl.with_suffix(".xml.tmp")
+            tree.write(tmp, encoding="utf-8", xml_declaration=True)
+            os.replace(tmp, gl)
+        media = es / "downloaded_media" / folder
+        if not media.is_dir():
+            continue
+        for kind in (k for k in media.iterdir() if k.is_dir()):
+            for e in entries:
+                rel = Path(e)
+                for img in (kind / rel.parent).glob(f"{_glob_escape(rel.stem)}.*"):
+                    if img.is_file() and img.stem == rel.stem:
+                        img.unlink()
+                        images += 1
+    return {"entries": dropped, "images": images}
+
+
+def _glob_escape(name):
+    """A file name as a literal glob pattern: [ ] * ? are common in ROM names."""
+    return "".join(f"[{c}]" if c in "[]*?" else c for c in name)
 
 
 def record_export(card, card_games, db=None, profile=None):
@@ -911,3 +1010,91 @@ def _write_index_manifest(card, cid, db, profile=None):
         "entries": manifest_entries})
 
 
+
+
+# ------------------------------------------------------------------------ the card's health
+_CHD_MAGIC = b"MComprHD"
+
+
+def _entry_problems(path):
+    """What is wrong with one game on the card, as a list of short sentences (empty when
+    nothing is). Reads headers and descriptors only — a 256 GB card is checked in
+    seconds, not by re-reading every byte."""
+    import zipfile
+    from . import esde
+    p = Path(path)
+    out = []
+    if p.is_dir():
+        files = [f for f in p.rglob("*") if f.is_file()]
+        if not files:
+            return ["an empty folder"]
+        for f in files:
+            if f.stat().st_size == 0:
+                out.append(f"{f.name} is empty")
+        for d in (f for f in files if f.suffix.lower() in (".cue", ".gdi")):
+            if not esde._cue_tracks_present(d):
+                out.append(f"{d.name} names a track that is not in the folder")
+        return out
+    try:
+        size = p.stat().st_size
+    except OSError as e:
+        return [f"cannot be read: {e}"]
+    if size == 0:
+        return ["the file is empty"]
+    ext = p.suffix.lower()
+    try:
+        if ext == ".chd":
+            with open(p, "rb") as f:
+                if f.read(8) != _CHD_MAGIC:
+                    out.append("not a CHD (bad header)")
+        elif ext == ".zip":
+            with zipfile.ZipFile(p) as z:
+                if not z.namelist():
+                    out.append("an empty zip")
+        elif ext in (".cue", ".gdi"):
+            if not esde._cue_tracks_present(p):
+                out.append("names a track that is not beside it")
+        elif ext == ".m3u":
+            for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and not (p.parent / line).exists():
+                    out.append(f"lists {line}, which is not on the card")
+    except zipfile.BadZipFile:
+        out.append("a damaged zip")
+    except OSError as e:
+        out.append(f"cannot be read: {e}")
+    return out
+
+
+def check_card(card, db=None):
+    """Is every game on the card whole, and does every console on it have its BIOS?
+
+    Returns {"games": n checked, "problems": [{folder, entry, title, problems}],
+    "bios": {system: {"dir", "missing": [slot alternatives]}}}. Read-only."""
+    from . import cores, esde
+    db = db or connect()
+    card = card_root(card)
+    found = walk_card(card)
+    by_file, by_set = _name_maps(db)
+    problems = []
+    for u in found:
+        why = _entry_problems(u["path"])
+        if why:
+            iid = by_file.get(Path(u["entry"]).name.lower())
+            title = ""
+            if iid:
+                r = db.execute("SELECT title FROM items WHERE id=?", (iid,)).fetchone()
+                title = r["title"] if r else ""
+            problems.append({"folder": u["folder"], "entry": u["entry"], "title": title,
+                             "item_id": iid, "problems": why})
+    folders = {u["folder"].lower() for u in found}
+    bios = {}
+    for system, spec in cores.BIOS.items():
+        if esde.folder(system) not in folders or not spec.get("slots"):
+            continue
+        base = card / "system" / spec["dir"] if spec.get("dir") else card / "system"
+        missing = [alts for alts in spec["slots"]
+                   if not any((base / n).is_file() and (base / n).stat().st_size > 0
+                              for n in alts)]
+        bios[system] = {"dir": str(base), "missing": [" or ".join(a) for a in missing]}
+    return {"card": str(card), "games": len(found), "problems": problems, "bios": bios}

@@ -515,3 +515,123 @@ def test_a_removal_leaves_an_event_row(tmp_path, monkeypatch):
     # ...and the index no longer claims it is there.
     assert db.execute("SELECT COUNT(*) FROM card_entries WHERE entry='Old Game.nes'").fetchone()[0] == 0
 
+
+
+def test_a_card_exported_before_tracking_can_still_trade_up(tmp_path, monkeypatch):
+    """A card written before cards were tracked has no manifest, so every game on it is
+    matched by name. One whose name is exactly the entry the recipe writes for that game
+    is RomCom's own output: it must be tradeable, or a full old card never improves."""
+    db = _lib(tmp_path, monkeypatch)
+    lib = tmp_path / "lib"; lib.mkdir()
+    for iid, title, score, name in (("nes-old", "Old Game", None, "Old Game.nes"),
+                                    ("nes-new", "New Game", 80, "New Game.nes")):
+        (lib / name).write_bytes(b"x" * 1000)
+        _item(db, iid, title, "nes", score=score, path=str(lib / name))
+    card = _card(tmp_path, {"nes": {"Old Game.nes": 1000}})        # no manifest
+    from romcom import cardindex
+    cardindex.index_card(card, db=db)
+    assert db.execute("SELECT tracked FROM card_entries").fetchone()[0] == 0
+    plan = cardindex.plan_update(card, _games_for(db, {"nes-old", "nes-new"}), db=db,
+                                 evict=True, free_bytes=0, reserve_bytes=0)
+    assert [(r["entry"], r["reason"]) for r in plan["remove"]] == [("Old Game.nes", "outranked")]
+    assert [a["entry"] for a in plan["add"]] == ["New Game.nes"]
+
+
+def test_a_name_match_the_recipe_would_not_write_stays_protected(tmp_path, monkeypatch):
+    """Adoption is for the recipe's own entries only: a file that merely shares a game's
+    name with something else in the library is still a guess and is never traded."""
+    db = _lib(tmp_path, monkeypatch)
+    lib = tmp_path / "lib"; lib.mkdir()
+    (lib / "Old Game.nes").write_bytes(b"x" * 1000)
+    _item(db, "nes-old", "Old Game", "nes", path=str(lib / "Old Game.nes"))
+    (lib / "New Game.nes").write_bytes(b"x" * 1000)
+    _item(db, "nes-new", "New Game", "nes", score=80, path=str(lib / "New Game.nes"))
+    card = _card(tmp_path, {"nes": {"Old Game.nes": 1000}})
+    from romcom import cardindex
+    cardindex.index_card(card, db=db)
+    with db:   # the card's file is known by name, but the recipe writes another game there
+        db.execute("UPDATE card_entries SET item_id='nes-other'")
+        db.execute("INSERT INTO items(id,title,system) VALUES('nes-other','Other','nes')")
+    plan = cardindex.plan_update(card, _games_for(db, {"nes-old", "nes-new"}), db=db,
+                                 evict=True, free_bytes=0, reserve_bytes=0)
+    assert not [r for r in plan["remove"] if r["reason"] == "outranked"]
+
+
+def test_a_game_the_library_let_go_as_broken_comes_off_the_card(tmp_path, monkeypatch):
+    """The library threw its file away as the wrong game: the card's copy came from that
+    file, so it is broken too and comes off instead of being kept as 'still wanted'."""
+    db = _lib(tmp_path, monkeypatch)
+    card = _exported(tmp_path, monkeypatch, db, [
+        ("nes-bad", "Bad Game", 50, "Bad Game.nes", 100),
+        ("nes-ok", "Fine Game", 50, "Fine Game.nes", 100)])
+    with db:
+        db.execute("DELETE FROM files WHERE matched_item_id='nes-bad'")
+        db.execute("INSERT INTO events(item_id,event,detail) VALUES('nes-bad','wrong-download','x')")
+        db.execute("INSERT INTO items(id,title,system) VALUES('nes-gone','Gone','nes')")
+    from romcom import cardindex
+    games = _games_for(db, {"nes-ok"})
+    plan = cardindex.plan_update(card, games, db=db)
+    assert [(r["entry"], r["reason"]) for r in plan["remove"]] == [
+        ("Bad Game.nes", "broken — the library let its file go")]
+
+
+def test_a_removed_game_leaves_no_gamelist_entry_or_images_behind(tmp_path, monkeypatch):
+    db = _lib(tmp_path, monkeypatch)
+    card = _card(tmp_path, {"nes": {"Old Game [!].nes": 10, "Kept.nes": 10}})
+    gl = card / "ES-DE" / "gamelists" / "nes"; gl.mkdir(parents=True)
+    (gl / "gamelist.xml").write_text(
+        "<gameList><game><path>./Old Game [!].nes</path></game>"
+        "<game><path>./Kept.nes</path><playcount>3</playcount></game></gameList>",
+        encoding="utf-8")
+    covers = card / "ES-DE" / "downloaded_media" / "nes" / "covers"; covers.mkdir(parents=True)
+    for n in ("Old Game [!].png", "Old Game [!] (Rev 1).png", "Kept.png"):
+        (covers / n).write_bytes(b"img")
+    from romcom import cardindex
+    r = cardindex.forget_in_esde(card, [{"folder": "nes", "entry": "Old Game [!].nes"}])
+    assert r == {"entries": 1, "images": 1}
+    assert sorted(p.name for p in covers.iterdir()) == ["Kept.png", "Old Game [!] (Rev 1).png"]
+    text = (gl / "gamelist.xml").read_text(encoding="utf-8")
+    assert "Old Game" not in text and "<playcount>3</playcount>" in text
+
+
+def test_the_best_newcomer_gets_the_room_whatever_its_name(tmp_path, monkeypatch):
+    """Newcomers are planned best first, not in the recipe's alphabetical order: an
+    unrated 'Aardvark' must not take the room a rated 'Zelda' would trade an unrated
+    game on the card for."""
+    db = _lib(tmp_path, monkeypatch)
+    card = _exported(tmp_path, monkeypatch, db, [
+        ("nes-unrated", "Unrated", None, "Unrated.nes", 1000),
+        ("nes-aard", "Aardvark", None, "Aardvark.nes", 1000),
+        ("nes-zelda", "Zelda", 90, "Zelda.nes", 1000)],
+        on_card=("nes-unrated",))
+    from romcom import cardindex
+    games = _games_for(db, {"nes-unrated", "nes-aard", "nes-zelda"})
+    plan = cardindex.plan_update(card, games, db=db, evict=True,
+                                 free_bytes=1000, reserve_bytes=0)
+    assert [a["entry"] for a in plan["add"]] == ["Zelda.nes"]
+    assert [a["entry"] for a in plan["no_room"]] == ["Aardvark.nes"]
+
+
+def test_the_card_check_finds_broken_games_and_missing_bios(tmp_path, monkeypatch):
+    import zipfile
+    db = _lib(tmp_path, monkeypatch)
+    card = tmp_path / "card"
+    dc = card / "ROMs" / "dreamcast"; dc.mkdir(parents=True)
+    (dc / "Good.chd").write_bytes(b"MComprHD" + b"x" * 100)
+    (dc / "Bad.chd").write_bytes(b"not a chd at all")
+    disc = dc / "Half.gdi"; disc.mkdir()
+    (disc / "Half.gdi").write_text("2\n1 0 4 2352 track01.bin 0\n2 600 0 2352 track02.raw 0\n")
+    (disc / "track01.bin").write_bytes(b"t" * 10)
+    nes = card / "ROMs" / "nes"; nes.mkdir(parents=True)
+    (nes / "Empty.nes").write_bytes(b"")
+    with zipfile.ZipFile(nes / "Fine.zip", "w") as z:
+        z.writestr("Fine.nes", b"rom")
+    (nes / "Broken.zip").write_bytes(b"PK\x03\x04 truncated")
+    (card / "system" / "dc").mkdir(parents=True)
+    (card / "system" / "dc" / "dc_boot.bin").write_bytes(b"boot")
+    from romcom import cardindex
+    r = cardindex.check_card(card, db=db)
+    bad = {p["entry"]: p["problems"] for p in r["problems"]}
+    assert set(bad) == {"Bad.chd", "Half.gdi", "Empty.nes", "Broken.zip"}
+    assert "not in the folder" in bad["Half.gdi"][0]
+    assert r["bios"]["dreamcast"]["missing"] == ["dc_flash.bin"]

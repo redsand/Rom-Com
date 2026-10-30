@@ -169,3 +169,16 @@ def test_japanese_trial_discs_are_demos():
     from romcom.labels import from_name
     assert "demo" in from_name("Aero Dancing F (Japan) (Taikenban)")
     assert "demo" in from_name("Frame Gride Test Operation Disc")
+
+
+def test_cheat_cartridges_and_accessories_are_not_games():
+    """A card update put 'Action Replay', 'CodeBreaker' and 'GBA AV Adapter' on a card
+    beside the games: they are dumps of a device."""
+    from romcom.labels import from_name
+    for t in ("Action Replay (G) [a1]", "Action Replay GBX (Europe)", "CodeBreaker (USA)",
+              "GameShark Pro (USA)", "Game Genie (USA) (Unl)", "GBA AV Adapter (China)",
+              "Pro Action Replay (Europe)"):
+        assert "not-a-game" in from_name(t), t
+    for real in ("Codename - Kids Next Door (USA)", "Game Boy Wars (Japan)",
+                 "Replay Racer (USA)"):
+        assert "not-a-game" not in from_name(real), real

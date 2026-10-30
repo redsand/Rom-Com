@@ -1202,3 +1202,40 @@ def test_a_kept_game_is_never_traded_away(tmp_path, monkeypatch):
     assert [a["entry"] for a in rec.get("no_room") or []] == ["New Game.nes"]
     assert any(p["entry"] == "Old Game.nes" for p in (r.get("reconcile") or {}).get("protected")
                or [])
+
+
+def test_bios_lands_even_when_the_games_fill_the_card(tmp_path, monkeypatch):
+    """BIOS used to be copied after the games, so a card the games filled never got any:
+    a 256 GB card held 2,100 games and not one BIOS. It goes first now."""
+    from romcom import organizer
+    _one_rom(tmp_path, monkeypatch, system="dreamcast", name="Big Game (USA).dc",
+             payload=b"g" * 5000)
+    dump = tmp_path / "dump"; dump.mkdir()
+    boot = dump / "dc_boot.bin"; boot.write_bytes(b"boot")
+    db = connect()
+    with db:
+        db.execute("INSERT INTO files(path,bytes) VALUES(?,?)", (str(boot), 4))
+    monkeypatch.setattr(organizer, "_reserve_bytes", lambda d: 1000)
+    monkeypatch.setattr(organizer, "_free_bytes", lambda d: 1100)    # room for 100 bytes
+    dest = tmp_path / "sd"
+    r = organize(dest, fill=True)
+    assert (dest / "system" / "dc" / "dc_boot.bin").read_bytes() == b"boot"
+    assert r["console_bios"]["systems"]["dreamcast"]["copied"] == ["dc/dc_boot.bin"]
+    assert not (dest / "ROMs" / "dreamcast" / "Big Game (USA).dc").exists()
+
+
+def test_a_chd_on_the_card_is_replaced_when_the_library_converted_it_anew(tmp_path, monkeypatch):
+    """A CHD on the card used to count as done whenever it existed, so a disc fixed in
+    the library kept its stale CHD on the card. The cached conversion is the yardstick."""
+    from romcom import esde
+    from romcom.organizer import _chd_current
+    cache = tmp_path / "cache.chd"
+    monkeypatch.setattr(esde, "chd_cached", lambda src, main, system: cache)
+    card = tmp_path / "Game.chd"
+    assert not _chd_current(card, "src", "Game.gdi", "dreamcast")          # not there
+    card.write_bytes(b"old" * 10)
+    assert _chd_current(card, "src", "Game.gdi", "dreamcast")              # nothing to compare
+    cache.write_bytes(b"new" * 20)
+    assert not _chd_current(card, "src", "Game.gdi", "dreamcast")          # stale: replace
+    card.write_bytes(b"new" * 20)
+    assert _chd_current(card, "src", "Game.gdi", "dreamcast")

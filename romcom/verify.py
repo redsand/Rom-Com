@@ -83,6 +83,9 @@ def check_download(path, system, sample=40):
     if not p.exists():
         return False, f"{p} does not exist"
 
+    from . import sniff
+    if p.is_file() and sniff.is_web_page(p):
+        return False, "the site sent a web page, not the file"
     names = []
     if p.is_dir():
         names = [f.name for f in p.rglob("*") if f.is_file()][:400]
