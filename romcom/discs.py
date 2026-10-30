@@ -84,6 +84,38 @@ def _let_go_corrupt(db, iid, src, why):
                        "updated_at=CURRENT_TIMESTAMP WHERE id=?", (iid,))
 
 
+_UNSAFE = _re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def _stem(title):
+    """A game title as a Windows-safe file stem."""
+    t = _UNSAFE.sub(lambda m: " -" if m.group() == ":" else "_", title or "").strip(" .")
+    return t[:150].rstrip(" .") or "game"
+
+
+def _owner(db, path):
+    row = db.execute("SELECT matched_item_id FROM files WHERE path=?", (str(path),)).fetchone()
+    return row[0] if row else None
+
+
+def _target(db, folder_dir, iid, stem):
+    """The library CHD for one disc of one game: `<stem>.chd`, never a file another game
+    owns. The name comes from the catalog, not from inside the archive: archives often
+    hold a bare `disc.gdi`, and naming CHDs by that once sent 25 Dreamcast games to one
+    `disc.chd`, each overwriting the last. A name already on disk counts as this game's
+    only when the library says so; anything else (another game's, or a file nothing
+    claims) gets the item id beside the title instead."""
+    first = folder_dir / f"{stem}.chd"
+    if not first.exists() or _owner(db, first) == iid:
+        return first
+    tag = iid.rsplit("-", 1)[-1][:12]
+    for n in range(100):
+        cand = folder_dir / (f"{stem} [{tag}].chd" if n == 0 else f"{stem} [{tag}-{n}].chd")
+        if not cand.exists() or _owner(db, cand) == iid:
+            return cand
+    raise RuntimeError(f"no free CHD name for {stem}")
+
+
 def compact(apply=False, convert=False, limit=None, systems=None, progress=None,
             stop=None, db=None):
     """Make each disc game's CHD its library file and delete the archive it came from.
@@ -111,10 +143,18 @@ def compact(apply=False, convert=False, limit=None, systems=None, progress=None,
         if not chd_steps:
             continue
         out["games"] += 1
-        for _, src, names, main, rel, _est in chd_steps:
+        title = (db.execute("SELECT title FROM items WHERE id=?", (iid,)).fetchone() or [None])[0]
+        base = _stem(title or Path(chd_steps[0][3]).stem)
+        # One CHD per disc. A game with several (one archive per disc) names each by its
+        # own disc file, or by its archive when those inner names are the same.
+        stems = [base] if len(chd_steps) == 1 else [f"{base} - {_stem(Path(st[3]).stem)}" for st in chd_steps]
+        if len(set(stems)) < len(stems):
+            stems = [f"{base} - {_stem(Path(st[1]).stem)}" for st in chd_steps]
+        for (_, src, names, main, rel, _est), stem in zip(chd_steps, stems):
             if stop is not None and stop.is_set():
                 break
-            target = lib / esde.folder(system) / rel
+            target = _target(db, lib / esde.folder(system), iid, stem)
+            rel = target.name
             cached = esde.chd_cached(src, main, system)
             if not target.exists() and not cached.exists():
                 if not convert or (limit is not None and out["converted"] >= limit):

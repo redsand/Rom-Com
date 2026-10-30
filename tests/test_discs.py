@@ -68,3 +68,54 @@ def test_a_corrupt_archive_goes_and_its_game_is_fetched_again(monkeypatch, tmp_p
     r = discs.compact(apply=True, convert=True)
     assert r["corrupt"] == [a.name] and not a.exists()
     assert db.execute("SELECT status, wanted FROM items WHERE id='s'").fetchone()[:] == ("MISSING", 1)
+
+
+def _second_game(db, games, iid, title, inner="disc.gdi", archive=None):
+    a = games / (archive or f"[GDI] {title}.7z")
+    with zipfile.ZipFile(a, "w") as z:
+        z.writestr(inner, "3\n")
+        z.writestr("track01.bin", b"t" * 2352)
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status) VALUES(?,?,'dreamcast','VERIFIED')",
+                   (iid, title))
+        db.execute("INSERT INTO files(path,bytes,matched_item_id,content) VALUES(?,?,?,1)",
+                   (str(a), a.stat().st_size, iid))
+    return a
+
+
+def test_archives_that_all_hold_disc_gdi_each_keep_their_own_chd(monkeypatch, tmp_path):
+    """Naming the CHD after the disc inside the archive sent every `disc.gdi` game to one
+    `disc.chd`, each overwriting the last and losing its archive: one CHD per game, by title."""
+    db, a, lib = _env(monkeypatch, tmp_path)
+    games = a.parent
+    b = _second_game(db, games, "redump-dreamcast-aaa", "Boku Doraemon (Japan)")
+    c = _second_game(db, games, "redump-dreamcast-bbb", "Pop'n Music 3 - Append Disc (Japan)")
+    r = discs.compact(apply=True, convert=True)
+    assert r["chds"] == 3 and not b.exists() and not c.exists()
+    rows = dict(db.execute("SELECT matched_item_id, path FROM files").fetchall())
+    d = lib / "dreamcast"
+    assert rows == {"s": str(d / "Shenmue (USA) (Disc 1).chd"),
+                    "redump-dreamcast-aaa": str(d / "Boku Doraemon (Japan).chd"),
+                    "redump-dreamcast-bbb": str(d / "Pop'n Music 3 - Append Disc (Japan).chd")}
+    assert not (d / "disc.chd").exists()
+
+
+def test_a_name_another_game_owns_is_never_taken_over(monkeypatch, tmp_path):
+    db, a, lib = _env(monkeypatch, tmp_path)
+    d = lib / "dreamcast"
+    d.mkdir(parents=True)
+    theirs = d / "Shenmue (USA) (Disc 1).chd"
+    theirs.write_bytes(b"OTHER")
+    with db:
+        db.execute("INSERT INTO items(id,title,system) VALUES('redump-dreamcast-zzz','Other','dreamcast')")
+        db.execute("INSERT INTO files(path,bytes,matched_item_id,content) VALUES(?,5,'redump-dreamcast-zzz',1)",
+                   (str(theirs),))
+    discs.compact(apply=True, convert=True)
+    assert theirs.read_bytes() == b"OTHER"
+    mine = db.execute("SELECT path FROM files WHERE matched_item_id='s'").fetchone()[0]
+    assert mine != str(theirs) and mine.endswith("Shenmue (USA) (Disc 1) [s].chd")
+
+
+def test_a_title_is_made_safe_for_a_windows_file_name():
+    assert discs._stem("Star Wars: Episode I <Racer>?") == "Star Wars - Episode I _Racer__"
+    assert discs._stem("  Game.  ") == "Game"
