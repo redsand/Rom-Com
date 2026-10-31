@@ -510,6 +510,43 @@ def cmd_card(a):
           + (f" — what went is written down in {rec['manifest']}" if rec.get("manifest") else ""))
 
 
+def cmd_android(a):
+    """Android games: read the folder of packages, list them, put them on a card."""
+    from . import apk
+    if a.action == "scan":
+        r = apk.scan(a.target or None)
+        for e in r["errors"]:
+            print(f"  could not read {e['path']}: {e['error']}")
+        print(f"{r['games']} game(s) in {r['folder']} — {r['read']} read, "
+              f"{r['unchanged']} unchanged, {len(r['errors'])} unreadable")
+        return
+    if a.action == "list":
+        gs = apk.games()
+        for g in gs:
+            extra = []
+            if g["splits_files"]:
+                extra.append(f"{len(g['splits_files'])} split(s)")
+            if g["obb"]:
+                extra.append(f"{len(g['obb'])} obb")
+            if g["older"]:
+                extra.append(f"{len(g['older'])} older version(s)")
+            print(f"{g['title']:<40} {g['package']:<45} {g['version_name'] or '?':<14} "
+                  f"{(g['bytes'] or 0) / 1e6:>8.1f} MB  {g['abis'] or 'any cpu'}"
+                  + (f"  ({', '.join(extra)})" if extra else ""))
+        print(f"\n{len(gs)} game(s)")
+        return
+    if not a.target:
+        print("android export needs a card, e.g. romcom android export J:\\")
+        return
+    r = apk.export(a.target, dry_run=not a.apply, abi=a.abi)
+    print(json.dumps(r, indent=2, default=str))
+    print(f"\n{r['games']} game(s), {r['bytes'] / 1e9:.2f} GB"
+          + (" would go on" if not a.apply else " on the card")
+          + (f"; {len(r['no_room'])} did not fit" if r["no_room"] else "")
+          + (f"; {len(r['skipped_abi'])} not built for {a.abi}" if r["skipped_abi"] else "")
+          + ("" if a.apply else " — run again with --apply to copy"))
+
+
 def cmd_artwork(a):
     from . import artwork
     if a.action == "fetch":
@@ -762,6 +799,16 @@ def main():
     og.add_argument("--layout",choices=["flat","ranked"],default="flat",help="flat: every game in its ES-DE system folder (default); ranked: <system>/<score>/ folders")
     og.add_argument("--no-chd",action="store_true",help="copy/unpack disc images as they are instead of converting .cue/.gdi (and PS2 .iso) to CHD")
     og.set_defaults(fn=cmd_organize)
+    an=s.add_parser("android", help="Android games: kept apart from the ROM library, installed rather than emulated")
+    an.add_argument("action", choices=["scan", "list", "export"],
+                    help="scan: read the packages in the folder (setting android_games_dir); "
+                         "list: one line per game; export: put them on a card")
+    an.add_argument("target", nargs="?", default=None,
+                    help="scan: the folder (default: the setting); export: the card, e.g. J:\\")
+    an.add_argument("--apply", action="store_true", help="export: copy (without it, only the plan)")
+    an.add_argument("--abi", default="arm64-v8a",
+                    help="export: the handheld's CPU; games built only for another are left off")
+    an.set_defaults(fn=cmd_android)
     cd=s.add_parser("card", help="what is on an SD card, and what an update of it would do")
     cd.add_argument("action", choices=["index", "update", "check"], nargs="?", default="index",
                     help="index: read the card and record what is on it; update: reconcile it with the recipe; "

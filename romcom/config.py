@@ -85,6 +85,7 @@ ENV_VARS = {
     "maintain_chd_batch": "ROMCOM_MAINTAIN_CHD_BATCH",
     "maintain_auto_hours": "ROMCOM_MAINTAIN_AUTO_HOURS",
     "bios_mirror_dir": "ROMCOM_BIOS_MIRROR",
+    "android_games_dir": "ROMCOM_ANDROID_GAMES",
 }
 # Deliberately NOT here: the web master login (ROMCOM_WEB_USER/ROMCOM_WEB_PASS), the
 # MCP key (ROMCOM_MCP_KEY), and the community-source API credentials (RA_USERNAME,
@@ -190,6 +191,10 @@ def _env_settings():
         # A local BIOS collection kept outside the library (a retrobios checkout): an
         # export looks there for any BIOS the library itself lacks. Never scanned as games.
         "bios_mirror_dir": (os.getenv("ROMCOM_BIOS_MIRROR") or "").strip().strip('"'),
+        # Android games (apk.py): .apk/.xapk files kept apart from the ROM library and
+        # never scanned as games. `romcom android scan` reads them from here.
+        "android_games_dir": (os.getenv("ROMCOM_ANDROID_GAMES")
+                              or r"H:\Android Games").strip().strip('"'),
     }
 
 def _overrides(db_path):

@@ -193,6 +193,25 @@ CREATE TABLE IF NOT EXISTS community_state (
  source TEXT NOT NULL, k TEXT NOT NULL, v TEXT,
  PRIMARY KEY(source,k)
 );
+-- Android games (apk.py): installed, not emulated, so they are not catalog items and never
+-- take part in a card's console ranking. One row per package file; `split` is set on a
+-- split APK, which belongs to the base APK of the same package and version.
+CREATE TABLE IF NOT EXISTS android_games (
+ path TEXT PRIMARY KEY,
+ package TEXT,
+ label TEXT,
+ version_name TEXT,
+ version_code INTEGER,
+ min_sdk INTEGER,
+ abis TEXT,                   -- comma-separated native ABIs; empty = runs on any CPU
+ split TEXT,
+ kind TEXT,                   -- apk or xapk
+ bytes INTEGER,
+ mtime REAL,
+ obb TEXT,                    -- JSON list of expansion files (paths, or members of an xapk)
+ error TEXT,                  -- why the file could not be read; NULL when it was
+ scanned_at TEXT
+);
 -- SD cards RomCom has written to, and what is on them.
 --
 -- A card is removable, so the database is the only durable record of its contents: while
