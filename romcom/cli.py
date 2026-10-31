@@ -454,7 +454,8 @@ def cmd_card(a):
     # gates and the card options it was written with. Without it an update planned against
     # "everything", which is not what any card was made from.
     kw = dict(systems=a.system or None, distinct_games=a.distinct_games,
-              arcade_core=a.arcade_core or "mame", arcade_status=a.arcade_status)
+              arcade_core=a.arcade_core or "mame",
+              arcade_status=a.arcade_status or "no_broken")
     if a.profile:
         from . import exportplan
         prof = next((p for p in exportplan.list_profiles()
@@ -465,8 +466,12 @@ def cmd_card(a):
         g = prof.get("gates") or {}
         kw.update(systems=a.system or prof.get("systems") or None,
                   distinct_games=bool(prof.get("distinct_games")) or a.distinct_games,
-                  arcade_core=prof.get("arcade_core") or kw["arcade_core"],
-                  arcade_status=prof.get("arcade_status") or kw["arcade_status"],
+                  # A flag given on the command line beats the profile: it is what was
+                  # asked for this run. The profile won, so `--arcade-core fbneo` quietly
+                  # updated the mame folder again.
+                  arcade_core=a.arcade_core or prof.get("arcade_core") or "mame",
+                  arcade_status=(a.arcade_status or prof.get("arcade_status")
+                                 or "no_broken"),
                   exclude_labels=prof.get("exclude_labels"),
                   chd=prof.get("chd", True) is not False,
                   artwork=bool(prof.get("artwork")),
@@ -772,10 +777,11 @@ def main():
                     help="do not trade a game for a better-ranked one; only take off what fell out of the recipe")
     cd.add_argument("--no-protect-played", action="store_true",
                     help="allow a game the handheld has played to be traded away")
-    cd.add_argument("--arcade-core", default="mame",
-                    help="which romset the card's arcade folder gets: mame, fbneo, mame2003, all")
+    cd.add_argument("--arcade-core", default=None,
+                    help="which romset the card's arcade folder gets: mame (default), fbneo, "
+                         "mame2003, all; beats the profile's")
     cd.add_argument("--arcade-status", choices=["all", "no_broken", "works_only"],
-                    default="no_broken",
+                    default=None,
                     help="the arcade health gate: no_broken (default), works_only, or all")
     cd.set_defaults(fn=cmd_card)
     rec=s.add_parser("recommend", help="the n best games to play next, in hand now")

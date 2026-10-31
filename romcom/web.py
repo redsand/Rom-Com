@@ -1100,7 +1100,8 @@ def create_app():
             path, games, db=db, systems=systems,
             evict=_flag(body.get("evict"), True),
             protect_played=_flag(body.get("protect_played"), True),
-            arcade={"core_sets": arcade["core_sets"]})
+            arcade={"core_sets": arcade["core_sets"],
+                    "fallback_bios": arcade.get("fallback_bios") or {}})
         return plan, None, 200
 
     @app.post("/api/card/plan")

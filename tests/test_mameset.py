@@ -84,8 +84,8 @@ def test_build_reports_per_set_progress(monkeypatch, tmp_path):
     seen = []
     mameset.build(["galaga"], tmp / "out", db=db,
                    progress=lambda i, total, name: seen.append((i, total, name)))
-    assert [s[2] for s in seen] == ["galaga", "namco54"]  # sorted; the device came along
-    assert seen[0][1] == 2 and seen[1] == (1, 2, "namco54")  # i/total are the build's own scale
+    assert [s[2] for s in seen] == ["namco54", "galaga"]  # the device came along, first
+    assert seen[0] == (0, 2, "namco54") and seen[1] == (1, 2, "galaga")  # the build's own scale
 
 
 def test_a_missing_rom_is_reported_not_hidden(monkeypatch, tmp_path):
@@ -226,12 +226,13 @@ def test_a_fallback_dat_cannot_hijack_the_profile_romset_dat(monkeypatch, tmp_pa
 def test_build_preserves_the_callers_order(monkeypatch, tmp_path):
     """`romset` ranks the fill so a card that runs out of room misses the obscure tail,
     not the famous middle — so the build must not re-sort what it was handed. Device
-    sets the dat added still follow, alphabetically."""
+    sets the dat added go first: a few KB each, and a fill that ran out of room before
+    them left galaga without the namco54.zip it cannot boot without."""
     db, tmp = _setup(monkeypatch, tmp_path)
     seen = []
     mameset.build(["other", "galaga"], tmp / "out", db=db,
                   progress=lambda i, total, name: seen.append((i, name)))
-    assert seen == [(0, "other"), (1, "galaga"), (2, "namco54")]
+    assert seen == [(0, "namco54"), (1, "other"), (2, "galaga")]
 
 
 FBNEO_DAT = """<?xml version="1.0"?><datafile>

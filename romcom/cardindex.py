@@ -92,6 +92,11 @@ def identify(card, db=None, create=True):
     A cloned card carries the original's uuid, so it is taken for the same card. That is
     harmless: an update works from what is physically on the mounted card, and two copies
     of one card hold the same games.
+
+    A card with no manifest is matched by drive letter only to a card that has never
+    carried an id of its own (`cards.uuid` is NULL). A card that has carried one would
+    be wearing it now; a card in its slot without it is a different card, and taking it
+    for the old one would overwrite the old card's index and stamp its id on a stranger.
     """
     db = db or connect()
     card = card_root(card)
@@ -111,7 +116,8 @@ def identify(card, db=None, create=True):
     else:
         # A card the app knows only by where it was last plugged in.
         row = db.execute("SELECT * FROM cards WHERE path=? AND id IS NOT NULL "
-                         "ORDER BY updated_at DESC LIMIT 1", (path,)).fetchone()
+                         "AND uuid IS NULL ORDER BY updated_at DESC LIMIT 1",
+                         (path,)).fetchone()
         if row is None:
             if not create:
                 return None
@@ -123,7 +129,16 @@ def identify(card, db=None, create=True):
     with db:
         db.execute("UPDATE cards SET path=?, last_seen=CURRENT_TIMESTAMP, "
                    "updated_at=CURRENT_TIMESTAMP WHERE id=?", (path, row["id"]))
+    if cid:
+        _carried(db, row["id"])
     return row["id"]
+
+
+def _carried(db, cid):
+    """Record that the card carries its id on the card, so the drive letter alone never
+    names it again."""
+    with db:
+        db.execute("UPDATE cards SET uuid=id WHERE id=? AND uuid IS NULL", (cid,))
 
 
 def stamp_identity(card, cid, manifest=None):
@@ -193,6 +208,12 @@ def _system_is_ranked(folder):
     return False
 
 
+# What ES-DE itself puts in every system folder it creates. Not a game: counted as one,
+# every empty folder on the card read as a console with games, and the BIOS check asked
+# an arcade-only card for twelve consoles' BIOS.
+_ESDE_FILES = {"systeminfo.txt"}
+
+
 def walk_card(card):
     """What is physically on the card: one unit per game ES-DE would list.
 
@@ -218,7 +239,7 @@ def walk_card(card):
             continue
         ranked = _system_is_ranked(top)
         for child in sorted(top.iterdir()):
-            if child.name.startswith("."):
+            if child.name.startswith(".") or child.name.lower() in _ESDE_FILES:
                 continue
             if child.is_file():
                 out.append({"folder": top.name, "entry": child.name, "path": child,
@@ -318,6 +339,7 @@ def index_card(card, db=None, progress=None):
     # starting over as a set of guesses.
     if stamp_identity(card, cid, manifest):
         manifest = read_manifest(card) or {}
+        _carried(db, cid)
     known = {(e.get("folder"), e.get("entry")): e
              for e in (manifest.get("entries") or []) if e.get("folder") and e.get("entry")}
 
@@ -474,8 +496,18 @@ def _arcade_entries(arcade, db=None):
     core_sets = arcade.get("core_sets") or {}
     names = []
     for core, sets in core_sets.items():
+        folder = esde.ARCADE_FOLDERS.get(core, "arcade")
         for s in sets or []:
-            names.append((esde.ARCADE_FOLDERS.get(core, "arcade"), s, core))
+            names.append((folder, s, core))
+        # The build writes more than the sets it is given: the bios it takes from a
+        # fallback dat, and every device the sets reference (galaga and bosco cannot boot
+        # without namco51.zip beside them). Those zips are the sets' own dependencies; left
+        # out of the desired state they read as "no longer selected" and came off.
+        for _alt, extra in (arcade.get("fallback_bios") or {}).get(core) or []:
+            for s in extra:
+                names.append((folder, s, core))
+        for s in _device_sets(core, sets or []):
+            names.append((folder, s, core))
     if not names:
         return {}
     ids = {s for _, s, _ in names}
@@ -501,6 +533,27 @@ def _arcade_entries(arcade, db=None):
         out[(folder, f"{s}.zip")] = {"item_id": item_id, "title": title,
                                      "score": score, "bytes": 0}
     return out
+
+
+def _device_sets(core, sets):
+    """The device sets `sets` pull in through device_ref, all the way down, that have
+    chips of their own — the zips `mameset.build` writes beside the games."""
+    from . import arcadehealth, mameset
+    dat = mameset.dat_path(core)
+    if not dat or not sets:
+        return []
+    machines = arcadehealth.parse(dat)
+    seen, todo, out = set(sets), list(sets), []
+    while todo:
+        m = machines.get(todo.pop())
+        for d in (m or {}).get("devices") or []:
+            if d in seen:
+                continue
+            seen.add(d)
+            todo.append(d)
+            if (machines.get(d) or {}).get("roms"):
+                out.append(d)
+    return sorted(out)
 
 
 def _score(row):
@@ -552,6 +605,17 @@ def plan_update(card, games, db=None, systems=None, evict=False, protect_played=
     wanted_systems = ({s.lower() for s in systems} if systems else None)
     if wanted_systems is not None:
         wanted_systems |= {esde.folder(s) for s in wanted_systems}
+        # Arcade is one system in the library but a folder per core on the card: the
+        # fbneo sets live in fbneo/, not arcade/. Each core the update builds brings its
+        # folder into scope, or that core's whole folder was never looked at.
+        # And only those: "arcade" is also the mame core's folder name, so an fbneo-only
+        # update had arcade/ in scope, read every mame set as "moved" to fbneo/ and took
+        # the whole mame folder off the card (2026-10-30, 1,848 sets, ~40 GB).
+        if "arcade" in wanted_systems:
+            wanted_systems -= {f.lower() for f in esde.ARCADE_FOLDERS.values()}
+            wanted_systems |= {esde.ARCADE_FOLDERS.get(c, "arcade").lower()
+                               for c in ((arcade or {}).get("core_sets") or {})}
+    arcade_folders = {f.lower() for f in esde.ARCADE_FOLDERS.values()}
 
     def in_scope(folder):
         if wanted_systems is None:
@@ -564,6 +628,12 @@ def plan_update(card, games, db=None, systems=None, evict=False, protect_played=
     for key, row in actual.items():
         folder, entry = key
         d = want.get(key)
+        if d is None and folder.lower() in arcade_folders and "." not in entry:
+            # A MAME disc game is `<set>.zip` and a `<set>/` folder of CHDs beside it. The
+            # folder is part of the set: read as a stray copy of it, it came off as
+            # "moved" and took the game's disc with it (14 sets, 17.9 GB on the arcade
+            # card). It goes with its zip — kept while the zip is wanted.
+            d = want.get((folder, entry + ".zip"))
         if d is None:
             if not row["item_id"]:
                 untracked.append(row)          # the library cannot name it: never touched
@@ -571,8 +641,12 @@ def plan_update(card, games, db=None, systems=None, evict=False, protect_played=
             if not in_scope(folder):
                 keep.append({**row, "reason": "out of scope"})
                 continue
-            # The same game under another name, or another name for the same place.
-            same = next((w for w in want.values() if w["item_id"] == row["item_id"]), None)
+            # The same game under another name, or another name for the same place. Not
+            # across arcade folders: the same set in another core's folder is a different
+            # zip for a different emulator, never a move of this one.
+            same = next((w for k, w in want.items() if w["item_id"] == row["item_id"]
+                         and not (folder.lower() in arcade_folders
+                                  and k[0].lower() != folder.lower())), None)
             if row["item_id"] in broken:
                 # The library threw its own copy away as the wrong game, a stub or a
                 # corrupt download: the card's copy came from the same file and does
@@ -1004,6 +1078,7 @@ def _write_index_manifest(card, cid, db, profile=None):
                                  "bytes": row["bytes"] or 0, "score": row["score"]})
     if profile is None:
         profile = (read_manifest(card) or {}).get("profile") or {}
+    _carried(db, cid)
     return write_manifest(card, {
         "card_id": cid, "written_at": datetime.now().isoformat(timespec="seconds"),
         "romcom_version": VERSION, "profile": profile,

@@ -553,7 +553,8 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                                           evict=evict, protect_played=protect_played,
                                           free_bytes=_free_bytes(dest),
                                           reserve_bytes=reserve,
-                                          arcade={"core_sets": core_sets})
+                                          arcade={"core_sets": core_sets,
+                                                  "fallback_bios": fallback_bios})
         if progress:
             progress(0, 0, f"planning the update ({len(rec_plan['remove'])} to remove, "
                             f"{len(rec_plan['add'])} to add)…")

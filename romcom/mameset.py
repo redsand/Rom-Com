@@ -235,9 +235,12 @@ def build(setnames, dest, db=None, dry_run=False, stop=None, room_for=None, prog
     stopped = out_of_room = False
     # The caller's order wins: `romset` ranks the fill so a card that runs out of room
     # misses the obscure tail, not the famous middle. Set names the dat added on its
-    # own (device refs) follow, alphabetically.
-    order = [n for n in setnames if n in roms or n in disks]
-    order += sorted(n for n in roms if n not in set(setnames))
+    # own (device refs) go FIRST, alphabetically: they are a few KB each, and a fill
+    # that reached the reserve before them left galaga and bosco on the card without
+    # the namco5x zips they cannot boot without.
+    asked = set(setnames)
+    order = sorted(n for n in roms if n not in asked)
+    order += [n for n in setnames if n in roms or n in disks]
     import shutil
     for i, name in enumerate(order):
         if progress: progress(i, len(order), name)

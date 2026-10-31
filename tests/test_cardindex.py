@@ -182,6 +182,29 @@ def test_a_card_that_states_its_identity_is_not_the_card_that_used_to_be_in_the_
         ("brand-new-card", "New Game.nes"), (old_id, "Old Game.nes")}
 
 
+def test_a_card_without_an_id_is_not_the_stamped_card_that_used_to_be_in_the_slot(
+        tmp_path, monkeypatch):
+    """A card that has carried its id would still be wearing it. A card in its slot with
+    no manifest is a different card: taking it for the old one overwrote the old card's
+    index and stamped the old card's id onto the stranger (the arcade card, 2026-10-30)."""
+    db = _lib(tmp_path, monkeypatch)
+    card = _card(tmp_path, {"nes": {"Old Game.nes": 100}})
+    from romcom import cardindex
+    old_id = cardindex.index_card(card, db=db)["card_id"]
+
+    # The old card comes out; a card that has never been indexed goes into the slot.
+    import shutil
+    shutil.rmtree(card)
+    other = _card(tmp_path, {"arcade": {"pacman.zip": 100}})
+    new_id = cardindex.index_card(other, db=db)["card_id"]
+    assert new_id != old_id
+    manifest = json.loads((other / ".romcom-card.json").read_text(encoding="utf-8"))
+    assert manifest["card_id"] == new_id
+    rows = db.execute("SELECT card_id,entry FROM card_entries").fetchall()
+    assert {(x["card_id"], x["entry"]) for x in rows} == {
+        (old_id, "Old Game.nes"), (new_id, "pacman.zip")}
+
+
 def test_play_counts_are_read_back_off_the_card(tmp_path, monkeypatch):
     """ES-DE's own bookkeeping on the card is the only place the owner's play counts
     exist — the library's own play data is barely there at all."""
@@ -448,6 +471,95 @@ def test_an_arcade_set_is_not_read_as_no_longer_selected(tmp_path, monkeypatch):
     assert any(k["entry"] == "pacman.zip" for k in plan["keep"])
 
 
+def test_a_disc_set_keeps_its_chd_folder(tmp_path, monkeypatch):
+    """A MAME disc game is `<set>.zip` plus a `<set>/` folder of CHDs. The folder was read
+    as a stray copy of the set and came off as "moved" — 14 disc games, 17.9 GB."""
+    db = _lib(tmp_path, monkeypatch)
+    card = _card(tmp_path, {"arcade": {"kinst.zip": 500, "kinst/kinst.chd": 9000}})
+    with db:
+        db.execute("INSERT INTO items(id,title,system,community_score,wanted,external_id,"
+                   "playable) VALUES('arc-kinst','Killer Instinct','arcade',80,1,"
+                   "'mame/kinst',1)")
+    from romcom import cardindex
+    cardindex.index_card(card, db=db)
+    plan = cardindex.plan_update(card, [], db=db, systems=["arcade"],
+                                  arcade={"core_sets": {"mame": ["kinst"]}})
+    assert plan["remove"] == []
+    assert {k["entry"] for k in plan["keep"]} >= {"kinst.zip", "kinst"}
+
+
+def test_the_device_zips_a_set_needs_stay_on_the_card(tmp_path, monkeypatch):
+    """The build writes namco51.zip beside bosco.zip because bosco references it. The
+    update did not know that and read the device zips as "no longer selected"."""
+    db = _lib(tmp_path, monkeypatch)
+    dat = tmp_path / "mame.xml"
+    dat.write_text(chr(10).join((
+        '<mame>', '<machine name="bosco">', '<rom name="b.1" size="1" crc="00000001"/>',
+        '<device_ref name="namco51"/>', '<device_ref name="z80"/>', '</machine>',
+        '<machine name="namco51" isdevice="yes" runnable="no">',
+        '<rom name="51xx.bin" size="1" crc="00000002"/>', '</machine>',
+        '<machine name="z80" isdevice="yes" runnable="no">', '</machine>',
+        '<machine name="m68705p3" isdevice="yes" runnable="no">',
+        '<rom name="p3.bin" size="1" crc="00000003"/>', '</machine>', '</mame>')),
+        encoding="utf-8")
+    from romcom import mameset
+    monkeypatch.setattr(mameset, "dat_path", lambda profile=None: dat)
+    card = _card(tmp_path, {"arcade": {"bosco.zip": 500, "namco51.zip": 10,
+                                       "m68705p3.zip": 10}})
+    with db:
+        for iid, ext in (("a-bosco", "bosco"), ("a-n51", "namco51"), ("a-p3", "m68705p3")):
+            db.execute("INSERT INTO items(id,title,system,wanted,external_id,playable) "
+                       "VALUES(?,?,'arcade',1,?,1)", (iid, ext, "mame/" + ext))
+    from romcom import cardindex
+    cardindex.index_card(card, db=db)
+    plan = cardindex.plan_update(card, [], db=db, systems=["arcade"],
+                                  arcade={"core_sets": {"mame": ["bosco"]}})
+    # The device bosco needs stays; one nothing on the card references comes off.
+    assert [r["entry"] for r in plan["remove"]] == ["m68705p3.zip"]
+
+
+def test_each_arcade_core_brings_its_own_folder_into_scope(tmp_path, monkeypatch):
+    """Arcade is one system but a folder per core. The fbneo/ folder was "outside this
+    update's scope", so an update building fbneo never looked at what fbneo/ held."""
+    db = _lib(tmp_path, monkeypatch)
+    card = _card(tmp_path, {"fbneo": {"pacman.zip": 500, "donkeykong.zip": 400}})
+    with db:
+        db.execute("INSERT INTO items(id,title,system,community_score,wanted,external_id,"
+                   "playable) VALUES('arc-pacman','Pac-Man','arcade',50,1,'mame/pacman',1)")
+        db.execute("INSERT INTO items(id,title,system,community_score,wanted,external_id,"
+                   "playable) VALUES('arc-dk','Donkey Kong','arcade',40,1,'mame/donkeykong',1)")
+    from romcom import cardindex
+    cardindex.index_card(card, db=db)
+    plan = cardindex.plan_update(card, [], db=db, systems=["arcade"],
+                                  arcade={"core_sets": {"fbneo": ["pacman"]}})
+    assert [r["entry"] for r in plan["remove"]] == ["donkeykong.zip"]
+    # A core the update does not build leaves its folder alone.
+    plan = cardindex.plan_update(card, [], db=db, systems=["arcade"],
+                                  arcade={"core_sets": {"mame": ["pacman"]}})
+    assert plan["remove"] == []
+
+
+def test_an_fbneo_update_leaves_the_mame_folder_alone(tmp_path, monkeypatch):
+    """mame's folder is called arcade/, the same as the system. An fbneo-only update had
+    it in scope and took every mame set off as "moved" to fbneo/ — the whole folder."""
+    db = _lib(tmp_path, monkeypatch)
+    card = _card(tmp_path, {"arcade": {"pacman.zip": 500, "kinst/kinst.chd": 900},
+                            "fbneo": {"pacman.zip": 400}})
+    with db:
+        db.execute("INSERT INTO items(id,title,system,community_score,wanted,external_id,"
+                   "playable) VALUES('arc-pacman','Pac-Man','arcade',50,1,'mame/pacman',1)")
+        db.execute("INSERT INTO items(id,title,system,community_score,wanted,external_id,"
+                   "playable) VALUES('arc-kinst','Killer Instinct','arcade',80,1,"
+                   "'mame/kinst',1)")
+    from romcom import cardindex
+    cardindex.index_card(card, db=db)
+    plan = cardindex.plan_update(card, [], db=db, systems=["arcade"],
+                                  arcade={"core_sets": {"fbneo": ["pacman", "kinst"]}})
+    assert plan["remove"] == []
+    assert not [k for k in plan["keep"] if k["folder"] == "arcade"
+                and k.get("reason") != "out of scope"]
+
+
 def test_a_set_the_recipe_no_longer_builds_comes_off_the_card(tmp_path, monkeypatch):
     """The other half of the same rule: a set the recipe has dropped does come off, so
     the arcade folder is not a shelf the update never touches."""
@@ -635,3 +747,14 @@ def test_the_card_check_finds_broken_games_and_missing_bios(tmp_path, monkeypatc
     assert set(bad) == {"Bad.chd", "Half.gdi", "Empty.nes", "Broken.zip"}
     assert "not in the folder" in bad["Half.gdi"][0]
     assert r["bios"]["dreamcast"]["missing"] == ["dc_flash.bin"]
+
+
+def test_es_de_placeholder_folders_are_not_consoles_with_games(tmp_path, monkeypatch):
+    """ES-DE writes systeminfo.txt into every folder it makes. Counted as a game, an
+    arcade-only card was asked for twelve consoles' BIOS."""
+    db = _lib(tmp_path, monkeypatch)
+    card = _card(tmp_path, {"arcade": {"pacman.zip": 10}, "nds": {"systeminfo.txt": 10}})
+    from romcom import cardindex
+    r = cardindex.check_card(card, db=db)
+    assert r["games"] == 1
+    assert "nds" not in r["bios"]
