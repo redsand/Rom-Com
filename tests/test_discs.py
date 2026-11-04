@@ -119,3 +119,48 @@ def test_a_name_another_game_owns_is_never_taken_over(monkeypatch, tmp_path):
 def test_a_title_is_made_safe_for_a_windows_file_name():
     assert discs._stem("Star Wars: Episode I <Racer>?") == "Star Wars - Episode I _Racer__"
     assert discs._stem("  Game.  ") == "Game"
+
+
+def test_a_loose_psp_iso_compacts_to_its_chd(monkeypatch, tmp_path):
+    """A loose .iso is a dump like an archived one: converted (a UMD's padding is half its
+    bytes), verified, made the game's library file — and the iso goes. 46 of them, 33 GB,
+    sat outside compaction because only archives qualified."""
+    db, a, lib = _env(monkeypatch, tmp_path)
+    games = tmp_path / "H" / "Games"
+    iso = games / "Crisis Core (USA).iso"
+    iso.write_bytes(b"u" * 2048 * 100)
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status) VALUES('p','Crisis Core (USA)','psp','VERIFIED')")
+        db.execute("INSERT INTO files(path,bytes,matched_item_id,content) VALUES(?,?,'p',1)",
+                   (str(iso), iso.stat().st_size))
+    r = discs.compact(apply=True, convert=True)
+    chd = lib / "psp" / "Crisis Core (USA).chd"
+    assert r["chds"] >= 1 and chd.exists() and not iso.exists()
+    rows = {x[0]: x[1] for x in db.execute(
+        "SELECT path, matched_item_id FROM files WHERE matched_item_id='p'")}
+    assert rows == {str(chd): "p"}
+
+
+def test_a_loose_cue_takes_its_own_tracks_only(monkeypatch, tmp_path):
+    """A .cue's tracks go with it; a second dump of the same disc (.cdi beside the .cue)
+    keeps its place — which dump a card carries is the export's business, not this's."""
+    db, a, lib = _env(monkeypatch, tmp_path)
+    games = tmp_path / "H" / "Games"
+    cue, binf = games / "Loose (USA).cue", games / "Loose (USA) (Track 1).bin"
+    cue.write_text('FILE "Loose (USA) (Track 1).bin" BINARY\n  TRACK 01 MODE2/2352\n',
+                   encoding="utf-8")
+    binf.write_bytes(b"t" * 2352 * 4)
+    cdi = games / "Loose (USA).cdi"
+    cdi.write_bytes(b"d" * 900)
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status) VALUES('l','Loose (USA)','psx','VERIFIED')")
+        for f in (cue, binf, cdi):
+            db.execute("INSERT INTO files(path,bytes,matched_item_id,content) "
+                       "VALUES(?,?,?,1)", (str(f), f.stat().st_size, "l"))
+    r = discs.compact(apply=True, convert=True)
+    chd = lib / "psx" / "Loose (USA).chd"
+    assert r["chds"] >= 1 and chd.exists()
+    assert not cue.exists() and not binf.exists()
+    assert cdi.exists()                    # the other dump of the disc stays
+    paths = {x[0] for x in db.execute("SELECT path FROM files WHERE matched_item_id='l'")}
+    assert paths == {str(chd), str(cdi)}

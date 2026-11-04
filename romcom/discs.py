@@ -116,12 +116,30 @@ def _target(db, folder_dir, iid, stem):
     raise RuntimeError(f"no free CHD name for {stem}")
 
 
+def _dump_files(src, main, files):
+    """The library files one dump of a game is made of: an archive is itself; a loose
+    disc image is itself, or its descriptor plus the tracks it names that are among the
+    game's own files. A second dump of the same disc (a .cdi beside the .cue) is not
+    part of this one and keeps its place — the export picks the best dump per game."""
+    if main is None:                              # an archive holds the disc inside
+        return [src]
+    own = {Path(p).name.lower(): p for p, _ in files}
+    out = [src]
+    if Path(src).suffix.lower() in (".cue", ".gdi", ".toc"):
+        from . import esde
+        for name in esde.desc_tracks(src):
+            if name.lower() in own and own[name.lower()] not in out:
+                out.append(own[name.lower()])
+    return out
+
+
 def compact(apply=False, convert=False, limit=None, systems=None, progress=None,
             stop=None, db=None):
-    """Make each disc game's CHD its library file and delete the archive it came from.
+    """Make each disc game's CHD its library file and delete the files it came from.
 
-    Only archives are let go (a .7z/.zip/.rar holding one disc): a loose .cue and its
-    tracks are left as they are. A disc whose CHD is not in the cache is converted only
+    An archive holding one disc goes whole; a loose image (.iso, a lone .bin, a
+    descriptor and the tracks it names among the game's own files) goes with its
+    tracks, and no further. A disc whose CHD is not in the cache is converted only
     with `convert`, at most `limit` conversions. Nothing is deleted unless the CHD
     verifies. Returns {"games", "chds", "converted", "freed", "skipped": {name: why},
     "planned_bytes"} — with apply=False, what it would do."""
@@ -139,7 +157,7 @@ def compact(apply=False, convert=False, limit=None, systems=None, progress=None,
         if stop is not None and stop.is_set():
             break
         steps, _, _ = esde.plan(system, files, chd=True)
-        chd_steps = [st for st in steps if st[0] == "chd" and st[2] is not None]
+        chd_steps = [st for st in steps if st[0] == "chd"]
         if not chd_steps:
             continue
         out["games"] += 1
@@ -153,6 +171,10 @@ def compact(apply=False, convert=False, limit=None, systems=None, progress=None,
         for (_, src, names, main, rel, _est), stem in zip(chd_steps, stems):
             if stop is not None and stop.is_set():
                 break
+            # What goes if the CHD takes the disc's place: the archive it came from, or
+            # the loose image and its own tracks. Anything else the game owns stays.
+            dump = _dump_files(src, main if names is None else None, files)
+            size = sum(Path(p).stat().st_size for p in dump if Path(p).exists())
             target = _target(db, lib / esde.folder(system), iid, stem)
             rel = target.name
             cached = esde.chd_cached(src, main, system)
@@ -161,7 +183,7 @@ def compact(apply=False, convert=False, limit=None, systems=None, progress=None,
                     continue
                 if not apply:
                     out["converted"] += 1
-                    out["planned_bytes"] += Path(src).stat().st_size
+                    out["planned_bytes"] += size
                     continue
                 if progress:
                     progress(n, len(work), f"converting {main} to CHD…")
@@ -175,7 +197,6 @@ def compact(apply=False, convert=False, limit=None, systems=None, progress=None,
                         out["skipped"][Path(src).name] = f"could not convert: {e}"[:200]
                     continue
                 out["converted"] += 1
-            size = Path(src).stat().st_size
             if not apply:
                 out["chds"] += 1
                 out["planned_bytes"] += size
@@ -201,13 +222,19 @@ def compact(apply=False, convert=False, limit=None, systems=None, progress=None,
                               content,scanned_at) VALUES(?,?,?,?,'converted',1,CURRENT_TIMESTAMP)
                               ON CONFLICT(path) DO UPDATE SET matched_item_id=excluded.matched_item_id,
                               match_method='converted'""", (str(target), st.st_size, st.st_mtime, iid))
-            try:
-                Path(src).unlink()
-            except OSError as e:
-                out["skipped"][Path(src).name] = f"could not delete: {e}"[:200]
-                continue
+            gone = 0
+            for p in dump:
+                try:
+                    gone += Path(p).stat().st_size
+                    Path(p).unlink()
+                except OSError as e:
+                    out["skipped"][Path(p).name] = f"could not delete: {e}"[:200]
+                    continue
+                with db:
+                    db.execute("DELETE FROM files WHERE path=? OR path LIKE ?", (p, f"{p}|%"))
+            if gone < size:
+                continue                        # part of the dump is still on disk: not compacted
             with db:
-                db.execute("DELETE FROM files WHERE path=? OR path LIKE ?", (src, f"{src}|%"))
                 db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
                            (iid, "compacted", f"{src} -> {target}"[:400]))
             out["chds"] += 1
