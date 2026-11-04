@@ -455,7 +455,12 @@ def cmd_card(a):
     # "everything", which is not what any card was made from.
     kw = dict(systems=a.system or None, distinct_games=a.distinct_games,
               arcade_core=a.arcade_core or "mame",
-              arcade_status=a.arcade_status or "no_broken")
+              arcade_status=a.arcade_status or "no_broken",
+              # An update takes a game's pictures off with it, so it puts the pictures
+              # on with the games too — whatever the profile says. The arcade profile
+              # said no, and an update that rebuilt its MAME folder left 2,207 sets
+              # with no cover.
+              artwork=not a.no_artwork)
     if a.profile:
         from . import exportplan
         prof = next((p for p in exportplan.list_profiles()
@@ -474,7 +479,6 @@ def cmd_card(a):
                                  or "no_broken"),
                   exclude_labels=prof.get("exclude_labels"),
                   chd=prof.get("chd", True) is not False,
-                  artwork=bool(prof.get("artwork")),
                   fill=bool(prof.get("fill")),
                   layout=prof.get("layout") or "flat",
                   wanted_only=bool(g.get("wanted_only")), keep_only=bool(g.get("keep_only")),
@@ -498,11 +502,17 @@ def cmd_card(a):
                                        "bytes": a.get("bytes") or 0}
                                       for a in rec.get("no_room") or []],
                           "bytes_remove": rec.get("bytes_remove"),
-                          "bytes_add": rec.get("bytes_add")}, indent=2, default=str))
+                          "bytes_add": rec.get("bytes_add"),
+                          "art_bytes": rec.get("art_bytes"),
+                          "art_short": rec.get("art_short")}, indent=2, default=str))
         print(f"\n{len(rec.get('would_remove') or [])} game(s) would come off, "
               f"{len(rec.get('would_add') or [])} would go on"
               + (f", {len(rec.get('no_room') or [])} would not fit"
                  if rec.get("no_room") else "")
+              + (f"; {rec['art_bytes'] / 2**20:.0f} MB of pictures to write"
+                 if rec.get("art_bytes") else "")
+              + (f" ({rec['art_short'] / 2**20:.0f} MB short of room)"
+                 if rec.get("art_short") else "")
               + f" — run again with --apply to do it")
         return
     print(json.dumps(r, indent=2, default=str))
@@ -830,6 +840,9 @@ def main():
     cd.add_argument("--arcade-status", choices=["all", "no_broken", "works_only"],
                     default=None,
                     help="the arcade health gate: no_broken (default), works_only, or all")
+    cd.add_argument("--no-artwork", action="store_true",
+                    help="card update: leave ES-DE's pictures alone (by default the update "
+                         "writes every game's missing covers and screenshots, and makes room for them)")
     cd.set_defaults(fn=cmd_card)
     rec=s.add_parser("recommend", help="the n best games to play next, in hand now")
     rec.add_argument("--system", help="one system, or omit for the whole shelf")

@@ -758,3 +758,26 @@ def test_es_de_placeholder_folders_are_not_consoles_with_games(tmp_path, monkeyp
     r = cardindex.check_card(card, db=db)
     assert r["games"] == 1
     assert "nds" not in r["bios"]
+
+
+def test_a_full_card_gives_up_its_worst_game_for_the_pictures(tmp_path, monkeypatch):
+    """A card filled to its reserve had no room for covers, so ES-DE showed blank tiles.
+    The plan keeps room for the pictures the games still lack, and an evicting update
+    gives up the worst-ranked game — one, not more — to make it."""
+    db = _lib(tmp_path, monkeypatch)
+    card = _exported(tmp_path, monkeypatch, db, [
+        ("nes-a", "Good Game", 90, "Good Game.nes", 1000),
+        ("nes-b", "Fair Game", 50, "Fair Game.nes", 1000),
+        ("nes-c", "Poor Game", 10, "Poor Game.nes", 1000)])
+    from romcom import cardindex
+    games = _games_for(db, {"nes-a", "nes-b", "nes-c"})
+    need = lambda entries: {(f, e): 300 for f, e, _ in entries}
+    plan = cardindex.plan_update(card, games, db=db, evict=True, free_bytes=100,
+                                 reserve_bytes=0, art_need=need)
+    gone = [(r["entry"], r["reason"]) for r in plan["remove"]]
+    assert gone == [("Poor Game.nes", "room for the pictures")]
+    assert plan["art_short"] == 0
+    # Without eviction nothing comes off; the plan says how short it is.
+    plan = cardindex.plan_update(card, games, db=db, evict=False, free_bytes=100,
+                                 reserve_bytes=0, art_need=need)
+    assert plan["remove"] == [] and plan["art_short"] == 800

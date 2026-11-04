@@ -554,7 +554,8 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
                                           free_bytes=_free_bytes(dest),
                                           reserve_bytes=reserve,
                                           arcade={"core_sets": core_sets,
-                                                  "fallback_bios": fallback_bios})
+                                                  "fallback_bios": fallback_bios},
+                                          art_need=_art_need(dest, db) if artwork else None)
         if progress:
             progress(0, 0, f"planning the update ({len(rec_plan['remove'])} to remove, "
                             f"{len(rec_plan['add'])} to add)…")
@@ -569,6 +570,12 @@ def organize(dest, systems=None, progress=None, wanted_only=False, sources=None,
     # reserve and stop the run part-way through, so the copy loop steps over it too.
     no_room_items = {e.get("item_id") for e in (rec_plan or {}).get("no_room") or []
                      if e.get("item_id")}
+    # An arcade set is built, not copied, so the copy loop's skip never sees it: one the
+    # plan gave up comes out of the build list, or the build would put it straight back.
+    for e in (rec_plan or {}).get("evicted") or []:
+        for core, folder in esde.ARCADE_FOLDERS.items():
+            if core in core_sets and (e.get("folder") or "").lower() == folder                     and (e.get("entry") or "").endswith(".zip"):
+                core_sets[core] = [x for x in core_sets[core] if x != e["entry"][:-4]]
 
     def room_for(nbytes):
         free = _free_bytes(dest)
@@ -1040,6 +1047,10 @@ def _reconcile_report(plan, done, dry_run):
         "bytes_remove": plan.get("bytes_remove") or 0,
         "bytes_add": plan.get("bytes_add") or 0,
         "free_bytes": plan.get("free_bytes"),
+        # The pictures still to write, and how much of that the card could not make room
+        # for (a non-evicting update does not trade games for them).
+        "art_bytes": plan.get("art_bytes") or 0,
+        "art_short": plan.get("art_short") or 0,
         "protected": [{"entry": p.get("entry"), "title": p.get("title") or "",
                        "why": p.get("why") or ""} for p in plan.get("protected") or []],
         # The games the card had no room for: still wanted, still in the library, and
@@ -1353,6 +1364,12 @@ def _free_bytes(dest):
         return shutil.disk_usage(_volume(dest)).free
     except OSError:
         return None
+
+
+def _art_need(dest, db):
+    """The plan's measure of what a card's pictures still cost (artwork.missing_bytes)."""
+    from . import artwork as art
+    return lambda entries: art.missing_bytes(dest, entries, db=db)
 
 
 def _reserve_bytes(dest):

@@ -580,7 +580,10 @@ def create_app():
                                           distinct_games=bool(params.get("distinct_games")),
                                           arcade_core=params.get("arcade_core") or "mame",
                                           arcade_status=params.get("arcade_status"),
-                                          artwork=bool(params.get("artwork")),
+                                          # An update keeps the pictures in step
+                                          # with the games: it removes a game's, so
+                                          # it writes the new ones (see cli card).
+                                          artwork=_flag(params.get("update_artwork"), True),
                                           exclude_labels=params.get("exclude_labels"),
                                           layout=params.get("layout") or "flat",
                                           chd=_flag(params.get("chd"), True),

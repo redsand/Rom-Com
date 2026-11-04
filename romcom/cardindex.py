@@ -569,7 +569,8 @@ def _game_bytes(g):
 
 
 def plan_update(card, games, db=None, systems=None, evict=False, protect_played=True,
-                free_bytes=None, reserve_bytes=None, budget_bytes=None, arcade=None):
+                free_bytes=None, reserve_bytes=None, budget_bytes=None, arcade=None,
+                art_need=None):
     """What an update of this card would do, without touching anything.
 
     The diff has two halves. What the recipe no longer selects comes off — that is a
@@ -589,6 +590,12 @@ def plan_update(card, games, db=None, systems=None, evict=False, protect_played=
 
     `budget_bytes` caps how much of the card games may take; by default the card's free
     space and the export's reserve decide it.
+
+    `art_need`, given [(folder, entry, item_id)], says what each game's pictures would
+    still cost on the card ({(folder, entry): bytes}, `artwork.missing_bytes`). With it
+    the plan keeps room for them, and an evicting update gives up the worst-ranked games
+    until they fit: the covers are what ES-DE shows of every game, and a card with no
+    room left for them shows a wall of blank tiles.
     """
     db = db or connect()
     card = card_root(card)
@@ -739,13 +746,36 @@ def plan_update(card, games, db=None, systems=None, evict=False, protect_played=
             else:
                 no_room.append(a)
 
+    art_bytes = art_short = 0
+    if art_need is not None and free is not None:
+        staying = [(k["folder"], k["entry"], k.get("item_id")) for k in keep] +                   [(a["folder"], a["entry"], a.get("item_id")) for a in fits]
+        owed = art_need(staying)
+        art_bytes = sum(owed.values())
+        if art_bytes > left and evict:
+            gone = {(e["folder"], e["entry"]) for e in remove}
+            for c in cands:
+                if art_bytes <= left:
+                    break
+                row = c["row"]
+                key = (row["folder"], row["entry"])
+                if key in gone:
+                    continue
+                e = {**row, "reason": "room for the pictures", "title": c["title"]}
+                remove.append(e)
+                evictions.append(e)
+                keep = [k for k in keep if (k["folder"], k["entry"]) != key]
+                left += row.get("bytes") or 0
+                art_bytes -= owed.get(key, 0)
+        art_short = max(0, art_bytes - left)
+
     return {"card_id": cid, "card": str(card),
             "remove": remove, "add": fits, "keep": keep, "untracked": untracked,
             "protected": protected, "no_room": no_room,
             "evicted": evictions,
             "bytes_remove": sum(r.get("bytes") or 0 for r in remove),
             "bytes_add": sum(a["bytes"] for a in fits),
-            "free_bytes": free, "reserve_bytes": reserve, "usable_bytes": usable}
+            "free_bytes": free, "reserve_bytes": reserve, "usable_bytes": usable,
+            "art_bytes": art_bytes, "art_short": art_short}
 
 
 # What the library writes down when it lets a game's file go because the file was bad:

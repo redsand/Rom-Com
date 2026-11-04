@@ -337,16 +337,51 @@ def cached_sizes(kinds=DEFAULT_KINDS, db=None):
     for r in db.execute("SELECT item_id, kind, path FROM artwork WHERE path IS NOT NULL"):
         if r["kind"] not in kinds:
             continue
-        try:
-            size = Path(r["path"]).stat().st_size
-        except OSError:
-            continue
-        if r["kind"] == "boxart" and size >= CARD_COVER_MIN and not r["path"].endswith(".jpg"):
-            size //= 5                      # card_cover's JPEG, roughly
-        # A big exFAT card stores every file in 128 KiB clusters: a 20 KB snap costs 128 KB
-        # there, and 5,600 images on a 256 GB card cost twice their bytes.
-        size = -(-size // CARD_CLUSTER) * CARD_CLUSTER
-        out[r["item_id"]] = out.get(r["item_id"], 0) + size
+        size = _card_bytes(r["kind"], r["path"])
+        if size is not None:
+            out[r["item_id"]] = out.get(r["item_id"], 0) + size
+    return out
+
+
+def _card_bytes(kind, path):
+    """What one cached image costs on a card, or None when it is not there."""
+    try:
+        size = Path(path).stat().st_size
+    except OSError:
+        return None
+    if kind == "boxart" and size >= CARD_COVER_MIN and not str(path).endswith(".jpg"):
+        size //= 5                      # card_cover's JPEG, roughly
+    # A big exFAT card stores every file in 128 KiB clusters: a 20 KB snap costs 128 KB
+    # there, and 5,600 images on a 256 GB card cost twice their bytes.
+    return -(-size // CARD_CLUSTER) * CARD_CLUSTER
+
+
+def missing_bytes(dest, entries, kinds=DEFAULT_KINDS, media_dir=None, db=None):
+    """{(folder, entry): bytes} the images `export_media` would still have to write for
+    each game — the ones its cache holds and the card does not. `entries` is
+    [(folder, entry, item_id)]. A card update plans with it so the pictures have room:
+    a full card took its games and had none left for them (2026-10-30, the arcade card:
+    4,298 sets and not one cover)."""
+    db = db or connect()
+    from . import esde
+    media = Path(media_dir) if media_dir else esde.card_root(dest) / "ES-DE" / "downloaded_media"
+    kinds = [k for k in kinds if k in ALL_KINDS]
+    ids = {iid for _, _, iid in entries if iid}
+    art = {}
+    for r in db.execute("SELECT item_id, kind, path FROM artwork WHERE path IS NOT NULL"):
+        if r["item_id"] in ids and r["kind"] in kinds:
+            art.setdefault(r["item_id"], {})[r["kind"]] = r["path"]
+    out = {}
+    for fold, entry, iid in entries:
+        need = 0
+        for k, src in (art.get(iid) or {}).items():
+            rel = Path(entry)
+            there = media / fold / ESDE[k] / rel.parent
+            if any((there / f"{rel.stem}{x}").exists() for x in (".png", ".jpg")):
+                continue
+            need += _card_bytes(k, src) or 0
+        if need:
+            out[(fold, entry)] = need
     return out
 
 
@@ -419,52 +454,52 @@ def export_media(dest, kinds=DEFAULT_KINDS, media_dir=None, systems=None, room_f
         if r["matched_item_id"] in art:
             by_file.setdefault(Path(r["path"]).name.lower(), r["matched_item_id"])
     wanted = {s.lower() for s in systems} if systems else None
-    written = skipped = nbytes = games = without = 0
+    written = skipped = nbytes = 0
     stopped = False
     if entries is not None:
         listed = [(fold, Path(e), iid) for fold, lst in sorted(entries.items())
                   for e, iid in lst]
     else:
         listed = _walk_card(dest, wanted, by_set, by_file)
-    for fold, entry, iid in listed:
-        games += 1
+    games = len(listed)
+    without = sum(1 for _, _, iid in listed if not any(k in art.get(iid, {}) for k in kinds))
+    # One kind at a time, in the order given: covers for every game, then screenshots,
+    # then marquees. Game by game, a card short of room spent it on the first games'
+    # marquees and the last games got no cover at all.
+    done = 0
+    for k, (fold, entry, iid) in ((k, x) for k in kinds for x in listed):
+        done += 1
+        if progress and done % 200 == 0:
+            progress(done, 0, f"artwork ({ESDE[k]}): {fold}/{entry}")
         imgs = art.get(iid, {})
-        if not any(k in imgs for k in kinds):
-            without += 1
-            continue
         # ES-DE names media after the entry without its extension — for a directory
         # interpreted as a file ("Game.cue/") too.
-        for k in kinds:
-            src = imgs.get(k)
-            if not src or not Path(src).exists():
-                continue
-            if k == "boxart" and not dry_run:
-                src = card_cover(src)
-            ext = Path(src).suffix.lower() or ".png"
-            target = media / fold / ESDE[k] / entry.parent / f"{entry.stem}{ext}"
-            size = Path(src).stat().st_size
-            if target.exists() and target.stat().st_size == size:
-                skipped += 1
-                continue
-            for other in (".png", ".jpg"):
-                # One image per game and kind: a front end picks whichever it finds first.
-                if other != ext and not dry_run:
-                    try:
-                        target.with_suffix(other).unlink()
-                    except OSError:
-                        pass
-            if room_for is not None and not room_for(size):
-                stopped = True
-                break
-            nbytes += size
-            if not dry_run:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(src, target)
-            written += 1
-        if stopped:
+        src = imgs.get(k)
+        if not src or not Path(src).exists():
+            continue
+        if k == "boxart" and not dry_run:
+            src = card_cover(src)
+        ext = Path(src).suffix.lower() or ".png"
+        target = media / fold / ESDE[k] / entry.parent / f"{entry.stem}{ext}"
+        size = Path(src).stat().st_size
+        if target.exists() and target.stat().st_size == size:
+            skipped += 1
+            continue
+        for other in (".png", ".jpg"):
+            # One image per game and kind: a front end picks whichever it finds first.
+            if other != ext and not dry_run:
+                try:
+                    target.with_suffix(other).unlink()
+                except OSError:
+                    pass
+        if room_for is not None and not room_for(size):
+            stopped = True
             break
-        if progress and games % 200 == 0:
-            progress(games, 0, f"artwork: {fold}/{entry}")
+        nbytes += size
+        if not dry_run:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, target)
+        written += 1
     return {"written": written, "skipped": skipped, "bytes": nbytes, "games": games,
             "without_art": without, "media_dir": str(media), "stopped": stopped}
 
@@ -472,15 +507,21 @@ def export_media(dest, kinds=DEFAULT_KINDS, media_dir=None, systems=None, room_f
 def _walk_card(dest, wanted, by_set, by_file):
     """(folder, entry, item_id) for the games found on a card by walking it — the
     standalone `artwork export`, when no export just said what it wrote."""
+    from . import esde
     out = []
-    for top in sorted(p for p in dest.iterdir() if p.is_dir()):
+    # A card keeps its games in ROMs/ (ES-DE's layout); an old one at its top level.
+    # Walked from the top, ROMs/ itself read as one system called "roms".
+    roms = esde.roms_dir(dest)
+    base = roms if roms.is_dir() else dest
+    arcade = {f.lower() for f in esde.ARCADE_FOLDERS.values()}
+    for top in sorted(p for p in base.iterdir() if p.is_dir()):
         sys_ = top.name.lower()
         if sys_ in _NOT_GAMES or sys_.startswith(".") or (wanted and sys_ not in wanted):
             continue
         for f in sorted(top.rglob("*")):
             if not f.is_file() or f.suffix.lower() in _SKIP_EXTS:
                 continue
-            if sys_ == "arcade":
+            if sys_ in arcade:
                 if f.suffix.lower() != ".zip":
                     continue                  # a CHD beside its zip is not a game
                 iid = by_set.get(f.stem)

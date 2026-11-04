@@ -205,3 +205,30 @@ def test_a_big_png_cover_goes_to_the_card_as_a_small_jpeg(monkeypatch, tmp_path)
     small = tmp_path / "small.png"
     Image.new("RGB", (10, 10)).save(small)
     assert artwork.card_cover(small) == small                 # small ones go as they are
+
+
+def test_a_card_short_of_room_gets_every_cover_before_any_marquee(monkeypatch, tmp_path):
+    """Kind by kind: a card with room for a few images spends it on covers for every
+    game, not on the first games' whole sets. And a card's games are found in ROMs/."""
+    db, _ = _env(monkeypatch, tmp_path, TREE)
+    artwork.fetch(db=db, workers=2)
+    card = tmp_path / "card"
+    (card / "ROMs" / "snes").mkdir(parents=True)
+    (card / "ROMs" / "snes" / "Super Mario World (USA).sfc").write_bytes(b"rom")
+    (card / "ROMs" / "arcade").mkdir(parents=True)
+    (card / "ROMs" / "arcade" / "mslug.zip").write_bytes(b"zip")
+    left = [1]
+
+    def room_for(n):
+        left[0] -= 1
+        return left[0] >= 0
+    r = artwork.export_media(card, db=db, room_for=room_for)
+    media = card / "ES-DE" / "downloaded_media"
+    assert r["games"] == 2 and r["written"] == 1 and r["stopped"]
+    assert (media / "snes" / "covers" / "Super Mario World (USA).png").exists()
+    assert not (media / "ROMs").exists()
+    # The plan's measure of what is still to write: the cover is there now.
+    owed = artwork.missing_bytes(card, [("snes", "Super Mario World (USA).sfc", "smw"),
+                                        ("arcade", "mslug.zip", "ms")], db=db)
+    assert ("snes", "Super Mario World (USA).sfc") in owed      # its screenshot
+    assert ("arcade", "mslug.zip") in owed
