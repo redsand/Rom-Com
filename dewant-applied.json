@@ -1,0 +1,74 @@
+{
+  "count": 10548,
+  "by_category": {
+    "tutor": 224,
+    "japan-only": 9878,
+    "junk": 60,
+    "print": 386
+  },
+  "by_system": {
+    "scummvm": 2,
+    "nds": 1945,
+    "gamecube": 3,
+    "wii": 1085,
+    "dos": 3,
+    "fmtowns": 2,
+    "pcenginecd": 7,
+    "pc98": 2,
+    "dreamcast": 331,
+    "saturn": 3,
+    "ps1": 12,
+    "ps2": 3213,
+    "psp": 2428,
+    "nes": 894,
+    "n64": 17,
+    "msx": 2,
+    "gb": 1,
+    "3ds": 3,
+    "snes": 1,
+    "32x": 2,
+    "vita": 2,
+    "ps3": 590
+  },
+  "applied": true
+}
+
+japan-only:
+  [Wi-Fi] Jump Super Stars - Panel Unlocker (J) (Expansion)
+  Hyper Sports 2002 Winter (Japan)
+  Crash Bandicoot - Bakusou! Nitro Kart (Japan)
+  007 - Nagusame no Houshuu (Japan)
+  2010 FIFA World Cup - Minami Africa Taikai (Japan)
+  428 - Fuusa Sareta Shibuya de (Japan)
+  Akko de Pon! Ikasama Hourou-ki (Japan)
+  Akumajou Dracula Judgment (Japan)
+
+junk:
+  4471_New-9FA55393_to_Old-BD105752
+  4471_Old-BD105752_to_New-9FA55393
+  4471_Old-BD107752_to_New-9FA55393
+  5768 - 19FF3134 TO B47571DC
+  5768 - B47571DC TO 19FF3134
+  6632 - BB9DC001 - 20EE7133
+  z008 - 8D1E61B6 to B96AB5AF
+  z008 - B96AB5AF to 8D1E61B6
+
+print:
+  Mein Wortschatz-Coach (Germany) (Rev 1)
+  Merv Griffin's Crosswords (USA)
+  Puzzle Challenge - Crosswords and More! (USA)
+  Word Search (1987)(Tink Kinney) [Strategy, Puzzle].zip
+  Official Sega Dreamcast Magazine Vol. 9 - December 2000 (USA)
+  Official Sega Dreamcast Magazine Vol. 3 - January 2000 (USA)
+  Official Sega Dreamcast Magazine Vol. 11 - February 2001 (USA)
+  Official Sega Dreamcast Magazine Vol. 5 - May 2000 (USA)
+
+tutor:
+  Marc Brown's Arthur's Teacher Trouble
+  Big Thinkers! Kindergarten
+  Kotoba no Puzzle - Mojipittan Wii Deluxe (Japan)
+  Mi Experto en Vocabulario (Spain)
+  Mon Coach Personnel - J'enrichis Mon Vocabulaire (France)
+  My French Coach - Improve Your French (Europe)
+  My Spanish Coach - Improve Your Spanish (UK)
+  Reader Rabbit - Kindergarten (Scandinavia) (Sv,No,Da,Fi)

@@ -600,6 +600,22 @@ def cmd_discs(a):
               f"({r['planned_bytes'] / 1e9:.1f} GB) — run again with --apply")
 
 
+def cmd_dewant(a):
+    """Take the categories nobody wants out of the acquisition backlog."""
+    from . import dewant
+    r = dewant.dewant(apply=a.apply, systems=a.system)
+    print(json.dumps({"count": r["count"], "by_category": r["by_category"],
+                      "by_system": r["by_system"], "applied": r["applied"]},
+                     indent=2, default=str))
+    for cat, titles in sorted(r["sample"].items()):
+        print(f"\n{cat}:")
+        for t in titles:
+            print(f"  {t[:70]}")
+    if not a.apply:
+        print(f"\n{r['count']} backlog item(s) would stop being wanted — "
+              f"run again with --apply")
+
+
 def cmd_chd_cache(a):
     from .organizer import precache_chds
     excl = _exclude(a.exclude_labels)
@@ -758,6 +774,10 @@ def main():
     dc.add_argument("--convert", type=int, nargs="?", const=0, default=None,
                     help="also convert discs not converted yet (at most N; no N: all)")
     dc.set_defaults(fn=cmd_discs)
+    dw=s.add_parser("dewant", help="take the unwanted categories out of the acquisition backlog (tutors, crosswords and print, Japan-only, dat junk)")
+    dw.add_argument("--apply", action="store_true", help="actually clear wanted (without it, only a report)")
+    dw.add_argument("--system", action="append", help="limit to these systems")
+    dw.set_defaults(fn=cmd_dewant)
     cc=s.add_parser("chd-cache", help="convert a system's discs to CHD ahead of a card export (they are kept for every later card)")
     cc.add_argument("system", nargs="+")
     cc.add_argument("--exclude-labels", default=None, help="labels to leave out, comma-separated, as the export will")
