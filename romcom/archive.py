@@ -112,7 +112,11 @@ def fetch(result, dest_dir):
     """Stream a picked archive.org file straight to disk (open host, no gating)."""
     url = result["url"]
     name = unquote(url.rsplit("/", 1)[-1]) or f"{result.get('title', 'rom')}.zip"
-    safe = name.replace("/", "-").replace("\\", "-").replace("..", "_").strip() or "rom.zip"
+    # The title fallback carries a catalog title, colons and all — a Windows name it
+    # is not ('Ever 17: The Out of Infinity' failed with Errno 22, every sweep, forever).
+    # '..' goes too: a remote name is not trusted to name a path.
+    from .organizer import _safe
+    safe = _safe(name.replace("..", "_")) or "rom.zip"
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
     path = dest / safe

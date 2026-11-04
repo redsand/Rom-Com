@@ -55,3 +55,15 @@ def test_fetch_streams_to_disk(monkeypatch, tmp_path):
     path = archive.fetch({"title": "x", "url": "https://archive.org/download/games/Chrono%20Trigger%20(USA).zip"}, dest)
     assert path.read_bytes() == b"PK\x03\x04rom"
     assert path.name == "Chrono Trigger (USA).zip"          # url-decoded filename
+
+
+def test_fetch_falls_back_to_a_title_that_writes_on_windows(monkeypatch, tmp_path):
+    """An item with no file in its url names its download after the catalog title — and a
+    title like 'Ever 17: The Out of Infinity' has a colon, which a Windows filename cannot
+    hold: the download died with Errno 22 on every sweep until the title was sanitised."""
+    env(monkeypatch, tmp_path)
+    monkeypatch.setattr(archive, "_get", lambda url, params=None, stream=False: FakeResp(chunks=[b"PK\x03\x04", b"rom"]))
+    dest = tmp_path / "games"
+    path = archive.fetch({"title": "Ever 17: The Out of Infinity (Premium Edition)",
+                          "url": "https://archive.org/download/item/"}, dest)
+    assert path.exists() and path.name.endswith(".zip") and ":" not in path.name

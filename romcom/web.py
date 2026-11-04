@@ -109,7 +109,12 @@ def create_app():
                 "mcp_enabled", "mcp_servers_path",
                 "export_wanted_only", "export_curated_only", "export_rating_min",
                 "rawg_enabled", "rawg_delay", "rawg_jitter", "rawg_timeout", "rawg_budget",
-                "ra_enabled", "ra_delay", "ra_timeout"}
+                "ra_enabled", "ra_delay", "ra_timeout",
+                # The Settings tab sends every field it shows (app.js SET_KEYS); a key
+                # missing here means Save 400s on the whole form and nothing saves
+                # (2026-10-04, the last good save before this list drifted).
+                "community_auto_hours", "chd_cache_dir", "bios_mirror_dir",
+                "incoming_dir", "incoming_remove", "maintain_auto_hours"}
 
     def _settings_payload(db):
         s = settings()

@@ -21,3 +21,6 @@ artwork/
 
 .claude/
 *.egg-info/
+plan-dryrun*.json
+card-*.log
+plan-*.json

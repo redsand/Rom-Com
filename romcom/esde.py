@@ -507,19 +507,20 @@ def make_ps3(src, names, key, target):
 
 
 # Disc systems whose ES-DE emulators read CHD (RetroArch's Beetle/SwanStation, Flycast,
-# Beetle Saturn, Genesis Plus GX, PCE CD, Opera, SAME CDi; NetherSX2 for PS2).
-CHD_SYSTEMS = {"psx", "ps2", "dreamcast", "saturn", "segacd", "pcenginecd", "3do",
+# Beetle Saturn, Genesis Plus GX, PCE CD, Opera, SAME CDi; NetherSX2 for PS2; PPSSPP —
+# standalone and its libretro core — for PSP).
+CHD_SYSTEMS = {"psx", "ps2", "psp", "dreamcast", "saturn", "segacd", "pcenginecd", "3do",
                "cdimono1", "fmtowns", "amigacd32"}
 
 
 def _chd_main(sys_, names):
-    """The file chdman converts for this disc, or None: a .cue/.gdi/.toc, or a PS2 .iso
-    (a DVD). A DiscJuggler .cdi or a lone .bin is not something chdman reads."""
+    """The file chdman converts for this disc, or None: a .cue/.gdi/.toc, or a PS2/PSP
+    .iso (a DVD). A DiscJuggler .cdi or a lone .bin is not something chdman reads."""
     for ext in (".gdi", ".cue", ".toc"):
         hit = sorted(n for n in names if n.lower().endswith(ext))
         if hit:
             return hit[0]
-    if sys_ == "ps2":
+    if sys_ in ("ps2", "psp"):
         hit = sorted(n for n in names if n.lower().endswith(".iso"))
         if len(hit) == 1:
             return hit[0]
@@ -535,6 +536,20 @@ _RAW_BIN = {"psx": "MODE2/2352", "saturn": "MODE1/2352", "segacd": "MODE1/2352",
 _GENERIC_TRACK = re.compile(r"^(?:track)?\s*\d+\.(?:bin|raw|iso|img|wav)$", re.I)
 
 
+def desc_tracks(desc):
+    """The track file names a disc descriptor names ([] when it names none)."""
+    try:
+        text = Path(desc).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    if Path(desc).suffix.lower() == ".gdi":
+        return [m.group(1) or m.group(2) for m in re.finditer(
+            r'^\s*\d+\s+\d+\s+\d+\s+\d+\s+(?:"([^"]+)"|(\S+))', text, re.M)]
+    names = (re.findall(r'^\s*FILE\s+"([^"]+)"', text, re.M | re.I)
+             or re.findall(r"^\s*FILE\s+(\S+)", text, re.M | re.I))
+    return [Path(n).name for n in names]
+
+
 def _cue_tracks_present(desc, own=None):
     """Every track a loose .cue or .gdi names is beside it on disk (one naming none is
     given the benefit of the doubt).
@@ -543,18 +558,9 @@ def _cue_tracks_present(desc, own=None):
     'Game (Disc 1).gdi' naming track01.bin would be "complete" with another game's
     track01.bin beside it, and chdman would build a CHD of that other disc. So a generic
     track counts only when it is one of this game's own files (`own`: lower-cased names)."""
-    try:
-        text = Path(desc).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    if Path(desc).suffix.lower() == ".gdi":
-        names = [m.group(1) or m.group(2) for m in re.finditer(
-            r'^\s*\d+\s+\d+\s+\d+\s+\d+\s+(?:"([^"]+)"|(\S+))', text, re.M)]
-        if not names:
-            return False                   # a .gdi always names its tracks
-    else:
-        names = (re.findall(r'^\s*FILE\s+"([^"]+)"', text, re.M | re.I)
-                 or re.findall(r"^\s*FILE\s+(\S+)", text, re.M | re.I))
+    names = desc_tracks(desc)
+    if Path(desc).suffix.lower() == ".gdi" and not names:
+        return False                   # a .gdi always names its tracks
     for n in names:
         if not (Path(desc).parent / n).exists():
             return False
@@ -660,7 +666,8 @@ def _convert_chd(src, names, main, target, system):
             cue.write_text(f'FILE "{inp.name}" BINARY\n  TRACK 01 {_RAW_BIN.get(folder(system), "MODE2/2352")}\n'
                            f"    INDEX 01 00:00:00\n", encoding="utf-8")
             inp = cue
-        cmd = [exe, "createdvd" if folder(system) == "ps2" and main.lower().endswith(".iso")
+        cmd = [exe, "createdvd" if folder(system) in ("ps2", "psp")
+               and main.lower().endswith(".iso")
                else "createcd", "-i", str(inp), "-o", str(part), "-f"]
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=4 * 3600,
                            stdin=subprocess.DEVNULL,

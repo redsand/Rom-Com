@@ -1,3 +1,6 @@
+import re
+from pathlib import Path
+
 from romcom.db import connect
 from romcom.config import settings, invalidate
 from romcom.web import create_app
@@ -128,6 +131,23 @@ def test_settings_roundtrip(monkeypatch, tmp_path):
     d = c.post("/api/settings", json={"sab_category": ""}).get_json()  # "" clears the override
     assert "sab_category" not in d["overrides"]
     assert d["settings"]["sab_category"] == "Games"  # env value is back in charge
+
+
+def test_settable_covers_every_settings_field(monkeypatch, tmp_path):
+    """The Settings tab sends every field it shows, so a field the endpoint does not
+    know 400s the WHOLE save and nothing at all persists (2026-10-04→11-03: six months
+    of silent failed saves). The two lists are in different files and drift quietly."""
+    import re
+    env_db(monkeypatch, tmp_path)
+    here = Path(__file__).resolve().parent
+    js = (here.parent / "romcom" / "webui" / "app.js").read_text(encoding="utf-8")
+    m = re.search(r"SET_KEYS = \[(.*?)\]", js, re.S)
+    assert m, "app.js SET_KEYS list not found"
+    ui_keys = set(re.findall(r'"([a-z0-9_]+)"', m.group(1)))
+
+    c = create_app().test_client()
+    r = c.post("/api/settings", json={k: "" for k in ui_keys})
+    assert r.status_code == 200, f"the Settings tab cannot save: {r.get_json()}"
 
 
 def test_settings_test_endpoint(monkeypatch, tmp_path):

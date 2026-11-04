@@ -176,6 +176,28 @@ def test_a_cue_without_its_tracks_is_no_game_and_a_lone_track_gets_a_chd(tmp_pat
     assert esde.plan("ps1", [(str(odd), 1000)], chd=True)[1] == ["Odd.bin"]
 
 
+def test_a_psp_iso_becomes_a_chd(tmp_path, monkeypatch):
+    """PSP is in CHD_SYSTEMS: an .iso a PPSSPP core can read becomes the .chd it also
+    reads at half the bytes — a UMD's padding is where a 256 GB card's room goes."""
+    monkeypatch.setattr(esde, "chdman", lambda: "chdman.exe")
+    iso = tmp_path / "Crisis Core (USA).iso"
+    iso.write_bytes(b"\0" * 2048 * 100)
+    steps, entries, dropped = esde.plan("psp", [(str(iso), 2048 * 100)], chd=True)
+    assert dropped == 0
+    assert entries == ["Crisis Core (USA).chd"]
+    assert steps[0][0] == "chd" and steps[0][3] == "Crisis Core (USA).iso"
+    # and it really is a DVD conversion, not a CD one
+    import inspect
+    src = inspect.getsource(esde._convert_chd)
+    assert '"createdvd" if folder(system) in ("ps2", "psp")' in src
+    assert esde.folder("psp") in esde.CHD_SYSTEMS
+    # a .cso stays a .cso: it is already the compressed form
+    cso = tmp_path / "Packed.cso"
+    cso.write_bytes(b"\0" * 64)
+    steps, entries, _ = esde.plan("psp", [(str(cso), 64)], chd=True)
+    assert entries == ["Packed.cso"] and steps[0][0] != "chd"
+
+
 def test_gamecube_discs_share_one_m3u_too(tmp_path, monkeypatch):
     monkeypatch.setenv("ROMCOM_DB", str(tmp_path / "g.db"))
     from romcom.config import invalidate

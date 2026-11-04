@@ -131,7 +131,11 @@ def fetch(result, dest_dir):
     if not dl_url:
         raise RuntimeError(info.get("asset", {}).get("maintenanceMessage") or "no downloadUrl returned")
 
-    safe = name.replace("/", "-").replace("\\", "-").replace("..", "_").strip() or "rom.zip"
+    # The site names its file after the game, and a catalog title carries ':' and
+    # friends — characters a Windows path cannot hold (Errno 22, the whole download lost).
+    # '..' goes too: a remote name is not trusted to name a path.
+    from .organizer import _safe
+    safe = _safe(name.replace("..", "_")) or "rom.zip"
     dest = Path(dest_dir)
     dest.mkdir(parents=True, exist_ok=True)
     path = dest / safe

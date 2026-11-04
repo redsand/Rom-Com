@@ -1117,7 +1117,9 @@ def _plan_games(rows, layout, chd=False, one_file=False):
     `one_file` (one copy per game): a cartridge game is a single file, so of the dumps a
     library matched to it — the verified one beside its fan translations, trainers and
     bad dumps — only the best goes on the card (`_dump_rank`). ES-DE listed Metroid
-    Fusion four times otherwise."""
+    Fusion four times otherwise. A disc game is one dump of its disc: its .chd beside
+    the .cdi it was converted from, a second rip in an archive, are the same game twice
+    (`_best_disc_dump`) — a Dreamcast folder carried 220 files for 140 games."""
     from . import esde
     groups = []
     for r in rows:
@@ -1134,10 +1136,15 @@ def _plan_games(rows, layout, chd=False, one_file=False):
             except OSError:
                 missing += 1
         dupes = 0
-        if one_file and len(present) > 1 and esde.single_file(r0["system"]):
-            method = {r["path"]: r["match_method"] for r in g}
-            best = min(present, key=lambda f: _dump_rank(f[0], method.get(f[0])))
-            dupes, present = len(present) - 1, [best]
+        if one_file and len(present) > 1:
+            if esde.single_file(r0["system"]):
+                method = {r["path"]: r["match_method"] for r in g}
+                best = min(present, key=lambda f: _dump_rank(f[0], method.get(f[0])))
+                dupes, present = len(present) - 1, [best]
+            elif esde.folder(r0["system"]) in (esde.CHD_SYSTEMS | {"gc", "wii", "n3ds"}):
+                method = {r["path"]: r["match_method"] for r in g}
+                present, gone = _best_disc_dump(r0["system"], present, method)
+                dupes += gone
         steps, entries, dropped = (esde.plan(r0["system"], present, chd=chd) if present
                                    else ([], [], 0))
         out.append({"row": r0, "folder": esde.folder(r0["system"]),
@@ -1246,6 +1253,47 @@ def _dump_rank(path, match_method):
         if pat.search(name):
             score += pts
     return (score, len(name), name)
+
+
+def _best_disc_dump(system, present, method):
+    """([files], dupes dropped): of the dumps one disc game's files make, only the best
+    dump goes on the card.
+
+    A dump is a disc descriptor (.cue/.gdi/.toc) plus the tracks it names among this
+    game's own files, or a file that is the whole disc on its own (.cdi/.chd/.iso, an
+    archive holding one). Two dumps are the SAME disc when their disc numbers agree or
+    neither names one — '(Disc 1)' beside '(Disc 2)' is two games, both kept; the USA
+    rip beside the Europe rip of one disc is one game twice, and so is a .cdi beside
+    the .chd it became. Of one disc the .chd wins (the card's own format, half the
+    bytes, converted from a rip the library had proven and read back whole), then a
+    hash-proven rip, then the dump marks."""
+    from . import esde
+    dumps, used = [], set()
+    # Descriptors first: each takes the tracks it names.
+    for src, _ in present:
+        if Path(src).suffix.lower() in esde._PRIMARY:
+            refs = {n.lower() for n in esde.desc_tracks(src)}
+            files = [f for f in present
+                     if f[0] == src or Path(f[0]).name.lower() in refs]
+            for f in files:
+                used.add(f[0])
+            dumps.append(files)
+    for f in present:
+        if f[0] not in used:
+            dumps.append([f])
+    by_disc, out, dupes = {}, [], 0
+    for files in dumps:
+        m = _DISC.search(Path(files[0][0]).stem)
+        by_disc.setdefault(m.group(1) if m else None, []).append(files)
+    for _, group in by_disc.items():
+        if len(group) > 1:
+            group.sort(key=lambda files: (
+                0 if any(Path(s).suffix.lower() == ".chd" for s, _ in files) else 1,
+                0 if any(str(method.get(s) or "").startswith("hash") for s, _ in files) else 1)
+                + _dump_rank(files[0][0], method.get(files[0][0])))
+            dupes += len(group) - 1
+        out.extend(group[0])
+    return out, dupes
 
 
 def _unpacked(tdir, archive, names):

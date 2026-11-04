@@ -292,6 +292,48 @@ def test_export_keeps_distinct_content_under_one_item(tmp_path, monkeypatch):
     assert r["copied"] == 2 and r["dupes_skipped"] == 0
 
 
+def test_one_disc_game_carries_one_dump(tmp_path, monkeypatch):
+    """A .cdi beside the .chd it was converted from, and a second rip, are the same disc
+    twice — one copy per game means the card carries the chd (the 256 GB card's
+    dreamcast folder held 220 files for ~140 games, ~40 GB of discs it had twice)."""
+    _files_for(tmp_path, monkeypatch, "dc1", "dreamcast", "Worms Armageddon", [
+        ("Worms Armageddon (Europe).cdi", 9, "aa", "hash"),
+        ("Worms Armageddon (USA).chd", 9, "bb", "converted")])
+    r = organize(tmp_path / "sd", distinct_games=True)
+    assert r["copied"] == 1 and r["dupes_skipped"] == 1
+    assert (tmp_path / "sd" / "ROMs" / "dreamcast"
+            / "Worms Armageddon (USA).chd").exists()
+    assert not (tmp_path / "sd" / "ROMs" / "dreamcast"
+                / "Worms Armageddon (Europe).cdi").exists()
+
+
+def test_two_discs_of_one_title_are_not_two_dumps_of_one(tmp_path, monkeypatch):
+    """Disc 1 and Disc 2 are different discs: the dump collapse must not read the second
+    disc as a second rip of the first and drop it."""
+    _files_for(tmp_path, monkeypatch, "d1", "psx", "Big RPG", [
+        ("Big RPG (Disc 1).chd", 9, "aa", "hash"),
+        ("Big RPG (Disc 2).chd", 9, "bb", "hash")])
+    r = organize(tmp_path / "sd", distinct_games=True)
+    assert r["dupes_skipped"] == 0
+    sd = tmp_path / "sd" / "ROMs" / "psx"
+    assert (sd / "Big RPG.m3u" / "Big RPG (Disc 1).chd").exists()
+    assert (sd / "Big RPG.m3u" / "Big RPG (Disc 2).chd").exists()
+
+
+def test_a_cue_and_its_tracks_are_one_dump_not_two(tmp_path, monkeypatch):
+    """A .cue names its tracks; the tracks are the cue's dump, not standalone discs, and
+    a .chd of the same disc beats the loose rip."""
+    roms = _files_for(tmp_path, monkeypatch, "p1", "psx", "Game", [
+        ("Game (USA).cue", 9, "bb", "hash"),
+        ("Game (USA).bin", 9, "cc", "hash"),
+        ("Game (USA).chd", 9, "dd", "converted")])
+    (roms / "Game (USA).cue").write_text(
+        'FILE "Game (USA).bin" BINARY\n  TRACK 01 MODE2/2352\n', encoding="utf-8")
+    r = organize(tmp_path / "sd", distinct_games=True)
+    assert r["copied"] == 1 and r["dupes_skipped"] == 1
+    assert (tmp_path / "sd" / "ROMs" / "psx" / "Game (USA).chd").exists()
+
+
 def test_export_keeps_hashless_files(tmp_path, monkeypatch):
     """A file with no strong hash cannot be proven identical to anything, so it is
     never dropped."""
