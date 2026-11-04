@@ -77,6 +77,10 @@ def _let_go_corrupt(db, iid, src, why):
         return
     with db:
         db.execute("DELETE FROM files WHERE path=? OR path LIKE ?", (src, f"{src}|%"))
+        # Its page's download is proven bad — retire the row, or the acquirer's
+        # spent-page ledger blocks the game's one good source forever.
+        db.execute("UPDATE jobs SET status='FAILED', completed_at=CURRENT_TIMESTAMP "
+                   "WHERE entity_id=? AND status='DOWNLOADED'", (iid,))
         db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
                    (iid, "corrupt-download", f"{why[-200:]}: {src}"[:400]))
         if not db.execute("SELECT 1 FROM files WHERE matched_item_id=?", (iid,)).fetchone():

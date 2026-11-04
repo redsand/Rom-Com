@@ -179,18 +179,30 @@ def _prune_events(db):
 
 
 def _already_fetched(db, url):
-    """True if this exact source page has already produced a file, for any item.
+    """True if this exact source page is spent, for any item.
 
     Source pages are shared: one generic result ("dragon ball z 4 in 1") can be the
     top pick for several different items, and without this check each of them pays
     the full paced fetch cost — four HTTP requests, ~150 s — to download a file that
-    is already on disk. The ledger is the record of what has been pulled, so a URL
-    with a DOWNLOADED job is a duplicate whoever asked for it.
+    is already on disk. The ledger is the record of what has been pulled.
+
+    But a DOWNLOADED row whose item holds no file now is not a spent page: its
+    download was audited away (wrong-download, stub-disc), or its file went to a
+    sibling. 2,391 such rows (2026-11-04) had quietly strangled the queue — every
+    candidate page said "already downloaded" while the items sat fileless, and the
+    last new game had arrived 10-30. A row counts only while its item still holds a
+    file, or for thirty days after the try — recent enough that retrying is
+    hammering, old enough that the page deserves one more chance. A FAILED row
+    always counts: that try's content was proven bad.
     """
     if not url:
         return False
-    return db.execute("SELECT 1 FROM jobs WHERE result_url=? AND status='DOWNLOADED' LIMIT 1",
-                      (url,)).fetchone() is not None
+    return db.execute("""SELECT 1 FROM jobs j WHERE j.result_url=? AND (
+            j.status IN ('QUEUED','DOWNLOADING','FAILED')
+            OR (j.status='DOWNLOADED' AND (
+                EXISTS(SELECT 1 FROM files f WHERE f.matched_item_id=j.entity_id)
+                OR j.queued_at > datetime('now', '-30 day'))))
+        LIMIT 1""", (url,)).fetchone() is not None
 
 
 def _pick(results, min_score=MIN_SCORE):

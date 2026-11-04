@@ -124,6 +124,12 @@ def wrong_downloads(apply=False, db=None):
                                "WHERE path=? AND matched_item_id=?", [(f, iid) for f in b["files"]])
                 db.execute("UPDATE items SET status='MISSING', updated_at=CURRENT_TIMESTAMP "
                            "WHERE id=? AND status IN ('DOWNLOADED','FOUND')", (iid,))
+                # The page that served this download is proven bad content — retire it,
+                # or the acquirer's spent-page ledger keeps saying "already downloaded"
+                # and the game can never be fetched again (2026-11-04: 2,391 such rows,
+                # the last new game weeks old).
+                db.execute("UPDATE jobs SET status='FAILED', completed_at=CURRENT_TIMESTAMP "
+                           "WHERE entity_id=? AND status='DOWNLOADED'", (iid,))
                 db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
                            (iid, "wrong-download", f"{b['why']}: {'; '.join(b['files'])[:400]}"))
     return {"count": len(bad), "bytes": total, "applied": bool(apply),
@@ -158,6 +164,10 @@ def stub_discs(apply=False, db=None):
                     db.execute("UPDATE items SET status='MISSING', updated_at=CURRENT_TIMESTAMP "
                                "WHERE id=? AND status IN ('DOWNLOADED','FOUND','VERIFIED',"
                                "'NORMALIZED')", (b["id"],))
+                # As wrong_downloads: a stub's page is spent — retire the row that says
+                # its download produced something.
+                db.execute("UPDATE jobs SET status='FAILED', completed_at=CURRENT_TIMESTAMP "
+                           "WHERE entity_id=? AND status='DOWNLOADED'", (b["id"],))
                 db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
                            (b["id"], "stub-disc",
                             f"{b['bytes']} bytes cannot be a {b['system']} disc: {b['path']}"[:400]))

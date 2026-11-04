@@ -533,9 +533,11 @@ def test_a_page_already_fetched_falls_through_to_the_next_source(monkeypatch, tm
     monkeypatch.setenv("ROMCOM_ARCHIVE_ENABLED", "true")
     invalidate()
     seed(db, [{"id": "i1", "title": "Cars (Germany)"}])
-    with db:   # the sibling's fetch, as the ledger recorded it
+    with db:   # the sibling's fetch, as the ledger recorded it — and the file it kept
         db.execute("INSERT INTO jobs(entity_type,entity_id,result_title,result_url,status,source) "
                    "VALUES('item','sib','cars','https://r/cars/','DOWNLOADED','romsgames')")
+        db.execute("INSERT INTO files(path,bytes,matched_item_id,content) "
+                   "VALUES('H:/cars.zip',9,'sib',1)")
     search, _ = fake_search([{"title": "junk", "url": "nzb://x", "size": 1, "score": 5}])
     monkeypatch.setattr("romcom.indexer.search_entity", search)
 
@@ -569,6 +571,8 @@ def test_a_dup_everywhere_is_an_honest_miss_that_names_the_page(monkeypatch, tmp
     with db:
         db.execute("INSERT INTO jobs(entity_type,entity_id,result_title,result_url,status,source) "
                    "VALUES('item','sib','cars','https://r/cars/','DOWNLOADED','romsgames')")
+        db.execute("INSERT INTO files(path,bytes,matched_item_id,content) "
+                   "VALUES('H:/cars.zip',9,'sib',1)")
     search, _ = fake_search([])
     monkeypatch.setattr("romcom.indexer.search_entity", search)
     monkeypatch.setattr("romcom.acquirer.webdl.search",
@@ -580,6 +584,33 @@ def test_a_dup_everywhere_is_an_honest_miss_that_names_the_page(monkeypatch, tmp
     assert r["skipped"] == 1
     ev = db.execute("SELECT event,detail FROM events WHERE item_id='i1'").fetchone()
     assert ev["event"] == "acquire-miss" and "already downloaded" in ev["detail"]
+
+
+def test_a_page_whose_download_did_not_stick_is_not_spent(monkeypatch, tmp_path):
+    """A DOWNLOADED row whose item holds no file is not a spent page: its download was
+    audited away or went to a sibling, and the game is still missing. 2,391 such rows
+    strangled the queue — every candidate page said 'already downloaded' while the
+    items sat fileless, and the last new game had arrived weeks before."""
+    from romcom.acquirer import _already_fetched
+    db = client_db(monkeypatch, tmp_path)
+    old = "2026-10-01T00:00:00"
+    with db:
+        db.execute("INSERT INTO jobs(entity_type,entity_id,result_url,status,source,queued_at) "
+                   "VALUES('item','i1','https://r/gone/','DOWNLOADED','romsgames',?)", (old,))
+        db.execute("INSERT INTO jobs(entity_type,entity_id,result_url,status,source,queued_at) "
+                   "VALUES('item','i2','https://r/kept/','DOWNLOADED','romsgames',?)", (old,))
+        db.execute("INSERT INTO files(path,bytes,matched_item_id,content) "
+                   "VALUES('H:/kept.zip',9,'i2',1)")
+        db.execute("INSERT INTO jobs(entity_type,entity_id,result_url,status,source,queued_at) "
+                   "VALUES('item','i3','https://r/failed/','FAILED','romsgames',?)", (old,))
+        db.execute("INSERT INTO jobs(entity_type,entity_id,result_url,status,source,queued_at) "
+                   "VALUES('item','i4','https://r/recent/','DOWNLOADED','romsgames',"
+                   "datetime('now','-2 day'))")
+    assert not _already_fetched(db, "https://r/gone/")     # nothing stuck: the page is live
+    assert _already_fetched(db, "https://r/kept/")         # someone holds the file
+    assert _already_fetched(db, "https://r/failed/")       # content proven bad
+    assert _already_fetched(db, "https://r/recent/")       # tried two days ago: not hammering
+    assert not _already_fetched(db, "")
 
 
 def test_a_failed_download_cools_off_like_a_skip(monkeypatch, tmp_path):
@@ -685,9 +716,11 @@ def test_archive_keeps_looking_after_a_dup_for_another_dump_of_the_same_game(mon
     monkeypatch.setenv("ROMCOM_ARCHIVE_ENABLED", "true")
     invalidate()
     seed(db, [{"id": "i1", "title": "Cars (Germany)"}])
-    with db:   # the USA dump, already pulled by the sibling item
+    with db:   # the USA dump, already pulled by the sibling item — and kept by it
         db.execute("INSERT INTO jobs(entity_type,entity_id,result_title,result_url,status,source) "
                    "VALUES('item','sib','cars','https://a/cars-us/','DOWNLOADED','archive')")
+        db.execute("INSERT INTO files(path,bytes,matched_item_id,content) "
+                   "VALUES('H:/cars-us.zip',9,'sib',1)")
     search, _ = fake_search([])
     monkeypatch.setattr("romcom.indexer.search_entity", search)
     monkeypatch.setattr("romcom.acquirer.webdl.search", lambda q, sys: [])
@@ -719,6 +752,8 @@ def test_a_non_exact_candidate_still_ends_an_archive_search_after_a_dup(monkeypa
     with db:
         db.execute("INSERT INTO jobs(entity_type,entity_id,result_title,result_url,status,source) "
                    "VALUES('item','sib','cars','https://a/cars-us/','DOWNLOADED','archive')")
+        db.execute("INSERT INTO files(path,bytes,matched_item_id,content) "
+                   "VALUES('H:/cars-us.zip',9,'sib',1)")
     search, _ = fake_search([])
     monkeypatch.setattr("romcom.indexer.search_entity", search)
     monkeypatch.setattr("romcom.acquirer.webdl.search", lambda q, sys: [])
