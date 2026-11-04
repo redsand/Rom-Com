@@ -24,3 +24,6 @@ artwork/
 plan-dryrun*.json
 card-*.log
 plan-*.json
+discs-plan*.json
+discs-apply.log
+service-restarted.flag
