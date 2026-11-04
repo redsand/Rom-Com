@@ -30,7 +30,10 @@ from .config import load_yaml
 from .db import connect
 from .status import LIFECYCLE
 
-RESULT_CAP = 1500
+# 1,500 chars held three library rows. The assistant saw a sliver of every list, re-asked
+# for the rest, and ran out of rounds before it answered. The chat model's context is
+# large; what it cannot see it cannot answer from.
+RESULT_CAP = 8000
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 
@@ -336,6 +339,17 @@ def _empty_hint(args):
     return out
 
 
+# What a list row says about an item. The whole row (26 columns, half of them empty or
+# internal) cost ~500 chars an item, so a page held a handful; get_item has the rest.
+_ROW = ("id", "title", "system", "status", "wanted", "authorized", "keep", "rating",
+        "community_score", "region", "play_status")
+
+
+def _slim(row):
+    r = dict(row)
+    return {k: r[k] for k in _ROW if k in r and r[k] not in (None, "")}
+
+
 def _list_items(args, ctx):
     """Same filter semantics as the Library tab (`_item_filter` in web.py) so the assistant
     and the UI can never disagree about what "missing on NES" means."""
@@ -346,7 +360,7 @@ def _list_items(args, ctx):
     rows = db.execute(q + " ORDER BY system,series,series_number,title LIMIT ? OFFSET ?",
                       p + [limit, offset]).fetchall()
     out = {"total": total, "returned": len(rows), "offset": offset,
-           "view": args.get("view") or "all", "items": [dict(r) for r in rows]}
+           "view": args.get("view") or "all", "items": [_slim(r) for r in rows]}
     if not total:
         out["hint"] = _empty_hint(args)
     return out
@@ -414,11 +428,20 @@ def _library_audit(args, ctx):
     ph = "(" + ",".join("?" * len(owned)) + ")"
     by_status = {r["status"]: r["c"] for r in db.execute(
         f"SELECT status,COUNT(*) c FROM items WHERE status IN {ph} GROUP BY status", owned)}
+    # One system's whole list, paged — the sample alone could not say which 141 of a
+    # console's games were the broken ones.
+    sys_q, sys_p = ("AND i.system=?", (args["system"],)) if args.get("system") else ("", ())
+    limit, offset = _limit(args), max(0, int(args.get("offset") or 0))
     no_file = db.execute(
         f"""SELECT i.id,i.title,i.system,i.status,i.source,i.updated_at FROM items i
-            WHERE i.status IN {ph}
+            WHERE i.status IN {ph} {sys_q}
               AND NOT EXISTS (SELECT 1 FROM files f WHERE f.matched_item_id=i.id)
-            ORDER BY i.system,i.title LIMIT ?""", owned + (DEFAULT_LIMIT,)).fetchall()
+            ORDER BY i.system,i.title LIMIT ? OFFSET ?""",
+        owned + sys_p + (limit, offset)).fetchall()
+    sys_total = db.execute(
+        f"""SELECT COUNT(*) c FROM items i WHERE i.status IN {ph} {sys_q}
+            AND NOT EXISTS (SELECT 1 FROM files f WHERE f.matched_item_id=i.id)""",
+        owned + sys_p).fetchone()["c"] if sys_q else None
     total_no_file = db.execute(
         f"""SELECT COUNT(*) c FROM items i WHERE i.status IN {ph}
             AND NOT EXISTS (SELECT 1 FROM files f WHERE f.matched_item_id=i.id)""",
@@ -441,7 +464,9 @@ def _library_audit(args, ctx):
     return {"claimed_in_hand_by_status": by_status,
             "in_hand_with_no_matching_file": total_no_file,
             "by_system": by_system,
-            "sample": [dict(r) for r in no_file],
+            "sample" if not sys_q else "items": [dict(r) for r in no_file],
+            **({"system": args["system"], "system_total": sys_total, "offset": offset,
+                "returned": len(no_file)} if sys_q else {}),
             "file_attribution": attribution,
             "satisfied_without_a_hash_match": satisfied_no_hash,
             "explanation": (
@@ -452,6 +477,93 @@ def _library_audit(args, ctx):
                 "so the pipeline retries.")}
 
 
+# The kinds of event that are bookkeeping rather than history: millions of rows saying a
+# scan matched a file again. Left in, they bury every row a question is actually about.
+_NOISE_EVENTS = ("scan-match",)
+_GROUPS = ("status", "system", "wanted", "authorized", "region", "catalog_source")
+
+
+def _count_items(args, ctx):
+    """Counts, grouped — the breakdown `list_items` can only give a page at a time.
+    Same filters as `list_items` (`_item_where`), so the two never disagree."""
+    q, p = _item_where(args)
+    by = [g for g in (args.get("group_by") or ["status"]) if g in _GROUPS] or ["status"]
+    cols = ",".join(by)
+    db = connect()
+    rows = db.execute(f"SELECT {cols}, COUNT(*) c FROM ({q}) GROUP BY {cols} "
+                      f"ORDER BY c DESC LIMIT 300", p).fetchall()
+    total = sum(r["c"] for r in rows)
+    out = {"total": total, "group_by": by, "groups": [dict(r) for r in rows]}
+    if args.get("with_file_check"):
+        # How many of them have a real file matched — the "is it actually on disk" half.
+        on = db.execute(f"SELECT COUNT(*) c FROM ({q}) i WHERE EXISTS (SELECT 1 FROM files f "
+                        f"WHERE f.matched_item_id=i.id AND COALESCE(f.content,1)=1)",
+                        p).fetchone()["c"]
+        out["with_a_file_on_disk"] = on
+        out["without_a_file"] = total - on
+    if not total:
+        out["hint"] = _empty_hint(args)
+    return out
+
+
+def _item_history(args, ctx):
+    """What the library did to items: the events table, filtered, with each item's status
+    NOW and whether a file is matched to it now — so "was it fixed?" is one call."""
+    db = connect()
+    where, p = ["1=1"], []
+    ev = (args.get("event") or "").strip()
+    if ev:
+        where.append("e.event LIKE ?"); p.append(f"%{ev}%")
+    else:
+        where.append("e.event NOT IN (" + ",".join("?" * len(_NOISE_EVENTS)) + ")")
+        p += list(_NOISE_EVENTS)
+    if args.get("system"):
+        where.append("i.system=?"); p.append(args["system"])
+    if args.get("ident"):
+        where.append("(e.item_id=? OR i.title LIKE ?)")
+        p += [args["ident"], f"%{args['ident']}%"]
+    if args.get("q"):
+        where.append("(e.detail LIKE ? OR i.title LIKE ?)")
+        p += [f"%{args['q']}%", f"%{args['q']}%"]
+    if args.get("since"):
+        where.append("e.created_at >= ?"); p.append(args["since"])
+    w = " AND ".join(where)
+    base = f"FROM events e LEFT JOIN items i ON i.id=e.item_id WHERE {w}"
+    kinds = [dict(r) for r in db.execute(
+        f"SELECT e.event, COUNT(*) c, MIN(e.created_at) first, MAX(e.created_at) last {base} "
+        f"GROUP BY e.event ORDER BY c DESC LIMIT 40", p)]
+    total = sum(k["c"] for k in kinds)
+    limit, offset = _limit(args), max(0, int(args.get("offset") or 0))
+    rows = [dict(r) for r in db.execute(
+        f"SELECT e.item_id, i.title, i.system, e.event, substr(e.detail,1,200) detail, "
+        f"e.created_at, "
+        f"i.status status_now, EXISTS (SELECT 1 FROM files f WHERE f.matched_item_id=e.item_id "
+        f"AND COALESCE(f.content,1)=1) file_now "
+        f"{base} ORDER BY e.id DESC LIMIT ? OFFSET ?", p + [limit, offset])]
+    for r in rows:
+        r["file_now"] = bool(r["file_now"])
+    out = {"total": total, "returned": len(rows), "offset": offset, "by_event": kinds,
+           "events": rows}
+    if rows and any(r["item_id"] for r in rows):
+        # The outcome, for the items these events are about: where they stand now.
+        ids = sorted({r["item_id"] for r in rows if r["item_id"]})
+        ph = ",".join("?" * len(ids))
+        out["items_now"] = {
+            "by_status": {r["status"]: r["c"] for r in db.execute(
+                f"SELECT status, COUNT(*) c FROM items WHERE id IN ({ph}) GROUP BY status", ids)},
+            "with_a_file_on_disk": db.execute(
+                f"SELECT COUNT(DISTINCT matched_item_id) c FROM files WHERE matched_item_id "
+                f"IN ({ph}) AND COALESCE(content,1)=1", ids).fetchone()["c"],
+            "of": len(ids),
+            "note": "for the items in the rows returned (page with offset for the rest)"}
+    if not total:
+        out["note"] = ("no events match. Event names seen in the library: "
+                       + ", ".join(r["event"] for r in db.execute(
+                           "SELECT DISTINCT event FROM events WHERE event NOT IN ('scan-match') "
+                           "LIMIT 60")))
+    return out
+
+
 def _acquire_plan(args, ctx):
     from .planner import bulk_plan, next_individuals
     from . import acquirer
@@ -459,14 +571,14 @@ def _acquire_plan(args, ctx):
     vols = bulk_plan()
     return {"eligible": summ["eligible"], "cooling": summ["cooling"],
             "volumes": vols[:20], "volumes_total": len(vols),
-            "next_individuals": next_individuals(DEFAULT_LIMIT)}
+            "next_individuals": [_slim(i) for i in next_individuals(DEFAULT_LIMIT)]}
 
 
 def _next_picks(args, ctx):
     from .planner import next_picks
     items, total = next_picks(search=args.get("search") or None, system=args.get("system") or None,
                               limit=_limit(args), offset=max(0, int(args.get("offset") or 0)))
-    return {"total": total, "returned": len(items), "items": items}
+    return {"total": total, "returned": len(items), "items": [_slim(i) for i in items]}
 
 
 def _recommend(args, ctx):
@@ -485,11 +597,21 @@ def _download_ledger(args, ctx):
     q = "SELECT j.*, COALESCE(i.title,v.title,j.entity_id) entity_title FROM jobs j" \
         " LEFT JOIN items i ON j.entity_type='item' AND i.id=j.entity_id" \
         " LEFT JOIN volumes v ON j.entity_type='volume' AND v.id=j.entity_id"
-    p = []
+    w, p = [], []
     if args.get("status"):
-        q += " WHERE j.status=?"; p.append(args["status"])
+        w.append("j.status=?"); p.append(args["status"])
+    if args.get("system"):
+        w.append("i.system=?"); p.append(args["system"])
+    if args.get("q"):
+        w.append("(j.entity_id=? OR j.result_title LIKE ? OR i.title LIKE ?)")
+        p += [args["q"], f"%{args['q']}%", f"%{args['q']}%"]
+    if args.get("since"):
+        w.append("j.queued_at >= ?"); p.append(args["since"])
+    if w:
+        q += " WHERE " + " AND ".join(w)
     total = db.execute(f"SELECT COUNT(*) c FROM ({q})", p).fetchone()["c"]
-    rows = db.execute(q + " ORDER BY j.id DESC LIMIT ?", p + [limit]).fetchall()
+    offset = max(0, int(args.get("offset") or 0))
+    rows = db.execute(q + " ORDER BY j.id DESC LIMIT ? OFFSET ?", p + [limit, offset]).fetchall()
     mix = [dict(r) for r in db.execute(
         "SELECT COALESCE(source,'sab') source, status, COUNT(*) c FROM jobs GROUP BY source,status"
         " ORDER BY c DESC")]
@@ -836,8 +958,39 @@ def build_registry(ctx=None):
              "Diagnostic: items whose status claims a file is in hand (DOWNLOADED/FOUND/VERIFIED…) "
              "but no file on disk is matched to them, grouped by system, plus how files were "
              "attributed (hash vs filename only). Use this for 'why is this item stuck?', 'why is "
-             "something DOWNLOADED with no file?', and any 'what went wrong' question. Read-only.",
-             _obj({}), _library_audit),
+             "something DOWNLOADED with no file?', and any 'what went wrong' question. Give "
+             "`system` to get that system's full list (paged). Read-only.",
+             _obj({"system": dict(_STR, description="optional: list this system's items in full"),
+                   "limit": dict(_INT), "offset": dict(_INT)}), _library_audit),
+        Tool("count_items",
+             "Counts of catalog items, grouped — e.g. how a system's games split by status, or "
+             "how many are wanted per system. Same filters as list_items. ONE call answers "
+             "'how many X are in each state'; never count by paging list_items. Add "
+             "with_file_check to learn how many really have a file on disk.",
+             _obj({"group_by": {"type": "array", "items": {"type": "string", "enum": list(_GROUPS)},
+                                "description": "columns to group by (default ['status'])"},
+                   "system": dict(_STR, description="exact system slug"),
+                   "status": dict(_STR, description="one lifecycle status"),
+                   "q": dict(_STR, description="substring of title, series or id"),
+                   "view": dict(_STR, enum=["all", "missing", "wanted", "satisfied"]),
+                   "with_file_check": dict(_BOOL, description="also count how many have a "
+                                                              "matched file on disk")}),
+             _count_items),
+        Tool("item_history",
+             "The library's record of what happened to items: downloads, failures, wrong or "
+             "corrupt downloads let go, resets after data loss (chd-collision-lost), repairs, "
+             "card removals, keeps. Filter by event name (substring), system, item, text, or "
+             "date. Each row carries the item's status NOW and whether a file is on disk NOW, "
+             "and `items_now` sums that up — so 'did we redownload/fix X?' is one call. "
+             "Use for any 'did we / what happened / when' question.",
+             _obj({"event": dict(_STR, description="event name or part of it, e.g. 'chd-collision', "
+                                                   "'wrong-download', 'card-removed', 'acquire'"),
+                   "system": dict(_STR, description="exact system slug"),
+                   "ident": dict(_STR, description="an item id or part of a title"),
+                   "q": dict(_STR, description="text in the event's detail or the title"),
+                   "since": dict(_STR, description="ISO date, e.g. 2026-10-25"),
+                   "limit": dict(_INT), "offset": dict(_INT)}),
+             _item_history),
         Tool("acquire_plan",
              "What the acquisition pipeline would do next: how many armed items are eligible now "
              "vs held back by a cooldown, ranked volume bundles, and the next individual picks.",
@@ -853,7 +1006,10 @@ def build_registry(ctx=None):
              "status summary. This is the record of what was actually fetched and what happened "
              "to it.",
              _obj({"status": dict(_STR, description="filter to one job status, e.g. QUEUED, FAILED, DOWNLOADED"),
-                   "limit": dict(_INT)}), _download_ledger),
+                   "system": dict(_STR, description="only jobs for items of this system"),
+                   "q": dict(_STR, description="an item id, or part of a title or release name"),
+                   "since": dict(_STR, description="ISO date: jobs queued on or after it"),
+                   "limit": dict(_INT), "offset": dict(_INT)}), _download_ledger),
         Tool("watcher_health",
              "Liveness of the always-on acquisition watcher: is it on, is the thread running, how "
              "long since its last heartbeat, and is it stale. Call this whenever downloads seem "

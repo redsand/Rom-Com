@@ -310,7 +310,7 @@ def test_results_are_truncated_with_an_honest_note(monkeypatch, tmp_path):
     assert out["truncated"] is True
     assert out["note"] and "showing" in out["note"]
     assert out["data"]["total"] == 200            # the real count survives the trim
-    assert len(json.dumps(out["data"])) < 3000
+    assert len(json.dumps(out["data"])) < chattools.RESULT_CAP + 500
 
 
 def test_a_small_result_is_not_marked_truncated(monkeypatch, tmp_path):
@@ -692,3 +692,37 @@ def test_the_memory_tools_are_all_read_only_and_ungated(monkeypatch, tmp_path):
     for name in ("remember_fact", "recall_memory", "list_facts", "forget_fact"):
         assert r[name].risk == "low", name
         assert r[name].confirm is None, name
+
+
+def test_count_items_gives_the_whole_breakdown_in_one_call(monkeypatch, tmp_path):
+    """"How are the dreamcast games split?" was seven list_items calls of limit 1."""
+    setup_db(monkeypatch, tmp_path, items=[
+        {"id": "a", "title": "A", "system": "dc", "status": "DOWNLOADED"},
+        {"id": "b", "title": "B", "system": "dc", "status": "DOWNLOADED"},
+        {"id": "c", "title": "C", "system": "dc", "status": "VERIFIED"},
+        {"id": "d", "title": "D", "system": NES, "status": "MISSING"}],
+        files=[{"path": "/r/c.gdi", "matched_item_id": "c"}])
+    d = call(reg(), "count_items", system="dc", with_file_check=True)["data"]
+    assert d["total"] == 3
+    assert {g["status"]: g["c"] for g in d["groups"]} == {"DOWNLOADED": 2, "VERIFIED": 1}
+    assert d["with_a_file_on_disk"] == 1 and d["without_a_file"] == 2
+
+
+def test_item_history_says_where_the_items_stand_now(monkeypatch, tmp_path):
+    """"Did we redownload the broken games?" is the event that broke them plus each item's
+    state now — one call, not a reconstruction from old notes."""
+    setup_db(monkeypatch, tmp_path, items=[
+        {"id": "a", "title": "Lost One", "system": "dc", "status": "VERIFIED"},
+        {"id": "b", "title": "Lost Two", "system": "dc", "status": "MISSING"}],
+        files=[{"path": "/r/a.chd", "matched_item_id": "a"}])
+    db = connect()
+    with db:
+        for iid in ("a", "b"):
+            db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,'chd-collision-lost','x')",
+                       (iid,))
+        db.execute("INSERT INTO events(item_id,event,detail) VALUES('a','scan-match','noise')")
+    d = call(reg(), "item_history", system="dc")["data"]
+    assert [k["event"] for k in d["by_event"]] == ["chd-collision-lost"]   # no scan noise
+    now = d["items_now"]
+    assert now["by_status"] == {"VERIFIED": 1, "MISSING": 1} and now["with_a_file_on_disk"] == 1
+    assert {e["title"]: e["file_now"] for e in d["events"]} == {"Lost One": True, "Lost Two": False}

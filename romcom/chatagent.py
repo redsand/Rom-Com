@@ -21,8 +21,11 @@ import time
 
 from . import chattools, chatstore, llmclient
 
-MAX_ITERATIONS = 8
-TURN_TIMEOUT = 120.0        # seconds of wall clock for the whole turn
+# 8 rounds was too few for a real question: "did we redownload the broken dreamcast
+# games?" spent seven on lookups and answered "I could not confirm". The tools now answer
+# a breakdown in one call (count_items, item_history), and the budget has room to check.
+MAX_ITERATIONS = 14
+TURN_TIMEOUT = 300.0        # seconds of wall clock for the whole turn
 STUCK_REPEAT = 3            # identical consecutive calls before we stop
 HISTORY_DEFAULT = 8         # exchanges kept verbatim, not rows — see _window()
 HISTORY_BUDGET = 24000      # chars of verbatim window before tool payloads get trimmed
@@ -59,8 +62,16 @@ that is what `library_audit` exists to find.
 HOW TO WORK
 - For any question about counts or coverage, call a tool. Start with `library_summary` or
   `list_items`.
-- Before filtering by a system or status, call `facets` so you use the exact spelling rather
-  than a guess. Systems are short slugs (`nds`, `nes`, `gba`), not full console names.
+- The legal systems and statuses are listed under THE LIBRARY NOW below — use those exact
+  spellings (`facets` gives them too). Systems are short slugs (`nds`, `nes`, `gba`), not
+  full console names.
+- For "how many / how are they split / what state are the X games in", call `count_items`
+  with `group_by` — ONE call gives the whole breakdown. Never page `list_items` with
+  limit 1 to count things one status at a time.
+- For "did we / what happened to / was X fixed / when did Y change", call `item_history`:
+  the library writes an event for everything it does to an item (downloads, failures,
+  resets, card changes, repairs), and each row says the item's status NOW and whether a
+  file is on disk for it — which is how you tell whether a fix actually took.
 - For "what should I play / recommend me games / what's good", call `recommend` — it ranks
   the library by the owner's ratings and public community scores in one call. Do not
   assemble a top-N yourself by searching franchise names one at a time.
@@ -71,7 +82,9 @@ HOW TO WORK
   carry a `note`. If `total` is larger than what you received, say so and page or narrow the
   filter — never present a partial list as complete.
 - For "why is this stuck / what went wrong / why is this downloaded but absent", call
-  `library_audit` and read its explanation.
+  `library_audit` (give `system` to list one system's in full) and read its explanation.
+- Never make the same call twice in a turn: its result is already above. Issue
+  independent calls together in one round — you have a limited number of rounds.
 - Search tools hit the network and are rate-limited. Use them deliberately, not in a loop.
 - If a tool's result is ambiguous or errors, fix your call and try again — a tool error is
   information, not a dead end.
@@ -106,6 +119,15 @@ you would do differently or ask what they would prefer.
 """
 
 
+def _join(content, more):
+    """One round's text after another's. Glued straight on, a round that said "I'll
+    check..." ran into the answer: "...session notes.No — not all of them"."""
+    more = more or ""
+    if content.strip() and more.strip() and not content.endswith(("\n", " ")):
+        return content + "\n\n" + more
+    return content + more
+
+
 def system_prompt():
     return _SYSTEM.strip()
 
@@ -119,7 +141,7 @@ def _assemble(sid, registry, query=None):
     the newest thing said, which is exactly backwards.
     """
     from .config import settings
-    msgs = [{"role": "system", "content": system_prompt()}]
+    msgs = [{"role": "system", "content": system_prompt() + _library_now()}]
     memory = _memory_block(sid, query)
     if memory:
         msgs.append({"role": "system", "content": memory})
@@ -128,6 +150,21 @@ def _assemble(sid, registry, query=None):
         msgs.append({"role": "system", "content": summary})
     msgs += chatstore.to_messages(_window(sid))
     return msgs
+
+
+def _library_now():
+    """The legal filter values, given up front. "Call facets first" cost every
+    filtered question a round before it had asked anything."""
+    try:
+        from .db import connect
+        from .status import LIFECYCLE
+        db = connect()
+        systems = [r[0] for r in db.execute(
+            "SELECT DISTINCT system FROM items WHERE system IS NOT NULL ORDER BY system")]
+        return ("\n\nTHE LIBRARY NOW\nSystems: " + ", ".join(systems)
+                + "\nStatuses: " + ", ".join(LIFECYCLE))
+    except Exception:
+        return ""
 
 
 def _window(sid):
@@ -348,6 +385,7 @@ def _loop(sid, registry, emit, cancel=None, model=None):
     messages = _assemble(sid, registry, query=_last_user_text(sid))
     tools = [t.schema() for t in registry.values()]
     prior_calls = []
+    answered = set()    # read-only calls already run this turn
     usage_total = {}
     content, thinking = "", ""
     stopped = None      # a reason string when the turn ended early
@@ -380,7 +418,7 @@ def _loop(sid, registry, emit, cancel=None, model=None):
                 for k, v in (turn.get("usage") or {}).items():
                     if isinstance(v, (int, float)):
                         usage_total[k] = usage_total.get(k, 0) + v
-                content += turn.get("content") or ""
+                content = _join(content, turn.get("content"))
                 thinking += turn.get("thinking") or ""
                 if not content.strip():
                     stopped = "the model produced no answer on the final round"
@@ -391,7 +429,7 @@ def _loop(sid, registry, emit, cancel=None, model=None):
             for k, v in (turn.get("usage") or {}).items():
                 if isinstance(v, (int, float)):
                     usage_total[k] = usage_total.get(k, 0) + v
-            content += turn.get("content") or ""
+            content = _join(content, turn.get("content"))
             thinking += turn.get("thinking") or ""
             calls = [c for c in (turn.get("tool_calls") or []) if c.get("name")]
 
@@ -412,9 +450,21 @@ def _loop(sid, registry, emit, cancel=None, model=None):
                                f"{STUCK_REPEAT} times with identical arguments")
                     break
 
+                if sig in answered:
+                    # The same call, same arguments, already answered this turn — the model
+                    # re-asked next_picks six times in one turn. Its result is above; running
+                    # it again costs time and context and says nothing new.
+                    text = json.dumps({"ok": True, "note": "you already made this exact call "
+                                       "this turn; its result is above. Use it — do not "
+                                       "repeat calls."})
+                    chatstore.append(sid, "tool", text, tool_name=call["name"])
+                    messages.append({"role": "tool", "content": text, "tool_name": call["name"]})
+                    continue
                 emit("tool_start", {"name": call["name"], "args": call.get("arguments") or {}})
                 result = chattools.dispatch(registry, call["name"], call.get("arguments") or {},
                                             session_id=sid)
+                if getattr(registry.get(call["name"]), "risk", None) == "low":
+                    answered.add(sig)
                 emit("tool_result", {"name": call["name"], "ok": result.get("ok"),
                                      "data": result.get("data"), "error": result.get("error"),
                                      "truncated": result.get("truncated", False),

@@ -18,3 +18,6 @@ nvram/
 diff/
 .retroarch-display.cfg
 artwork/
+
+.claude/
+*.egg-info/

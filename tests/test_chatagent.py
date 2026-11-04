@@ -180,7 +180,8 @@ def test_the_same_call_with_the_same_arguments_three_times_stops_the_turn(monkey
     rec = Recorder()
     out = chatagent.run_turn(None, "stuck", ping_registry(), rec)
     assert "repeated" in out["stopped"] and "ping" in out["stopped"]
-    assert rec.names().count("tool_start") == chatagent.STUCK_REPEAT - 1
+    # Only the first runs: a repeat in the same turn is answered from the first result.
+    assert rec.names().count("tool_start") == 1
     assert rec.names()[-1] == "done"
 
 
@@ -507,3 +508,18 @@ def test_the_recall_query_is_the_owners_question_not_the_whole_history(monkeypat
     chatstore.append(sid, "assistant", "an old answer")
     chatstore.append(sid, "user", "the newest question about SNES")
     assert chatagent._last_user_text(sid) == "the newest question about SNES"
+
+
+def test_a_repeated_call_in_one_turn_is_answered_without_running_again(monkeypatch, tmp_path):
+    """The model re-asked next_picks six times in one turn. A repeat is answered from the
+    first result, and the rounds' text is kept apart rather than run together."""
+    setup_db(monkeypatch, tmp_path)
+    FakeOllama(turns=[
+        {"tokens": ["Checking."], "tool_calls": [{"name": "ping", "arguments": {"n": 1}}]},
+        {"tool_calls": [{"name": "ping", "arguments": {"n": 1}},
+                        {"name": "ping", "arguments": {"n": 2}}]},
+        {"tokens": ["Done."]}]).install(monkeypatch)
+    rec = Recorder()
+    out = chatagent.run_turn(None, "go", ping_registry(), rec)
+    assert rec.names().count("tool_start") == 2
+    assert out["content"] == "Checking.\n\nDone."
