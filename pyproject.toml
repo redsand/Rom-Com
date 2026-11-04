@@ -17,6 +17,9 @@ dependencies = [
   "pillow>=10",
 ]
 
+[tool.setuptools.packages.find]
+include = ["romcom*"]
+
 [tool.setuptools.package-data]
 romcom = ["webui/*"]
 
