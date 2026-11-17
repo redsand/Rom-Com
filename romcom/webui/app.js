@@ -1426,6 +1426,7 @@ const UPKEEP_SAYS = {
   labels: r => `${(r.labels || 0).toLocaleString()} labels`,
   artwork: r => `${(r.boxart || 0).toLocaleString()} of ${(r.games || 0).toLocaleString()} games have box art`,
   discs: r => r.chds || r.converted ? `${(r.chds || 0).toLocaleString()} disc game(s) kept as CHD (${(r.converted || 0)} converted), ${fmtBytes(r.freed || 0)} of archives deleted${r.kept ? `, ${r.kept} kept (did not verify)` : ""}` : "every disc game already kept once",
+  dewant: r => r.count ? `${r.count} game(s) left the download queue (${Object.entries(r.by_category || {}).map(([k, v]) => `${v} ${k}`).join(", ")})` : "download queue already trim",
   bloat: r => r.deleted ? `${r.deleted} download(s) that can never apply deleted (${(r.kinds || []).join(", ")}), ${fmtBytes(r.bytes_freed || 0)} freed` : "no bloat",
   dupes: r => r.deleted ? `${r.deleted.toLocaleString()} duplicate(s) deleted, ${fmtBytes(r.bytes_freed || 0)} freed` : "no duplicates",
   prune: r => r.files_deleted ? `${r.files_deleted.toLocaleString()} extra copies deleted, ${fmtBytes(r.bytes_freed || 0)} freed` : "one copy per game already",

@@ -61,3 +61,62 @@ def test_a_numbered_title_is_a_game_not_bookkeeping(monkeypatch, tmp_path):
     _item(db, "j1", "nds", "4471_Old-BD105752_to_New-9FA55393")
     gone = {x[0] for x in dewant.candidates()}
     assert gone == {"j1"}
+
+
+def _wanted(db):
+    return {r[0] for r in db.execute("SELECT id FROM items WHERE wanted=1")}
+
+
+def test_demos_and_editions_of_a_held_game_leave_the_queue(monkeypatch, tmp_path):
+    db = _db(monkeypatch, tmp_path)
+    _item(db, "h", "nes", "River City Ransom (U)", held=True)
+    _item(db, "e1", "nes", "River City Ransom (World) (Evercade)")
+    _item(db, "e2", "nes", "River City Ransom (USA) (Virtual Console)")
+    _item(db, "d1", "xbox", "Tekken 4 (USA) (Demo 1)")
+    _item(db, "d2", "xbox", "Official Xbox Magazine Game Disc 14 (USA)")
+    _item(db, "d3", "xbox", "Killzone (Europe) (En,Fr,De,Es,It) (Bonus Disc)")
+    _item(db, "s1", "wii", "IOS17-64-v512")
+    _item(db, "k1", "xbox", "Demolition Racer (USA)")
+    cats = {x[0]: x[3] for x in dewant.candidates()}
+    assert cats == {"e1": "have-it", "e2": "have-it", "d1": "demo", "d2": "print",
+                    "d3": "demo", "s1": "junk"}
+
+
+def test_a_held_copy_nobody_can_read_or_a_demo_answers_for_nothing(monkeypatch, tmp_path):
+    """A German-only disc, a translated dump or a demo on the shelf is no reason to stop
+    looking for the game."""
+    db = _db(monkeypatch, tmp_path)
+    _item(db, "h1", "ps2", "Disney's Dinosaur (Europe) (Fr,De,Es,It,Nl)", held=True)
+    _item(db, "w1", "ps2", "Disney's Dinosaur (Europe) (En,Sv,No,Da,Fi)")
+    _item(db, "h2", "ps2", "Gradius V (Japan) (Taikenban)", held=True)
+    _item(db, "w2", "ps2", "Gradius V (USA)")
+    _item(db, "h3", "nes", "Mega Man 2 (U) [T-German1.01]", held=True)
+    _item(db, "w3", "nes", "Mega Man 2 (USA)")
+    _item(db, "h4", "ps2", "Shenmue II (USA) (Disc 1)", held=True)
+    _item(db, "w4", "ps2", "Shenmue II (USA) (Disc 2)")
+    assert dewant.candidates() == []
+
+
+def test_one_edition_of_an_unheld_game_stays_in_the_queue(monkeypatch, tmp_path):
+    db = _db(monkeypatch, tmp_path)
+    _item(db, "a", "ps2", "Killzone (Europe) (En,Ru,El)")
+    _item(db, "b", "ps2", "Killzone (USA)")
+    _item(db, "c", "ps2", "Killzone (Japan)")
+    _item(db, "d", "ps3", "Dead Space (Europe) (Es,It)")
+    _item(db, "e", "ps3", "Dead Space (Europe) (En,Pl,Ru,Cs,Hu)")
+    _item(db, "f", "switch", "DOOM")
+    _item(db, "g", "switch", "DOOM (1993)")
+    dewant.dewant(apply=True)
+    assert _wanted(db) == {"b", "e", "f", "g"}
+
+
+def test_a_game_wanted_again_is_left_alone_and_undo_puts_it_all_back(monkeypatch, tmp_path):
+    db = _db(monkeypatch, tmp_path)
+    _item(db, "d1", "xbox", "Tekken 4 (USA) (Demo 1)")
+    _item(db, "j1", "xbox", "Zan Kabuki (Japan)")
+    assert dewant.dewant(apply=True)["count"] == 2
+    with db:
+        db.execute("UPDATE items SET wanted=1, authorized=1 WHERE id='d1'")
+    assert dewant.dewant(apply=True)["count"] == 0 and _wanted(db) == {"d1"}
+    assert dewant.undo("japan-only")["restored"] == 1 and _wanted(db) == {"d1", "j1"}
+    assert dewant.dewant(apply=True)["count"] == 0

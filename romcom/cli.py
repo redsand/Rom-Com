@@ -604,6 +604,9 @@ def cmd_discs(a):
 def cmd_dewant(a):
     """Take the categories nobody wants out of the acquisition backlog."""
     from . import dewant
+    if a.undo is not None:
+        print(json.dumps(dewant.undo(a.undo or None), indent=2))
+        return
     r = dewant.dewant(apply=a.apply, systems=a.system)
     print(json.dumps({"count": r["count"], "by_category": r["by_category"],
                       "by_system": r["by_system"], "applied": r["applied"]},
@@ -777,6 +780,7 @@ def main():
     dc.set_defaults(fn=cmd_discs)
     dw=s.add_parser("dewant", help="take the unwanted categories out of the acquisition backlog (tutors, crosswords and print, Japan-only, dat junk)")
     dw.add_argument("--apply", action="store_true", help="actually clear wanted (without it, only a report)")
+    dw.add_argument("--undo", nargs="?", const="", default=None, metavar="CATEGORY", help="put back what dewant took out (one category, or everything)")
     dw.add_argument("--system", action="append", help="limit to these systems")
     dw.set_defaults(fn=cmd_dewant)
     cc=s.add_parser("chd-cache", help="convert a system's discs to CHD ahead of a card export (they are kept for every later card)")

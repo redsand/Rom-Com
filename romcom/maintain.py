@@ -31,6 +31,7 @@ STEPS = (
     ("bloat", "delete downloads that can never apply: PC games, Xbox 360 packages, rejected DVDs"),
     ("dupes", "delete exact duplicate copies"),
     ("prune", "keep one copy per game: drop extra dumps of the same game"),
+    ("dewant", "trim the download queue: demos, other editions of games you hold, extra regional editions"),
 )
 # Steps that remove files: never while an export or romset build may be reading them.
 DESTRUCTIVE = {"dupes", "prune", "discs", "bloat"}
@@ -95,6 +96,10 @@ def _step(name, progress, stop):
         r = prune.cleanup(apply=True, systems=prune_systems())
         return {"deleted": r.get("deleted"), "files_deleted": r.get("files_deleted"),
                 "bytes_freed": r.get("bytes_freed")}
+    if name == "dewant":
+        from . import dewant
+        r = dewant.dewant(apply=True)
+        return {"count": r["count"], "by_category": r["by_category"]}
     raise ValueError(f"no upkeep step {name!r}")
 
 
