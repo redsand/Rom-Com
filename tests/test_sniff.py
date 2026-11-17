@@ -170,3 +170,27 @@ def test_a_scan_steps_over_partial_and_vanished_files(tmp_path, monkeypatch):
                         if Path(p).name == "gone.zip" else real_digest(p))
     r = scan(roms, adopt=False)
     assert r["files"] == 0
+
+
+def test_an_xbox_download_is_checked_by_its_stamp(tmp_path):
+    from romcom import sniff
+    from romcom.verify import check_download
+    x = tmp_path / "Halo 2.iso"
+    with open(x, "wb") as f:
+        f.seek(0x10000); f.write(b"MICROSOFT*XBOX*MEDIA"); f.write(b"\0" * 4096)
+    assert sniff.consistent(sniff.evidence(x), "xbox") is True
+    assert sniff.consistent(sniff.evidence(x), "ps2") is False
+    assert check_download(x, "xbox")[0]
+    ps2 = tmp_path / "Halo 2 (ps2).iso"
+    with open(ps2, "wb") as f:
+        f.seek(0x8001); f.write(b"CD001"); f.seek(0x8008); f.write(b"PLAYSTATION".ljust(32))
+        f.seek(0x10100); f.write(b"\0")
+    ok, why = check_download(ps2, "xbox")
+    assert not ok and "not a xbox disc" in why
+    full = tmp_path / "Redump dump.iso"          # opens with a DVD-video partition
+    with open(full, "wb") as f:
+        f.seek(0x8001); f.write(b"CD001"); f.seek(0x10100); f.write(b"\0")
+    assert sniff.consistent(sniff.evidence(full), "xbox") is None
+    assert sniff.consistent(("names", ["Game/default.xbe", "Game/data.bin"]), "xbox") is True
+    assert sniff.consistent(("names", ["Game/default.xbe"]), "ps2") is False
+    assert sniff.stub_disc(1_000_000, "xbox")

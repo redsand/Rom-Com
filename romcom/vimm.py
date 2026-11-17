@@ -48,6 +48,7 @@ VIMM_SYSTEMS = {
     "virtualboy": {"virtual boy"}, "atari2600": {"atari 2600"},
     "atari5200": {"atari 5200"}, "atari7800": {"atari 7800"}, "lynx": {"lynx"},
     "pcengine": {"turbografx-16", "tg16", "turbografx"}, "wonderswan": {"wonderswan"},
+    "xbox": {"xbox"},
 }
 
 _VAULT_ID = re.compile(r"^/vault/(\d+)$")

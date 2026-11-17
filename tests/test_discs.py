@@ -164,3 +164,54 @@ def test_a_loose_cue_takes_its_own_tracks_only(monkeypatch, tmp_path):
     assert cdi.exists()                    # the other dump of the disc stays
     paths = {x[0] for x in db.execute("SELECT path FROM files WHERE matched_item_id='l'")}
     assert paths == {str(chd), str(cdi)}
+
+
+def _later_source(monkeypatch, db, a, name, payload):
+    """A second archive for game 's', arriving after the first was compacted. The fake
+    converter writes `payload`, and a CHD's hash is its bytes."""
+    monkeypatch.setattr(esde, "_convert_chd", lambda src, names, main, target, system: (
+        Path(target).parent.mkdir(parents=True, exist_ok=True),
+        Path(target).write_bytes(payload)))
+    monkeypatch.setattr(discs, "_sha", lambda p: Path(p).read_bytes().hex())
+    b = a.parent / name
+    with zipfile.ZipFile(b, "w") as z:
+        z.writestr("disc.gdi", "3\n")
+        z.writestr("track01.bin", b"u" * 2352)
+    with db:
+        db.execute("INSERT INTO files(path,bytes,matched_item_id,content) VALUES(?,?,'s',1)",
+                   (str(b), b.stat().st_size))
+    return b
+
+
+def test_a_second_disc_arriving_later_is_converted_not_deleted(monkeypatch, tmp_path):
+    """Disc 1 was compacted to `<title>.chd`. Disc 2, filed under the same game, found
+    that name on disk, was taken for already converted and deleted unconverted."""
+    db, a, lib = _env(monkeypatch, tmp_path)
+    discs.compact(apply=True, convert=True)
+    b = _later_source(monkeypatch, db, a, "Shenmue (USA) (Disc 2).7z", b"DISC2")
+    r = discs.compact(apply=True, convert=True)
+    d = lib / "dreamcast"
+    second = d / "Shenmue (USA) (Disc 1) - Shenmue (USA) (Disc 2).chd"
+    assert r["converted"] == 1 and not b.exists()
+    assert second.read_bytes() == b"DISC2"
+    assert (d / "Shenmue (USA) (Disc 1).chd").read_bytes() == b"CHD" * 100
+    assert {x[0] for x in db.execute("SELECT path FROM files WHERE matched_item_id='s'")} == {
+        str(d / "Shenmue (USA) (Disc 1).chd"), str(second)}
+
+
+def test_the_same_disc_downloaded_again_adds_no_second_chd(monkeypatch, tmp_path):
+    db, a, lib = _env(monkeypatch, tmp_path)
+    discs.compact(apply=True, convert=True)
+    b = _later_source(monkeypatch, db, a, "Shenmue again.7z", b"CHD" * 100)
+    discs.compact(apply=True, convert=True)
+    assert not b.exists()
+    assert [p.name for p in (lib / "dreamcast").iterdir()] == ["Shenmue (USA) (Disc 1).chd"]
+    assert not list((tmp_path / "F" / "romcom-chd-cache").rglob("*.chd"))
+
+
+def test_a_later_source_is_kept_until_it_may_be_converted(monkeypatch, tmp_path):
+    db, a, lib = _env(monkeypatch, tmp_path)
+    discs.compact(apply=True, convert=True)
+    b = _later_source(monkeypatch, db, a, "Shenmue (USA) (Disc 2).7z", b"DISC2")
+    r = discs.compact(apply=True, convert=False)
+    assert b.exists() and r["chds"] == 0

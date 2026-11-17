@@ -807,6 +807,41 @@ def _title(db, row):
     return (r["title"] if r else "") or ""
 
 
+def _arcade_support(keep):
+    """{(folder, set)} of the arcade zips on the card that other games there stand on:
+    a BIOS, a device, a parent set, per each core's dat. `neogeo.zip` is a game to the
+    index — an item, a file, a score of nothing — and ranked as one it was the first
+    thing given up for a newcomer, taking every Neo Geo game on the card with it."""
+    from . import arcadehealth, esde, mameset
+    cores = {f.lower(): c for c, f in esde.ARCADE_FOLDERS.items()}
+    on_card = {}
+    for row in keep:
+        f, e = (row.get("folder") or "").lower(), row.get("entry") or ""
+        if f in cores and e.lower().endswith(".zip"):
+            on_card.setdefault(f, set()).add(e[:-4])
+    out = set()
+    for f, sets in on_card.items():
+        try:
+            dat = mameset.dat_path(cores[f])
+            machines = arcadehealth.parse(dat) if dat else {}
+        except OSError:
+            machines = {}
+        for s in sets:
+            m = machines.get(s) or {}
+            if m.get("isbios") or m.get("isdevice"):
+                out.add((f, s))
+            seen, todo = {s}, [m.get("romof"), m.get("cloneof"), *(m.get("devices") or [])]
+            while todo:
+                d = todo.pop()
+                if not d or d in seen:
+                    continue
+                seen.add(d)
+                out.add((f, d))
+                dm = machines.get(d) or {}
+                todo += [dm.get("romof"), dm.get("cloneof"), *(dm.get("devices") or [])]
+    return out
+
+
 def _candidates(keep, protect_played, db, protected):
     """The games on the card that could be given up, worst first.
 
@@ -819,13 +854,21 @@ def _candidates(keep, protect_played, db, protected):
     protected, with the reason, so the owner can see what was held back and why.
     """
     cands = []
+    support = _arcade_support(keep)
     for row in keep:
         item_id = row.get("item_id")
         if not item_id:
             continue
-        item = db.execute("SELECT title, keep, rating, community_score FROM items WHERE id=?",
-                          (item_id,)).fetchone()
+        item = db.execute("SELECT title, keep, rating, community_score, is_device "
+                          "FROM items WHERE id=?", (item_id,)).fetchone()
         if item is None:
+            continue
+        # A BIOS, a device or a parent set is not a game to trade: the games that need
+        # it stop booting the moment it goes.
+        if item["is_device"] or ((row.get("folder") or "").lower(),
+                                 (row.get("entry") or "")[:-4]) in support:
+            protected.append({**row, "title": item["title"],
+                              "why": "other arcade games on the card need it"})
             continue
         # A game outside the update's scope is not the update's business. The recipe
         # named the systems it may touch, and a game on another system is not one of

@@ -138,6 +138,17 @@ def _armed(db):
         "AND item_id IS NOT NULL GROUP BY item_id")}
     ready = [r for r in armed if r["id"] not in cooled]
     ready.sort(key=lambda r: (tried.get(r["id"]) or "", r["system"] or "", r["title"]))
+    # The never-tried ones take turns by system. In plain system order a newly wanted
+    # console waited behind every title of every console before it in the alphabet:
+    # 1,421 Xbox games sat behind 19,460 Switch ones and 9,000 others, weeks of sweeps.
+    fresh = [r for r in ready if not tried.get(r["id"])]
+    if fresh:
+        turn = {}
+        for r in fresh:
+            s = r["system"] or ""
+            r["_turn"] = turn[s] = turn.get(s, -1) + 1
+        fresh.sort(key=lambda r: (r.pop("_turn"), r["system"] or "", r["title"]))
+        ready = fresh + ready[len(fresh):]
     return ready, len(armed) - len(ready)
 
 

@@ -1100,3 +1100,16 @@ def test_in_flight_listed_during_direct_download_and_empty_after(monkeypatch, tm
     assert seen[0]["i1"]["title"] == "Super Mario World"
     assert seen[0]["i1"]["note"] == "romsgames download"
     assert acquirer.IN_FLIGHT == {}  # the worker released the item when it finished
+
+
+def test_untried_games_take_turns_by_system(monkeypatch, tmp_path):
+    """In plain system order a newly wanted console waited behind every title of every
+    console before it in the alphabet: Xbox sat behind 19,460 Switch games."""
+    db = client_db(monkeypatch, tmp_path)
+    seed(db, [{"id": f"s{n}"} for n in range(3)] + [{"id": "x0"}, {"id": "x1"}, {"id": "n0"}])
+    with db:
+        db.execute("UPDATE items SET system=CASE substr(id,1,1) WHEN 's' THEN 'switch' "
+                   "WHEN 'x' THEN 'xbox' ELSE 'nes' END")
+        db.execute("INSERT INTO events(item_id,event,detail,created_at) "
+                   "VALUES('n0','acquire-skip','old',datetime('now','-2 days'))")
+    assert [r["id"] for r in eligible()] == ["s0", "x0", "s1", "x1", "s2", "n0"]

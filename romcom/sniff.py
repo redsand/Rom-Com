@@ -12,6 +12,9 @@ veto the guess:
   psp       ISO 9660 system id 'PSP GAME'; .cso / .pbp
   wii       magic 5D1C9EA3 at 0x18; .wbfs / .rvz / .wia
   gamecube  magic C2339F3D at 0x1C; .gcz / .rvz
+  xbox      'MICROSOFT*XBOX*MEDIA' at 0x10000 (an XISO), or a default.xbe in an archive.
+            A full Redump dump opens with a DVD-video partition and carries no stamp
+            this early, so an unstamped .iso is "can't tell", never "wrong".
 
 `consistent()` answers True (the stamp is there), False (the file is something else — a
 PC installer, an Xbox 360 game folder, another console's disc) or None (can't tell
@@ -26,13 +29,13 @@ SEVENZIP = r"C:\Program Files\7-Zip\7z.exe"
 
 # The consoles a name match is checked for. Cartridge systems are left alone: their
 # extension check in the scanner already does this job, and they have no disc stamp.
-CHECKED = ("ps3", "ps2", "ps1", "psp", "wii", "gamecube")
+CHECKED = ("ps3", "ps2", "ps1", "psp", "wii", "gamecube", "xbox")
 
 # Disc-image file types: never a cartridge game, whatever the file is called.
 DISC_IMAGES = {".iso", ".cue", ".chd", ".gdi", ".cdi", ".rvz", ".wbfs", ".wia", ".gcz",
                ".cso", ".mdf", ".nrg"}
 
-HEAD = 0x8030  # through the ISO 9660 primary volume descriptor's system id
+HEAD = 0x10014  # through the ISO 9660 system id (0x8028) and the Xbox stamp (0x10000)
 
 _PC = (".exe", ".dll", ".cab", ".msi", ".inf")
 _CD = (".cue", ".bin", ".img", ".ccd", ".sub", ".mdf", ".mds")
@@ -56,6 +59,8 @@ def _iso_systems(head):
             out |= {"ps1", "ps2"}
         elif sysid.startswith("PSP GAME"):
             out.add("psp")
+    if head[0x10000:0x10014] == b"MICROSOFT*XBOX*MEDIA":
+        out.add("xbox")
     return out
 
 
@@ -149,9 +154,13 @@ def consistent(ev, system):
         return None
     kind, data = ev
     if kind == "iso":
+        if system == "xbox" and not data:
+            return None                 # a full dump: its stamp sits past the video partition
         return system in data
     low = [n.lower().replace("\\", "/") for n in data]
     exts = {Path(n).suffix for n in low}
+    if any(n.rsplit("/", 1)[-1] == "default.xbe" for n in low):
+        return system == "xbox"         # an Xbox game as loose files
     if any("ps3_game/" in n or n.endswith("/param.sfo") for n in low) or ".pkg" in exts:
         return system == "ps3"
     if exts & {".gdi", ".cdi"}:
@@ -249,7 +258,7 @@ def psp_info(path):
 # track ('Love Hina - Smile Again.zip' was filed, verified, as Blue Stinger). PSP minis and
 # PSN titles are real games of a few MB, and are let through by name.
 DISC_SYSTEMS = ("dreamcast", "ps1", "ps2", "ps3", "saturn", "segacd", "pcenginecd", "3do",
-                "gamecube", "wii", "psp")
+                "gamecube", "wii", "psp", "xbox")
 STUB_BYTES = 5_000_000
 _SMALL_OK = re.compile(r"\((?:minis|psn)\)|\bminis\b|\[np[a-z]{2}\d{5}\]", re.I)
 

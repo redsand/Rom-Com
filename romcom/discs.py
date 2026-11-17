@@ -120,6 +120,50 @@ def _target(db, folder_dir, iid, stem):
     raise RuntimeError(f"no free CHD name for {stem}")
 
 
+def _key(src):
+    """A source file as the events table names it: path, size and date, so a game
+    downloaded again to the same path is a new source."""
+    st = Path(src).stat()
+    return f"{src}|{st.st_size}|{int(st.st_mtime)}"
+
+
+def _made(db, iid, src):
+    """The library CHD already made from this very source file, when a run that was
+    cut short left both on disk; else None."""
+    lead = f"{_key(src)} -> "
+    for r in db.execute("SELECT detail FROM events WHERE item_id=? AND event='chd-made' "
+                        "ORDER BY id DESC", (iid,)):
+        if (r[0] or "").startswith(lead):
+            p = Path(r[0][len(lead):])
+            if p.exists() and _owner(db, p) == iid:
+                return p
+    return None
+
+
+def _fresh(folder_dir, stem):
+    """A CHD name in `folder_dir` that no file has."""
+    for n in range(1, 100):
+        cand = folder_dir / (f"{stem}.chd" if n == 1 else f"{stem} ({n}).chd")
+        if not cand.exists():
+            return cand
+    raise RuntimeError(f"no free CHD name for {stem}")
+
+
+_SHA = _re.compile(r"^\s*(Data SHA1|SHA1):\s*([0-9a-f]{40})", _re.I | _re.M)
+
+
+def _sha(chd):
+    """The hash chdman records of a CHD's contents, or None."""
+    from . import esde
+    try:
+        p = subprocess.run([esde.chdman(), "info", "-i", str(chd)], capture_output=True,
+                           text=True, timeout=600, stdin=subprocess.DEVNULL, errors="replace")
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    found = {k.lower(): v.lower() for k, v in _SHA.findall(p.stdout or "")}
+    return found.get("data sha1") or found.get("sha1")
+
+
 def _dump_files(src, main, files):
     """The library files one dump of a game is made of: an archive is itself; a loose
     disc image is itself, or its descriptor plus the tracks it names that are among the
@@ -179,10 +223,17 @@ def compact(apply=False, convert=False, limit=None, systems=None, progress=None,
             # the loose image and its own tracks. Anything else the game owns stays.
             dump = _dump_files(src, main if names is None else None, files)
             size = sum(Path(p).stat().st_size for p in dump if Path(p).exists())
-            target = _target(db, lib / esde.folder(system), iid, stem)
+            # A CHD the game already owns under this name is this disc's only when it
+            # was made from this file. Disc 2 arriving after disc 1 was compacted, or a
+            # second release filed under the same game, found `<title>.chd` on disk,
+            # was taken for converted and deleted — unconverted. So a later source is
+            # converted too, and then compared with what is there.
+            made = _made(db, iid, src)
+            target = made or _target(db, lib / esde.folder(system), iid, stem)
+            other = made is None and target.exists()
             rel = target.name
             cached = esde.chd_cached(src, main, system)
-            if not target.exists() and not cached.exists():
+            if (other or not target.exists()) and not cached.exists():
                 if not convert or (limit is not None and out["converted"] >= limit):
                     continue
                 if not apply:
@@ -205,7 +256,7 @@ def compact(apply=False, convert=False, limit=None, systems=None, progress=None,
                 out["chds"] += 1
                 out["planned_bytes"] += size
                 continue
-            if not target.exists():
+            if other or not target.exists():
                 if progress:
                     progress(n, len(work), f"checking {rel}…")
                 if not verify(cached):
@@ -215,8 +266,22 @@ def compact(apply=False, convert=False, limit=None, systems=None, progress=None,
                     except OSError:
                         pass
                     continue
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(cached), str(target))
+                key = _key(src)
+                same = other and _sha(cached) is not None and _sha(cached) == _sha(target)
+                if same:
+                    if not verify(target):
+                        out["skipped"][Path(src).name] = "the library CHD did not verify: archive kept"
+                        continue
+                    cached.unlink()            # the same disc again: one CHD is enough
+                else:
+                    if other:                  # another disc of this game: its own name
+                        target = _fresh(target.parent, f"{stem} - {_stem(Path(src).stem)}")
+                        rel = target.name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(cached), str(target))
+                with db:
+                    db.execute("INSERT INTO events(item_id,event,detail) VALUES(?,?,?)",
+                               (iid, "chd-made", f"{key} -> {target}"))
             elif not verify(target):
                 out["skipped"][Path(src).name] = "the library CHD did not verify: archive kept"
                 continue

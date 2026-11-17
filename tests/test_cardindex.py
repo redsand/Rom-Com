@@ -781,3 +781,40 @@ def test_a_full_card_gives_up_its_worst_game_for_the_pictures(tmp_path, monkeypa
     plan = cardindex.plan_update(card, games, db=db, evict=False, free_bytes=100,
                                  reserve_bytes=0, art_need=need)
     assert plan["remove"] == [] and plan["art_short"] == 800
+
+
+def test_a_bios_or_device_is_never_traded_for_a_newcomer(tmp_path, monkeypatch):
+    """neogeo.zip and namco51.zip are items with files and no score: ranked as games they
+    were the first given up for a better one, and every game needing them stopped booting."""
+    db = _lib(tmp_path, monkeypatch)
+    dat = tmp_path / "mame.xml"
+    dat.write_text(chr(10).join((
+        '<mame>', '<machine name="bosco" romof="galaga">',
+        '<rom name="b.1" size="1" crc="00000001"/>',
+        '<device_ref name="namco51"/>', '</machine>',
+        '<machine name="galaga">', '<rom name="g.1" size="1" crc="00000004"/>', '</machine>',
+        '<machine name="namco51" isdevice="yes" runnable="no">',
+        '<rom name="51xx.bin" size="1" crc="00000002"/>', '</machine>',
+        '<machine name="neogeo" isbios="yes">',
+        '<rom name="sp.bin" size="1" crc="00000005"/>', '</machine>',
+        '<machine name="dull">', '<rom name="d.1" size="1" crc="00000006"/>', '</machine>',
+        '</mame>')), encoding="utf-8")
+    from romcom import mameset, cardindex
+    monkeypatch.setattr(mameset, "dat_path", lambda profile=None: dat)
+    sets = ["bosco", "galaga", "namco51", "neogeo", "dull"]
+    card = _card(tmp_path, {"arcade": {f"{s}.zip": 1000 for s in sets}})
+    with db:
+        for s in sets:
+            db.execute("INSERT INTO items(id,title,system,wanted,external_id,playable,community_score) "
+                       "VALUES(?,?,'arcade',1,?,1,?)", ("a-" + s, s, "mame/" + s,
+                                                        90 if s == "bosco" else None))
+    lib = tmp_path / "lib"; lib.mkdir()
+    (lib / "New Game.nes").write_bytes(b"x" * 1000)
+    _item(db, "nes-new", "New Game", "nes", score=50, path=str(lib / "New Game.nes"))
+    cardindex.index_card(card, db=db)
+    plan = cardindex.plan_update(card, _games_for(db, {"nes-new"}), db=db, evict=True,
+                                 free_bytes=0, reserve_bytes=0,
+                                 arcade={"core_sets": {"mame": ["bosco", "galaga", "neogeo", "dull"]}})
+    assert [r["entry"] for r in plan["evicted"]] == ["dull.zip"]
+    held = {r["entry"] for r in plan["protected"] if "need it" in r["why"]}
+    assert held == {"galaga.zip", "namco51.zip", "neogeo.zip"}
