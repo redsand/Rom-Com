@@ -1417,6 +1417,8 @@ const UPKEEP_SAYS = {
     ? `${r.files || 0} game file(s) unpacked from ${r.archives || 0} archive(s); ${(r.scan?.matched || 0).toLocaleString()} matched, ${(r.scan?.adopted || 0).toLocaleString()} added`
       + (r.tidied?.deleted?.length || r.tidied?.moved?.length ? `; ${r.tidied.deleted.length} imported archive(s) removed (${fmtBytes(r.tidied.bytes || 0)}), ${r.tidied.moved.length} loose game(s) moved into the library` : "")
       + (r.tidied?.already_had ? `; ${r.tidied.already_had} game(s) you already had not kept twice` : "")
+      + (r.android?.moved?.length ? `; ${r.android.moved.length} Android package(s) moved to the Android shelf` : "")
+    : r.android?.moved?.length ? `${r.android.moved.length} Android package(s) moved to the Android shelf`
     : (r.note || "nothing new"),
   claim: r => r.claimed ? `${r.claimed} download(s) attached to their game` : "nothing to attach",
   stubs: r => r.let_go ? `${r.let_go} broken disc archive(s) let go, to be fetched again` : "none",
@@ -1442,6 +1444,12 @@ async function loadUpkeep() {
     return `<div class="check${r?.error ? " bad" : ""}"><span class="mark">${r?.error ? "✕" : r ? "✓" : "·"}</span>
       <span class="d"><b>${esc(s.what)}</b>${said ? ` — <span class="sub">${said}</span>` : ""}</span></div>`;
   }).join("");
+  // What is still in the incoming folder and why: 'I dropped it in and nothing happened'.
+  const left = d.incoming_left || [];
+  $("#upkeep-left").innerHTML = !left.length ? "" :
+    `<details${left.some(x => /waiting|next run/.test(x.why)) ? " open" : ""}><summary class="sub">${left.length} thing(s) still in the incoming folder (${fmtBytes(left.reduce((a, x) => a + (x.bytes || 0), 0))}) — why</summary>`
+    + left.map(x => `<div class="check"><span class="mark">·</span><span class="d"><b>${esc(x.name)}</b> <span class="sub">${fmtBytes(x.bytes || 0)} — ${esc(x.why)}</span></span></div>`).join("")
+    + `</details>`;
 }
 function renderUpkeepResult() { loadUpkeep(); }
 $("#upkeep-start").addEventListener("click", () => startJob("maintain", "/api/maintain", {}));

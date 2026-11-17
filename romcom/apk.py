@@ -243,7 +243,29 @@ def read(path):
                     "abis": sorted(abis), "split": None, "bytes": size,
                     "obb": [n for n in names if n.lower().endswith(".obb")],
                     "splits": max(0, len(apks) - 1), "kind": "xapk"}
-    raise ValueError("no AndroidManifest.xml or manifest.json — not an Android package")
+        apks = [n for n in names if n.lower().endswith(".apk")]
+        base = next((n for n in apks if Path(n).name.lower() == "base.apk"), None)
+        if base:
+            # .apks (SAI, bundletool): base.apk and its splits, with no manifest of the
+            # bundle's own — an 8 GB one was 'not an Android package'. The base is read
+            # in place: it can be over a gigabyte, too much to hold in memory.
+            with z.open(base) as f, zipfile.ZipFile(f) as inner:
+                m = read_apk(inner)
+            abis = set(m.get("abis") or [])
+            for n in apks:
+                stem = Path(n).stem
+                for pre in ("split_config.", "config."):
+                    if stem.startswith(pre) and "_" in stem and "dpi" not in stem:
+                        abis.add(stem[len(pre):].replace("_", "-"))
+            return {"package": m.get("package"), "label": m.get("label"),
+                    "version_name": _s(m.get("versionName")),
+                    "version_code": _i(m.get("versionCode")),
+                    "min_sdk": _i(m.get("minSdkVersion")), "abis": sorted(abis),
+                    "split": None, "bytes": size,
+                    "obb": [n for n in names if n.lower().endswith(".obb")],
+                    "splits": max(0, len(apks) - 1), "kind": "apks"}
+    raise ValueError("no AndroidManifest.xml, manifest.json or base.apk — not an Android "
+                     "package")
 
 
 def _s(v):
@@ -294,8 +316,7 @@ def scan(folder=None, db=None, progress=None):
         try:
             info = read(p)
             err = None
-        except (ValueError, KeyError, OSError, struct.error, IndexError,
-                json.JSONDecodeError) as e:
+        except Exception as e:      # one damaged package must not end the shelf's scan
             info, err = {"bytes": st.st_size}, str(e) or type(e).__name__
             errors.append({"path": key, "error": err})
         with db:

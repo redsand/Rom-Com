@@ -41,6 +41,14 @@ catalogs:
       - gamecube
       - wii
       - cdi
+      - xbox
+
+  # Switch games by title id, from github.com/blawar/titledb (romcom import-titledb).
+  titledb:
+    enabled: true
+    importer: titledb
+    systems:
+      - switch
 
   scummvm:
     enabled: true

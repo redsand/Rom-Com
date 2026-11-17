@@ -9,7 +9,7 @@ is never unpacked for an emulator. So each archive here is looked into once:
 - members that are games for some system (a rom extension, a disc image or its tracks, a
   nested rom archive) are unpacked into `<download dir>/incoming/<archive name>/`;
 - cover art, videos, manuals and frontend metadata are left behind, and so are folders
-  for consoles the handheld cannot run (Xbox);
+  for consoles nothing here runs (Xbox 360);
 - the archive is remembered (name, size, time) in `.romcom-incoming.json` beside it, so
   it is never unpacked twice; nothing in the incoming folder is deleted.
 
@@ -30,8 +30,9 @@ _NOT_GAMES = re.compile(r"(^|[\\/])(images|videos|manuals|media|snaps?|box(?:art
 _JUNK_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".mp4", ".avi", ".mkv",
               ".pdf", ".txt", ".nfo", ".xml", ".ini", ".url", ".htm", ".html", ".db", ".dat",
               ".diz", ".srt", ".cfg"}
-# Consoles no handheld emulator runs well; their discs stay in the archive.
-_SKIP_FOLDERS = re.compile(r"(^|[\\/])(xbox|xbox ?360|x360)([\\/]|$)", re.I)
+# Consoles nothing here runs; their discs stay in the archive. (The original Xbox was on
+# this list until xemu; its discs are games like any other now.)
+_SKIP_FOLDERS = re.compile(r"(^|[\\/])(xbox ?360|x360)([\\/]|$)", re.I)
 _TRACKS = {".bin", ".raw", ".img", ".sub", ".iso", ".cue", ".gdi", ".cdi", ".chd", ".cso",
            ".pbp", ".wbfs", ".rvz", ".wia", ".gcz", ".nkit", ".mdf", ".mds", ".ccd"}
 
@@ -82,20 +83,149 @@ def game_members(names):
     return out
 
 
+ANDROID = (".apk", ".xapk", ".apks")     # installed, not emulated: the Android shelf's
+# An Xbox disc says so itself: the XDVDFS header, at the start of a bare game partition
+# (.xiso) or behind the video partition of a full dump (XGD1, XGD2, XGD3).
+_XBOX_MAGIC = b"MICROSOFT*XBOX*MEDIA"
+_XBOX_AT = (0x10000, 0x18310000, 0xFDA0000, 0x2090000)
+XBOX_WHY = ("an unpacked Xbox game (default.xbe), not a disc image — with extract-xiso "
+            "beside the Xbox emulator RomCom makes it one; kept for you")
+HELD_WHY = "only Xbox 360 games, which nothing here runs — kept for you"
+# An archive with no games was once always called 'artwork'; a damaged 7z and an Xbox
+# game folder were among them. Entries older than this are looked into once more.
+_LOOKED = 3
+
+
+def is_xbox_disc(p):
+    """Whether a disc image is an original-Xbox disc, by its own header."""
+    if Path(p).suffix.lower() != ".iso":
+        return False
+    try:
+        with open(p, "rb") as f:
+            for off in _XBOX_AT:
+                f.seek(off)
+                if f.read(len(_XBOX_MAGIC)) == _XBOX_MAGIC:
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def _held_members(names):
+    """Games an archive holds that are left in it: Xbox 360 discs, and an original-Xbox
+    game unpacked to its files (default.xbe) rather than kept as a disc image."""
+    return [n for n in names
+            if (_SKIP_FOLDERS.search(n) and Path(n).suffix.lower() in _TRACKS)
+            or Path(n).name.lower() == "default.xbe"]
+
+
+def extract_xiso():
+    """extract-xiso.exe: on PATH, or in `extract-xiso/` beside the Xbox emulator's folder."""
+    import shutil
+    c = shutil.which("extract-xiso")
+    if c:
+        return c
+    try:
+        from .player import emulator_options
+        for _name, template in emulator_options("xbox"):
+            for token in template.replace('"', " ").split():
+                if token.lower().endswith("xemu.exe"):
+                    emus = Path(token).parent.parent
+                    for cand in (Path(token).with_name("extract-xiso.exe"),
+                                 emus / "extract-xiso" / "extract-xiso.exe",
+                                 emus / "extract-xiso" / "artifacts" / "extract-xiso.exe"):
+                        if cand.exists():
+                            return str(cand)
+    except Exception:
+        pass
+    return None
+
+
+def repack_xbe(archive, names, target):
+    """An Xbox game kept as its files (default.xbe and the rest) is no disc, and the
+    emulator boots discs: each game folder in the archive is made an XISO in `target`.
+    Returns the images made; [] when extract-xiso or 7-Zip is not to be found."""
+    import shutil
+    import subprocess
+    from . import esde
+    tool, seven = extract_xiso(), esde.seven_zip()
+    if not tool or not seven:
+        return []
+    target = Path(target)
+    tmp = target.with_name(target.name + ".xbe-tmp")
+    shutil.rmtree(tmp, ignore_errors=True)
+    made = []
+    try:
+        p = subprocess.run([seven, "x", "-y", f"-o{tmp}", str(archive)],
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                           timeout=7200, errors="replace")
+        if p.returncode != 0:
+            raise OSError(f"7-Zip could not unpack {Path(archive).name}: "
+                          f"{(p.stderr or p.stdout or '').strip()[-200:]}")
+        target.mkdir(parents=True, exist_ok=True)
+        for n in names:
+            if Path(n).name.lower() != "default.xbe":
+                continue
+            root = (tmp / n).parent
+            name = root.name if root != tmp else Path(archive).stem
+            iso = target / (re.sub(r'[<>:"/\\|?*]', "_", name) + ".iso")
+            q = subprocess.run([tool, "-c", str(root), str(iso)], cwd=str(target),
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                               timeout=7200, errors="replace")
+            if q.returncode != 0 or not is_xbox_disc(iso):
+                iso.unlink(missing_ok=True)
+                raise OSError(f"extract-xiso could not make {iso.name}: "
+                              f"{(q.stderr or q.stdout or '').strip()[-200:]}")
+            made.append(iso)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return made
+
+
 def pending(folder=None):
     """Archives in the incoming folder not yet looked into."""
     folder = folder or incoming_dir()
     if not folder or not folder.exists():
         return []
     done = _load(folder)
+
+    def looked(p):
+        st = done.get(_key(p))
+        return isinstance(st, dict) and (st.get("games") or st.get("to")
+                                         or st.get("v", 1) >= _LOOKED)
     return [p for p in sorted(folder.iterdir())
-            if p.is_file() and p.suffix.lower() in ARCHIVES and _key(p) not in done]
+            if p.is_file() and p.suffix.lower() in ARCHIVES and not looked(p)]
 
 
 def _loose(folder):
-    return {f"{p.name}|{p.stat().st_size}" for p in folder.iterdir()
-            if p.name != STATE and not p.name.startswith(".")
-            and (p.is_dir() or p.suffix.lower() not in ARCHIVES)}
+    """What lies in the incoming folder besides archives, as a set that changes when
+    anything lands: a file by name and size, a folder by how many files it holds and
+    their size — so a game dropped into a folder already there is noticed too. (A
+    folder's own st_size says nothing about its contents, and on Windows it is not even
+    the same number from one call to the next.)"""
+    out = set()
+    for p in folder.iterdir():
+        if p.name == STATE or p.name.startswith("."):
+            continue
+        try:
+            if p.is_dir():
+                n = size = newest = 0
+                for f in p.rglob("*"):
+                    if f.is_file():
+                        st = f.stat()
+                        n += 1
+                        size += st.st_size
+                        newest = max(newest, int(st.st_mtime))
+                out.add(f"{p.name}|{n}|{size}|{newest}")
+            elif p.suffix.lower() not in ARCHIVES:
+                # The time as well as the size: Explorer gives a file its full size the
+                # moment a copy starts and its real time only when the copy ends, so a
+                # file first seen half-copied is looked at again once it is whole.
+                st = p.stat()
+                out.add(f"{p.name}|{st.st_size}|{int(st.st_mtime)}")
+        except OSError:
+            continue
+    return out
 
 
 def loose_changed(folder=None):
@@ -135,18 +265,54 @@ def unpack(folder=None, progress=None, stop=None, only=None):
         try:
             listing = esde.members(p)
             names = [n for n, _ in listing]
+            bad = None if names else ("could not be opened: damaged, empty, or an "
+                                      "incomplete download — replace it and it is tried again")
         except Exception as e:
-            out["skipped"][p.name] = f"unreadable: {e}"[:200]
-            continue                      # not remembered: tried again next time
+            names, bad = [], f"unreadable: {e}"[:200]
+        if bad:
+            # Remembered under this size and time, so the folder is not re-read every five
+            # minutes for ever; a file still being copied changes both and is tried again.
+            out["skipped"][p.name] = bad
+            state[_key(p)] = {"games": 0, "error": bad, "v": _LOOKED}
+            _save(folder, state)
+            continue
         games = game_members(names)
-        # Games left in the archive on purpose (an Xbox folder): the archive is kept for
-        # the owner to decide about, never deleted with them inside.
-        held = [n for n in names if _SKIP_FOLDERS.search(n)
-                and Path(n).suffix.lower() in _TRACKS]
+        # Games left in the archive on purpose (Xbox): the archive is kept for the owner
+        # to decide about, never deleted with them inside.
+        held = _held_members(names)
+        xbe = any(Path(n).name.lower() == "default.xbe" for n in names)
+        if xbe and not games:
+            target = Path(base) / "incoming" / re.sub(r'[<>:"/\\|?*]', "_", p.stem)
+            try:
+                free = shutil.disk_usage(Path(base)).free
+            except OSError:
+                free = None
+            need = 2 * sum(s for _, s in listing)      # the files, then the image of them
+            if free is not None and free < need + ROOM_SPARE:
+                out["skipped"][p.name] = (f"not enough room yet: needs {need / 1e9:.1f} GB, "
+                                          f"{free / 1e9:.1f} GB free — tried again later")
+                continue
+            if progress:
+                progress(i, len(todo), f"incoming: making a disc image of {p.name}")
+            try:
+                made = repack_xbe(p, names, target)
+            except Exception as e:
+                bad = f"could not be made a disc image: {e}"[:200]
+                out["skipped"][p.name] = bad
+                state[_key(p)] = {"games": 0, "error": bad, "v": _LOOKED}
+                _save(folder, state)
+                continue
+            if made:
+                state[_key(p)] = {"games": len(made), "to": str(target), "held": 0,
+                                  "v": _LOOKED}
+                _save(folder, state)
+                out["unpacked"].append(str(target))
+                out["files"] += len(made)
+                continue
         if not games:
-            out["skipped"][p.name] = ("only games RomCom leaves out (Xbox) — kept" if held
+            out["skipped"][p.name] = (XBOX_WHY if xbe else HELD_WHY if held
                                       else "no games inside (artwork, videos or manuals) — kept")
-            state[_key(p)] = {"games": 0, "held": len(held)}
+            state[_key(p)] = {"games": 0, "held": len(held), "xbe": xbe, "v": _LOOKED}
             _save(folder, state)
             continue
         target = Path(base) / "incoming" / re.sub(r'[<>:"/\\|?*]', "_", p.stem)
@@ -168,7 +334,8 @@ def unpack(folder=None, progress=None, stop=None, only=None):
         except Exception as e:
             out["skipped"][p.name] = f"could not unpack: {e}"[:200]
             continue
-        state[_key(p)] = {"games": len(games), "to": str(target), "held": len(held)}
+        state[_key(p)] = {"games": len(games), "to": str(target), "held": len(held),
+                          "v": _LOOKED}
         _save(folder, state)
         out["unpacked"].append(str(target))
         out["files"] += len(games)
@@ -297,13 +464,174 @@ def tidy(folder, base, scanned_ok, db=None):
     return out
 
 
+def android(folder, db=None):
+    """Android packages dropped in the incoming folder are installed, not emulated: no
+    catalog will ever claim them, so each readable one moves to the Android shelf
+    (android_games_dir) and the shelf is read. A package that does not open (still being
+    copied, or damaged) stays. Returns {"moved": [names], "kept": {name: why}, "games": n}."""
+    import shutil
+    from . import apk
+    from .db import connect
+    out = {"moved": [], "kept": {}, "games": None}
+    found = [p for p in sorted(folder.rglob("*"))
+             if p.is_file() and p.suffix.lower() in ANDROID]
+    if not found:
+        return out
+    shelf = (settings().get("android_games_dir") or "").strip().strip('"')
+    why = (None if shelf else "no Android games folder is set (android_games_dir)")
+    if not why and not remove_enabled():
+        why = "incoming_remove is off, so it is not moved to the Android shelf"
+    if not why:
+        try:
+            Path(shelf).mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            why = f"the Android shelf {shelf} cannot be made: {e}"[:200]
+    if why:
+        out["kept"] = {p.name: why for p in found}
+        return out
+    db = db or connect()
+    for p in found:
+        try:
+            info = apk.read(p)
+        except Exception as e:
+            out["kept"][p.name] = f"not a readable Android package: {e}"[:200]
+            continue
+        target = Path(shelf) / p.name
+        try:
+            if target.exists():
+                try:
+                    there = apk.read(target)
+                except Exception:
+                    there = {}
+                if target.stat().st_size != p.stat().st_size or any(
+                        there.get(k) != info.get(k) for k in ("package", "version_code")):
+                    out["kept"][p.name] = ("another file of this name is already on the "
+                                           "Android shelf")
+                    continue
+                p.unlink()                    # the shelf holds this very package already
+            else:
+                shutil.move(str(p), str(target))
+        except OSError as e:
+            out["kept"][p.name] = f"could not be moved: {e}"[:200]
+            continue
+        with db:
+            _forget(db, p)
+        out["moved"].append(p.name)
+    if out["moved"]:
+        try:
+            s = apk.scan(shelf, db=db)
+            out["games"] = s["games"]
+        except Exception as e:
+            out["error"] = f"{type(e).__name__}: {e}"[:200]
+    return out
+
+
+def forget_vanished(folder, db=None):
+    """Files taken out of the incoming folder by hand leave their rows behind, and a row
+    is what says a game is in hand: 15 games were FOUND or VERIFIED on the strength of
+    files deleted weeks before. Rows whose file is gone are dropped, and a catalog game
+    left with no file at all goes back to MISSING (an adopted one is swept by the scan).
+    Returns how many rows went."""
+    import os
+    from .db import connect
+    db = db or connect()
+    rows = db.execute("SELECT path, matched_item_id FROM files WHERE path LIKE ?",
+                      (str(folder) + os.sep + "%",)).fetchall()
+    gone = [r for r in rows if not Path(r["path"].split("|")[0]).exists()]
+    if not gone:
+        return 0
+    with db:
+        for r in gone:
+            db.execute("DELETE FROM files WHERE path=?", (r["path"],))
+        for item in {r["matched_item_id"] for r in gone if r["matched_item_id"]}:
+            db.execute(
+                "UPDATE items SET status='MISSING', updated_at=CURRENT_TIMESTAMP WHERE id=? "
+                "AND status IN ('FOUND','VERIFIED') AND catalog_source<>'local' "
+                "AND NOT EXISTS (SELECT 1 FROM files f WHERE f.matched_item_id=items.id)",
+                (item,))
+    return len(gone)
+
+
+def leftovers(folder=None, db=None):
+    """What is still in the incoming folder, and why each thing is: the answer to 'I
+    dropped it in and nothing happened'. [{"name", "bytes", "why"}], largest first."""
+    from .db import connect
+    from .scanner import EXT_SYSTEM
+    folder = folder or incoming_dir()
+    if not folder or not folder.exists():
+        return []
+    state = _load(folder)
+    db = db or connect()
+    claimed = {r[0].split("|")[0] for r in db.execute(
+        "SELECT path FROM files WHERE path LIKE ? AND matched_item_id IS NOT NULL",
+        (f"{folder}%",))}
+    remove = remove_enabled()
+
+    def archive(p):
+        st = state.get(_key(p))
+        if not isinstance(st, dict) or not (st.get("games") or st.get("to")
+                                            or st.get("v", 1) >= _LOOKED):
+            return "waiting to be imported"
+        if st.get("error"):
+            return st["error"]
+        if st.get("to"):
+            return ("imported — kept because it also holds games RomCom leaves out" if st.get("held")
+                    else "imported — leaves on the next run" if remove
+                    else "imported — kept because incoming_remove is off")
+        return (XBOX_WHY if st.get("xbe") else HELD_WHY if st.get("held")
+                else "no games inside (artwork, videos or manuals)")
+
+    def loose(p):
+        ext = p.suffix.lower()
+        if ext in ANDROID:
+            return "Android package — moves to the Android shelf on the next run"
+        if is_xbox_disc(p):
+            return "Xbox disc — joins the library on the next run"
+        if str(p) in claimed:
+            return ("matched to a game — moves into the library on the next run" if remove
+                    else "matched to a game — kept here because incoming_remove is off")
+        if ext in _JUNK_EXTS or _NOT_GAMES.search(str(p.relative_to(folder))):
+            return "artwork or frontend metadata, not a game"
+        if ext in EXT_SYSTEM or ext in _TRACKS:
+            return "no catalog knows this file and its name matches no game"
+        if ext in ARCHIVES:
+            return ("an archive inside a folder is not unpacked — move it to the top of "
+                    "the incoming folder")
+        return f"not a kind of file RomCom knows ({ext or 'no extension'})"
+
+    out = []
+    for p in folder.iterdir():
+        if p.name == STATE or p.name.startswith("."):
+            continue
+        try:
+            if p.is_file():
+                why = archive(p) if p.suffix.lower() in ARCHIVES else loose(p)
+                out.append({"name": p.name, "bytes": p.stat().st_size, "why": why})
+                continue
+            whys, size = {}, 0
+            for f in p.rglob("*"):
+                if f.is_file():
+                    size += f.stat().st_size
+                    w = loose(f)
+                    whys[w] = whys.get(w, 0) + 1
+            out.append({"name": p.name + "/", "bytes": size,
+                        "why": "; ".join(f"{n} file(s): {w}" for w, n in
+                                         sorted(whys.items(), key=lambda x: -x[1]))
+                               or "empty folder"})
+        except OSError:
+            continue
+    return sorted(out, key=lambda x: -x["bytes"])
+
+
 def run(progress=None, stop=None):
     """Import the incoming folder one archive at a time, smallest first: unpack it, scan
     what came out, and (incoming_remove) delete the archive and any copy of a game the
     library already held before starting the next — so a drive with little room left
     still gets through a large pile, the space each archive frees paying for the next.
-    Then the loose files: scanned, and moved into the library when claimed (`tidy`).
-    Returns the unpack report plus the scans' counts and what was tidied."""
+    Then the loose files: Android packages move to their own shelf (`android`), the rest
+    are scanned and moved into the library when claimed (`tidy`).
+    Returns the unpack report plus the scans' counts, what was tidied, and what is still
+    in the folder and why (`left`)."""
     from .scanner import scan
     folder = incoming_dir()
     r = {"archives": 0, "unpacked": [], "files": 0, "skipped": {}, "dir": str(folder or "")}
@@ -355,13 +683,39 @@ def run(progress=None, stop=None):
             if _scan(target):
                 scanned_ok.add(target)
         _tidy()
+    stopped = stop is not None and stop.is_set()
+    droid = None
+    if not stopped:
+        for what, step in (("android", lambda: android(folder)),
+                           ("vanished", lambda: forget_vanished(folder))):
+            try:
+                got = step()
+                if what == "android":
+                    droid = got
+            except Exception as e:
+                r["skipped"][what] = f"{type(e).__name__}: {e}"[:200]
+    before = set()
     try:
+        before = _loose(folder)
         state = _load(folder)
-        state["_loose"] = sorted(_loose(folder))
+        state["_loose"] = sorted(before)
         _save(folder, state)
     except OSError:
         pass
-    if not (stop is not None and stop.is_set()) and _scan(str(folder)):
+    if not stopped and _scan(str(folder)):
         scanned_ok.add(str(folder))
         _tidy()
-    return r | {"scan": scans, "tidied": tidied}
+        # A claimed game has just moved out, and the next look would take its absence for
+        # news and run an idle second import. What was here before the scan and still is
+        # is what was seen; anything that landed during the scan is not, and still counts.
+        try:
+            state = _load(folder)
+            state["_loose"] = sorted(before & _loose(folder))
+            _save(folder, state)
+        except OSError:
+            pass
+    try:
+        left = leftovers(folder)
+    except Exception:
+        left = []
+    return r | {"scan": scans, "tidied": tidied, "android": droid, "left": left}

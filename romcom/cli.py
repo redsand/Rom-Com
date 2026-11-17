@@ -3,7 +3,7 @@ from .db import connect
 from .seed import seed
 from .planner import bulk_plan, next_individuals
 from .scanner import scan
-from .catalog import import_dat, import_dats, import_scummvm
+from .catalog import import_dat, import_dats, import_scummvm, import_titledb
 from .report import render_text, summary
 from .doctor import run as doctor_run
 from .manage import set_series, export_csv, import_csv
@@ -224,6 +224,7 @@ def cmd_import_dats(a):
     print(f"Imported: {len(r['imported'])}  Skipped: {len(r['skipped'])}  Errors: {len(r['errors'])}")
     for x in r["skipped"]: print(f"  SKIP {x['file']}: {x.get('header') or x.get('dat') or ''} ({x['reason']})")
     for x in r["errors"]: print(f"  ERR  {x['file']}: {x['error']}")
+def cmd_import_titledb(a): print(json.dumps(import_titledb(a.path,a.wanted),indent=2))
 def cmd_import_scummvm(a): print(f"Imported {import_scummvm(a.url,not a.catalog_only)} ScummVM compatibility entries")
 def cmd_scan(a):
     def prog(i,total,name,stats=None):
@@ -876,6 +877,7 @@ def main():
     ad=s.add_parser("adopt"); ad.add_argument("--root"); ad.set_defaults(fn=cmd_adopt)
     d=s.add_parser("import-dat"); d.add_argument("path"); d.add_argument("--system",required=True); d.add_argument("--source",default="dat"); d.add_argument("--catalog-only",action="store_true"); d.set_defaults(fn=cmd_import_dat)
     ds=s.add_parser("import-dats"); ds.add_argument("path"); ds.add_argument("--system"); ds.add_argument("--source"); ds.add_argument("--wanted",action="store_true"); ds.add_argument("--json",action="store_true"); ds.set_defaults(fn=cmd_import_dats)
+    td=s.add_parser("import-titledb",help="Switch games by title id, from github.com/blawar/titledb (downloaded if the file is absent)"); td.add_argument("path",nargs="?"); td.add_argument("--wanted",action="store_true"); td.set_defaults(fn=cmd_import_titledb)
     sv=s.add_parser("import-scummvm"); sv.add_argument("--url",default="https://www.scummvm.org/compatibility"); sv.add_argument("--catalog-only",action="store_true"); sv.set_defaults(fn=cmd_import_scummvm)
     r=s.add_parser("report"); r.add_argument("--json",action="store_true"); r.set_defaults(fn=lambda a:print(json.dumps(summary(),indent=2) if a.json else render_text()))
     st=s.add_parser("set"); st.add_argument("ident"); st.add_argument("field"); st.add_argument("value"); st.set_defaults(fn=cmd_set)

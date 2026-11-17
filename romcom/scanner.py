@@ -20,10 +20,11 @@ def digest_file(path):
 # Google Drive splits a folder download into '<name>-001.zip', '-002', … and renames
 # big files the same way ('Sonic Unleashed-004.wbfs'): the number is not the title's.
 _DRIVE_PART = re.compile(r"-\d{3}$")
+_TITLE_ID = re.compile(r"\[(0100[0-9A-Fa-f]{12})\]")
 
 
 def _norm(s):
-    s=_DRIVE_PART.sub("",Path(s).stem).lower()
+    s=re.sub(r"\.xiso$","",_DRIVE_PART.sub("",Path(s).stem).lower())
     s=re.sub(r"[\(\[].*?[\)\]]"," ",s)
     return re.sub(r"[^a-z0-9]+"," ",s).strip()
 
@@ -230,6 +231,13 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
                 if row and sniff.stub_disc(st.st_size,row["system"],row["title"]):
                     # One shared track is not the disc (see sniff.stub_disc).
                     item_id=None; method=None; extra=[]
+        if not item_id and EXT_SYSTEM.get(p.suffix.lower())=="switch":
+            # A Switch dump carries its title id in its name; an update's id is its
+            # game's with 800 at the end.
+            m=_TITLE_ID.search(p.name)
+            hit=m and db.execute("SELECT id FROM items WHERE catalog_source='titledb' AND external_id=?",
+                                 ("switch/"+m.group(1).upper()[:13]+"000",)).fetchone()
+            if hit: item_id=hit["id"]; method="title-id"
         if not item_id and name_match and not sniff.is_web_page(p):
             # (A site's error page saved under the game's name matches the name perfectly
             # and is no game: eighteen of them were 32X and SNES "games" on a card.)
@@ -243,7 +251,12 @@ def scan(root,name_match=True,progress=None,rehash=False,adopt=True,recursive=Tr
                 ext_sys = EXT_SYSTEM.get(p.suffix.lower())
                 row = db.execute("SELECT system FROM items WHERE id=?", (cand,)).fetchone()
                 cap = CART_MAX_BYTES.get((row["system"] or "").lower()) if row else None
-                if ext_sys and row and (row["system"] or "").lower() != ext_sys:
+                from .incoming import is_xbox_disc
+                if row and is_xbox_disc(p) != ((row["system"] or "").lower() == "xbox"):
+                    cand = None     # an Xbox disc is an Xbox game, and nothing else is one
+                elif row and (row["system"] or "").lower() == "switch" and ext_sys != "switch":
+                    cand = None
+                elif ext_sys and row and (row["system"] or "").lower() != ext_sys:
                     cand = None
                 elif row and p.suffix.lower() in (".zip", ".7z", ".rar") and sniff.stub_disc(
                         st.st_size, row["system"], p.name):
@@ -370,6 +383,10 @@ EXT_SYSTEM={
  ".a26":"atari2600",".a52":"atari5200",".a78":"atari7800",".lnx":"lynx",
  ".d64":"c64",".t64":"c64",".crt":"c64",".tap":"c64",".adf":"amiga",".ipf":"amiga",".lha":"amiga",
  ".st":"atarist",".stx":"atarist",".msx":"msx",".vpk":"vita",
+ ".xiso":"xbox",
+ # Switch dumps: cartridge and eShop packages, and .nup (github.com/a55uka/nup), a
+ # container for a decrypted game with its updates and add-ons.
+ ".nsp":"switch",".xci":"switch",".nsz":"switch",".xcz":"switch",".nup":"switch",
 }
 
 def _known_systems():
@@ -379,6 +396,10 @@ def _known_systems():
     return known|set(cfg.get("custom",{}).get("systems",[]))
 
 def _detect_file_system(p,known,detect_system):
+    # An Xbox disc says so in its own header, which outranks whatever folder it sits in.
+    if p.suffix.lower()==".iso" and "xbox" in known:
+        from .incoming import is_xbox_disc
+        if is_xbox_disc(p): return "xbox"
     for part in reversed(p.parent.parts):
         if re.sub(r"[^a-z0-9]+","",part.lower()) in known:
             return re.sub(r"[^a-z0-9]+","",part.lower())

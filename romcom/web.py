@@ -891,7 +891,8 @@ def create_app():
                         "auto_hours": settings().get("maintain_auto_hours"),
                         "incoming_dir": str(folder) if folder else None,
                         "incoming_pending": [p.name for p in incoming.pending(folder)]
-                        if folder else []})
+                        if folder else [],
+                        "incoming_left": incoming.leftovers(folder) if folder else []})
 
     @app.post("/api/maintain")
     def api_maintain():

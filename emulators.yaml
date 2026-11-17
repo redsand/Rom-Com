@@ -76,6 +76,20 @@ emulators:
   ps1:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/swanstation_libretro.dll" "{rom}"'
   psp:     'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/ppsspp_libretro.dll" "{rom}"'
 
+  # --- Microsoft ---
+  # xemu boots an XISO. It needs the Xbox's own files, which only an Xbox can supply:
+  # the MCPX boot ROM, a BIOS and a hard disk image (xemu: Machine -> System).
+  # RomCom finds extract-xiso (H:/Emus/extract-xiso) from this line, to make a disc image
+  # of a game that arrives as loose files.
+  xbox:    'H:/Emus/xemu/xemu.exe -dvd_path "{rom}"'
+
+  # Switch: no emulator is installed. Put one in H:/Emus (Ryujinx or Eden, from its own
+  # site, with keys and firmware from your own console) and uncomment the line for it.
+  # A .nup is a decrypted dump no emulator opens directly yet; a title id beginning 0400
+  # is a Switch 2 game, which nothing runs.
+  # switch:  'H:/Emus/Ryujinx/Ryujinx.exe "{rom}"'
+  # switch:  'H:/Emus/Eden/eden.exe -f -g "{rom}"'
+
   # --- Other ---
   pcengine: 'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/mednafen_pce_libretro.dll" "{rom}"'
   lynx:    'H:/Emus/RetroArch/retroarch.exe -L "H:/Emus/RetroArch/cores/handy_libretro.dll" "{rom}"'

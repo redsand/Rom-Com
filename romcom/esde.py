@@ -87,6 +87,9 @@ EXTS = {
     "3do": (".iso", ".chd", ".cue"),
     "fmtowns": (".cue", ".chd", ".iso", ".m3u"),
     "amigacd32": (".cue", ".chd", ".iso"),
+    # xemu reads an XISO as it is (never a CHD); Switch packages go over untouched.
+    "xbox": (".iso", ".xiso"),
+    "switch": (".nsp", ".xci", ".nsz", ".xcz", ".nup"),
 }
 
 # A disc's main file, best first; the tracks it names ride along beside it.

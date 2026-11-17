@@ -21,8 +21,8 @@ def test_only_the_games_in_an_archive_are_unpacked_and_only_once(monkeypatch, tm
         z.writestr("psp/videos/Daxter.mp4", b"mp4")
         z.writestr("psp/gamelist.xml", "<gameList/>")
     with zipfile.ZipFile(inc / "xbox-007.zip", "w") as z:
-        z.writestr("xbox/Halo 2.iso", b"x" * 100)          # no handheld runs it
-        z.writestr("xbox/images/Halo 2-image.png", b"png")
+        z.writestr("xbox360/Halo 3.iso", b"x" * 100)       # nothing here runs it
+        z.writestr("xbox360/images/Halo 3-image.png", b"png")
     assert incoming.incoming_dir() == inc
     r = incoming.unpack()
     assert r["archives"] == 2 and r["files"] == 1
@@ -91,7 +91,7 @@ def _incoming_env(monkeypatch, tmp_path, remove="true"):
         z.writestr("snes/Turtles in Time (USA).sfc", b"S" * 2048)
         z.writestr("snes/images/Turtles-thumb.png", b"png")
     with zipfile.ZipFile(inc / "xbox-007.zip", "w") as z:
-        z.writestr("xbox/Halo 2.iso", b"x" * 100)
+        z.writestr("xbox360/Halo 3.iso", b"x" * 100)
     with zipfile.ZipFile(inc / "art-only.zip", "w") as z:
         z.writestr("wii/images/Kirby-marquee.png", b"png")
     (inc / "Pocket Game (USA).gba").write_bytes(b"G" * 4096)
@@ -172,3 +172,155 @@ def test_a_hand_unpacked_folder_beside_its_import_is_not_kept_twice(monkeypatch,
     assert not (inc / "nes" / "Some Game (USA).nes").exists()
     assert (inc / "nes" / "images" / "Some Game-thumb.png").exists()
     assert r["tidied"]["already_had"] == 1
+
+
+def test_android_packages_move_to_their_own_shelf(monkeypatch, tmp_path):
+    """An .apk no catalog will ever claim sat in the incoming folder for weeks: it goes to
+    the Android shelf and is read there. One that does not open (half-copied) stays."""
+    from test_apk import _apk
+    from romcom.db import connect
+    games, inc = _env(monkeypatch, tmp_path)
+    shelf = tmp_path / "Android Games"
+    monkeypatch.setattr(incoming, "settings", lambda: {
+        "download_dir": str(games), "android_games_dir": str(shelf)})
+    _apk(inc / "Example.apk")
+    (inc / "Half.apk").write_bytes(b"PK\x03\x04 not all here yet")
+    r = incoming.run()
+    assert r["android"]["moved"] == ["Example.apk"] and r["android"]["games"] == 1
+    assert (shelf / "Example.apk").exists() and not (inc / "Example.apk").exists()
+    assert "Half.apk" in r["android"]["kept"] and (inc / "Half.apk").exists()
+    assert connect().execute("SELECT package FROM android_games").fetchone()[0] == "com.example.game"
+    assert not connect().execute("SELECT 1 FROM files WHERE path LIKE '%Example.apk'").fetchone()
+    assert not incoming.loose_changed()                    # and no idle second run
+
+
+def test_an_apks_bundle_is_an_android_package(tmp_path):
+    """base.apk and its splits in one zip, no manifest of the bundle's own."""
+    from test_apk import _apk
+    from romcom import apk
+    _apk(tmp_path / "base.apk", package="com.rockstar.rdr", label="RDR")
+    with zipfile.ZipFile(tmp_path / "RDR.apks", "w") as z:
+        z.write(tmp_path / "base.apk", "base.apk")
+        z.writestr("split_config.arm64_v8a.apk", b"x")
+        z.writestr("split_data0.apk", b"x")
+    info = apk.read(tmp_path / "RDR.apks")
+    assert info["package"] == "com.rockstar.rdr" and info["kind"] == "apks"
+    assert info["splits"] == 2 and "arm64-v8a" in info["abis"]
+
+
+def test_what_stays_in_the_incoming_folder_says_why(monkeypatch, tmp_path):
+    """A damaged archive, an Xbox game unpacked to its files, a file of no known kind:
+    each is reported with its reason instead of sitting there unexplained."""
+    games, inc = _env(monkeypatch, tmp_path)
+    monkeypatch.setattr(incoming, "extract_xiso", lambda: None)   # no repack tool here
+    (inc / "Mystery.qqq").write_bytes(b"????")
+    (inc / "Broken.zip").write_bytes(b"PK\x03\x04 cut short")
+    with zipfile.ZipFile(inc / "Metal Slug 3.zip", "w") as z:
+        z.writestr("Metal Slug 3/default.xbe", b"XBEH")
+        z.writestr("Metal Slug 3/ms3data.afs", b"AFS")
+    (inc / "xbox" / "images").mkdir(parents=True)
+    (inc / "xbox" / "images" / "Halo-thumb.png").write_bytes(b"png")
+    r = incoming.run()
+    why = {x["name"]: x["why"] for x in r["left"]}
+    assert why["Metal Slug 3.zip"] == incoming.XBOX_WHY
+    assert "could not be opened" in why["Broken.zip"]
+    assert ".qqq" in why["Mystery.qqq"]
+    assert "artwork" in why["xbox/"]
+    assert incoming.pending() == []          # the damaged one is not re-read every 5 minutes
+    assert not incoming.loose_changed()
+
+
+def test_an_xbox_disc_and_a_switch_package_join_the_library(monkeypatch, tmp_path):
+    """Xbox discs sat in the incoming folder as 'no handheld runs it'; a .nup was a file
+    of no known kind. Both are games: the disc by its own header, wherever it lies."""
+    from romcom import scanner
+    from romcom.db import connect
+    games, inc = _env(monkeypatch, tmp_path)
+    monkeypatch.setattr(scanner, "_known_systems", lambda: {"xbox", "switch", "psp"})
+    (inc / "Halo 2-014.iso").write_bytes(b"\0" * 0x10000 + b"MICROSOFT*XBOX*MEDIA" + b"\0" * 64)
+    (inc / "Zelda [0100].nup").write_bytes(b"NUP\x01" + b"z" * 64)
+    r = incoming.run()
+    assert sorted(r["tidied"]["moved"]) == ["Halo 2-014.iso", "Zelda [0100].nup"]
+    got = dict(connect().execute("SELECT i.system, f.path FROM files f JOIN items i "
+                                 "ON i.id=f.matched_item_id").fetchall())
+    assert got["xbox"].endswith("Halo 2-014.iso") and got["switch"].endswith(".nup")
+    assert r["left"] == []
+
+
+def test_an_archive_once_called_artwork_is_looked_into_again(monkeypatch, tmp_path):
+    """State written before damaged archives and Xbox game folders were told apart."""
+    games, inc = _env(monkeypatch, tmp_path)
+    p = inc / "Dino Crisis 3.zip"
+    p.write_bytes(b"PK\x03\x04 cut short")
+    incoming._save(inc, {incoming._key(p): {"games": 0, "held": 0}})
+    assert incoming.pending() == [p]
+    incoming.unpack()
+    assert incoming.pending() == []
+    assert "could not be opened" in incoming.leftovers(inc)[0]["why"]
+
+
+def test_a_game_dropped_into_a_folder_already_there_is_noticed(monkeypatch, tmp_path):
+    games, inc = _env(monkeypatch, tmp_path)
+    (inc / "snes").mkdir()
+    st = incoming._load(inc); st["_loose"] = sorted(incoming._loose(inc)); incoming._save(inc, st)
+    assert not incoming.loose_changed()
+    (inc / "snes" / "Turtles in Time.sfc").write_bytes(b"s" * 64)
+    assert incoming.loose_changed()
+
+
+def test_a_file_taken_out_by_hand_no_longer_counts_as_a_game_in_hand(monkeypatch, tmp_path):
+    from romcom.db import connect
+    games, inc = _env(monkeypatch, tmp_path)
+    db = connect()
+    with db:
+        db.execute("INSERT INTO items(id,title,system,status,catalog_source) "
+                   "VALUES('nointro-n64-x','Mario Story (Japan)','n64','FOUND','nointro')")
+        db.execute("INSERT INTO files(path,bytes,mtime,sha1,matched_item_id,match_method) "
+                   "VALUES(?,?,?,?,?,?)", (str(inc / "N64" / "Mario Story (Japan).zip"), 9, 1.0,
+                                          "ab" * 20, "nointro-n64-x", "filename-exact"))
+    assert incoming.forget_vanished(inc) == 1
+    assert connect().execute("SELECT status FROM items WHERE id='nointro-n64-x'").fetchone()[0] == "MISSING"
+    assert not connect().execute("SELECT 1 FROM files WHERE matched_item_id='nointro-n64-x'").fetchone()
+
+
+def test_xbox_and_switch_catalogs_are_recognised_and_a_switch_dump_matches_by_title_id(monkeypatch, tmp_path):
+    import json
+    from romcom import catalog, scanner
+    from romcom.db import connect
+    assert catalog.detect_system(["Microsoft - Xbox"]) == "xbox"
+    assert catalog.detect_system(["Microsoft - Xbox 360"]) is None
+    assert catalog.detect_system(["Nintendo - Nintendo Switch"]) == "switch"
+    db_file = tmp_path / "US.en.json"
+    db_file.write_text(json.dumps({
+        "70010000000025": {"id": "0100000000010000", "name": "Super Mario Odyssey", "releaseDate": 20171027},
+        "70050000000001": {"id": "0100000000010800", "name": "Super Mario Odyssey Update"},
+        "70070000000002": {"id": None, "name": "Some Bundle"}}), encoding="utf-8")
+    assert catalog.import_titledb(db_file)["items"] == 1
+    monkeypatch.setattr(scanner, "_known_systems", lambda: {"switch"})
+    lib = tmp_path / "lib"; lib.mkdir()
+    (lib / "SMO [0100000000010000][v0].nsp").write_bytes(b"PFS0" + b"n" * 64)
+    (lib / "smo update [0100000000010800][v65536].nsp").write_bytes(b"PFS0" + b"u" * 64)
+    scanner.scan(lib)
+    rows = connect().execute("SELECT i.title, f.match_method FROM files f JOIN items i "
+                             "ON i.id=f.matched_item_id").fetchall()
+    assert [tuple(r) for r in rows] == [("Super Mario Odyssey", "title-id")] * 2
+
+
+def test_an_xbox_game_kept_as_loose_files_is_made_a_disc_image(monkeypatch, tmp_path):
+    import pytest
+    from romcom import esde, scanner
+    from romcom.db import connect
+    if not esde.seven_zip() or not incoming.extract_xiso():
+        pytest.skip("7-Zip or extract-xiso not installed")
+    games, inc = _env(monkeypatch, tmp_path)
+    monkeypatch.setattr(scanner, "_known_systems", lambda: {"xbox"})
+    with zipfile.ZipFile(inc / "Metal Slug 3 [!].zip", "w") as z:
+        z.writestr("Metal Slug 3/default.xbe", b"XBEH" + b"\0" * 4096)
+        z.writestr("Metal Slug 3/media/stats.xpr", b"x" * 4096)
+    r = incoming.run()
+    iso = games / "incoming" / "Metal Slug 3 [!]" / "Metal Slug 3.iso"
+    assert iso.exists() and incoming.is_xbox_disc(iso)
+    assert not (inc / "Metal Slug 3 [!].zip").exists()        # imported: the archive goes
+    assert connect().execute("SELECT i.system FROM files f JOIN items i ON i.id=f.matched_item_id "
+                             "WHERE f.path=?", (str(iso),)).fetchone()[0] == "xbox"
+    assert r["left"] == []

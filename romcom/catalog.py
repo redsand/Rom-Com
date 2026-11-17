@@ -235,6 +235,8 @@ _SYSTEM_RULES=[
  (r"x68000","x68000"),(r"fm towns","fmtowns"),
  (r"scummvm","scummvm"),
  (r"\bmame\b|\barcade\b|finalburn","arcade"),
+ (r"xbox (360|one|series)",None),(r"\bxbox\b","xbox"),
+ (r"nintendo switch|\bswitch\b","switch"),
  (r"\bdos\b","dos"),(r"\bwindows\b","windows"),
  (r"translation","translations"),(r"rom ?hack|\bhacks?\b","romhacks"),
 ]
@@ -344,6 +346,42 @@ def import_dats(path,system=None,source=None,wanted=False,progress=None):
                 report["imported"].append(entry|{"system":sys_slug,"source":src}|r)
     if progress: progress(len(files),len(files),"done")
     return report
+
+TITLEDB_URL="https://raw.githubusercontent.com/blawar/titledb/master/US.en.json"
+
+def import_titledb(path=None,wanted=False):
+    """Switch games from blawar/titledb's region file (US.en.json): one item per game, keyed
+    by its title id — the one thing a Switch dump's file name reliably carries, and what
+    the scanner matches it by. Updates and add-ons are not games and are left out. With
+    no file at `path` the list is downloaded there first. New items are not wanted."""
+    import json
+    from .config import ROOT
+    path=Path(path) if path else ROOT/"DAT"/"titledb"/"US.en.json"
+    if not path.exists():
+        path.parent.mkdir(parents=True,exist_ok=True)
+        r=requests.get(TITLEDB_URL,timeout=300); r.raise_for_status()
+        path.write_bytes(r.content)
+    data=json.loads(path.read_text(encoding="utf-8"))
+    db=connect(); count=0
+    with db:
+        for v in (data.values() if isinstance(data,dict) else data):
+            if not isinstance(v,dict): continue
+            tid=str(v.get("id") or "").upper(); title=str(v.get("name") or "").strip()
+            if not title or not re.fullmatch(r"0100[0-9A-F]{9}000",tid): continue
+            rel=str(v.get("releaseDate") or "")
+            year=int(rel[:4]) if rel[:4].isdigit() and 2016<int(rel[:4])<2100 else None
+            key=f"switch/{tid}"
+            row=db.execute("SELECT id FROM items WHERE catalog_source='titledb' AND external_id=?",(key,)).fetchone()
+            if row:
+                item_id=row["id"]
+                db.execute("UPDATE items SET title=?,year=COALESCE(?,year),updated_at=CURRENT_TIMESTAMP WHERE id=?",(title,year,item_id))
+            else:
+                item_id=_id("titledb","switch",tid)
+                db.execute("""INSERT INTO items(id,title,system,year,wanted,status,catalog_source,external_id)
+                  VALUES(?,?,'switch',?,?,'CATALOGED','titledb',?)""",(item_id,title,year,int(bool(wanted)),key))
+            db.execute("INSERT OR IGNORE INTO aliases(item_id,alias) VALUES(?,?)",(item_id,title))
+            count+=1
+    return {"items":count,"file":str(path)}
 
 def import_scummvm(url="https://www.scummvm.org/compatibility",wanted=True):
     r=requests.get(url,timeout=30,headers={"User-Agent":"Rom-Com/0.2"})
